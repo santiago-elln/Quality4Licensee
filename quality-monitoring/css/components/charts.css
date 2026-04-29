@@ -1,0 +1,164 @@
+/* ============================================================
+   CHARTS & DATA VISUALIZATION
+   ============================================================ */
+.chart-container {
+  position: relative;
+  width: 100%;
+}
+.chart-container canvas {
+  max-width: 100%;
+}
+
+/* Chart with fixed height */
+.chart-h-200 { height: 200px; }
+.chart-h-250 { height: 250px; }
+.chart-h-300 { height: 300px; }
+.chart-h-350 { height: 350px; }
+.chart-h-400 { height: 400px; }
+
+/* Chart legend */
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  justify-content: center;
+}
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  font-weight: var(--weight-medium);
+}
+.legend-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.legend-line {
+  width: 16px; height: 2px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+}
+
+/* Radar chart wrapper */
+.radar-chart-wrapper {
+  position: relative;
+  width: 100%;
+  max-width: 280px;
+  margin: 0 auto;
+}
+
+/* Horizontal bar chart (custom) */
+.hbar-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.hbar-item {
+  display: grid;
+  grid-template-columns: 140px 1fr 48px;
+  align-items: center;
+  gap: var(--space-3);
+}
+.hbar-label {
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  font-weight: var(--weight-medium);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hbar-track {
+  height: 8px;
+  background: var(--bg-surface-3);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+.hbar-fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  transition: width 0.7s ease;
+  background: var(--brand-green);
+}
+.hbar-val {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  text-align: right;
+}
+
+/* History bar (multi-segment) */
+.history-bar-wrap {
+  display: flex;
+  gap: 2px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.history-segment {
+  flex: 1;
+  transition: opacity var(--transition-fast);
+  cursor: pointer;
+  position: relative;
+}
+.history-segment:hover { opacity: 0.8; }
+
+/* Trend sparkline */
+.sparkline {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 32px;
+}
+.sparkline-bar {
+  flex: 1;
+  border-radius: 2px 2px 0 0;
+  background: var(--brand-green);
+  opacity: 0.7;
+  transition: opacity var(--transition-fast);
+  min-width: 4px;
+}
+.sparkline-bar:hover { opacity: 1; }
+.sparkline-bar.highlighted { opacity: 1; background: var(--brand-green-dark); }
+
+/* Category score indicator */
+.category-score {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.category-score__bar {
+  flex: 1;
+  height: 6px;
+  background: var(--bg-surface-3);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+.category-score__fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  transition: width 0.8s ease;
+}
+.category-score__val {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
+  min-width: 32px;
+  text-align: right;
+}
+
+/* Tooltip for charts */
+.chart-tooltip {
+  position: absolute;
+  background: var(--brand-dark);
+  color: #fff;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  pointer-events: none;
+  z-index: var(--z-dropdown);
+  white-space: nowrap;
+  box-shadow: var(--shadow-lg);
+}

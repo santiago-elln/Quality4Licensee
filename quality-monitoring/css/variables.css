@@ -1,0 +1,144 @@
+/* ============================================================
+   DESIGN TOKENS — iGreen Performance
+   ============================================================ */
+:root {
+  /* --- Brand Colors --- */
+  --brand-green:        #4aba3d;
+  --brand-green-light:  #6dd163;
+  --brand-green-bright: #39e05a;
+  --brand-green-dark:   #2d8a28;
+  --brand-green-muted:  #d4edda;
+  --brand-dark:         #0f1117;
+  --brand-dark-2:       #1a2332;
+  --brand-dark-3:       #263145;
+
+  /* --- Surface & Background --- */
+  --bg-app:         #f0f2f5;
+  --bg-surface:     #ffffff;
+  --bg-surface-2:   #f8fafb;
+  --bg-surface-3:   #f0f2f5;
+  --bg-sidebar:     #ffffff;
+  --bg-header:      #0f1117;
+
+  /* --- Text --- */
+  --text-primary:   #111827;
+  --text-secondary: #6b7280;
+  --text-tertiary:  #9ca3af;
+  --text-inverse:   #ffffff;
+  --text-brand:     #2d8a28;
+  --text-link:      #4aba3d;
+
+  /* --- Border --- */
+  --border:         #e5e7eb;
+  --border-light:   #f3f4f6;
+  --border-dark:    #d1d5db;
+  --border-brand:   #4aba3d;
+
+  /* --- Status Colors --- */
+  --color-success:       #10b981;
+  --color-success-bg:    #d1fae5;
+  --color-success-text:  #065f46;
+  --color-warning:       #f59e0b;
+  --color-warning-bg:    #fef3c7;
+  --color-warning-text:  #92400e;
+  --color-danger:        #ef4444;
+  --color-danger-bg:     #fee2e2;
+  --color-danger-text:   #991b1b;
+  --color-info:          #3b82f6;
+  --color-info-bg:       #dbeafe;
+  --color-info-text:     #1e40af;
+  --color-neutral:       #6b7280;
+  --color-neutral-bg:    #f3f4f6;
+  --color-neutral-text:  #374151;
+
+  /* --- Monitoring Result Bands --- */
+  --result-excellent:     #10b981;
+  --result-excellent-bg:  #d1fae5;
+  --result-good:          #3b82f6;
+  --result-good-bg:       #dbeafe;
+  --result-regular:       #f59e0b;
+  --result-regular-bg:    #fef3c7;
+  --result-critical:      #ef4444;
+  --result-critical-bg:   #fee2e2;
+  --result-zero:          #6b7280;
+  --result-zero-bg:       #f3f4f6;
+
+  /* --- Observation Types --- */
+  --obs-G:  #6b7280;   /* Genérico */
+  --obs-O:  #3b82f6;   /* Operador */
+  --obs-A:  #10b981;   /* Analítico */
+  --obs-E:  #ef4444;   /* Erro */
+
+  /* --- Shadows --- */
+  --shadow-xs:  0 1px 2px rgba(0,0,0,.05);
+  --shadow-sm:  0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.04);
+  --shadow-md:  0 4px 6px rgba(0,0,0,.07), 0 2px 4px rgba(0,0,0,.05);
+  --shadow-lg:  0 10px 15px rgba(0,0,0,.08), 0 4px 6px rgba(0,0,0,.04);
+  --shadow-xl:  0 20px 25px rgba(0,0,0,.10), 0 10px 10px rgba(0,0,0,.04);
+
+  /* --- Border Radius --- */
+  --radius-xs:  3px;
+  --radius-sm:  6px;
+  --radius-md:  10px;
+  --radius-lg:  14px;
+  --radius-xl:  20px;
+  --radius-full: 9999px;
+
+  /* --- Typography --- */
+  --font-sans:  'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --font-mono:  'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+
+  --text-xs:    0.70rem;
+  --text-sm:    0.813rem;
+  --text-base:  0.875rem;
+  --text-md:    1rem;
+  --text-lg:    1.125rem;
+  --text-xl:    1.25rem;
+  --text-2xl:   1.5rem;
+  --text-3xl:   1.875rem;
+  --text-4xl:   2.25rem;
+
+  --weight-normal:   400;
+  --weight-medium:   500;
+  --weight-semibold: 600;
+  --weight-bold:     700;
+  --weight-black:    900;
+
+  --leading-tight:   1.25;
+  --leading-snug:    1.375;
+  --leading-normal:  1.5;
+  --leading-relaxed: 1.625;
+
+  /* --- Spacing --- */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* --- Layout --- */
+  --sidebar-width:       240px;
+  --sidebar-collapsed:   64px;
+  --header-height:       56px;
+  --content-max-width:   1400px;
+
+  /* --- Transitions --- */
+  --transition-fast:   150ms ease;
+  --transition-base:   250ms ease;
+  --transition-slow:   400ms ease;
+
+  /* --- Z-index --- */
+  --z-below:   -1;
+  --z-base:     0;
+  --z-raised:   10;
+  --z-dropdown: 100;
+  --z-sticky:   200;
+  --z-overlay:  300;
+  --z-modal:    400;
+  --z-toast:    500;
+}
