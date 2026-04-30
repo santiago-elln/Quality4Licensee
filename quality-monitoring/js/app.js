@@ -3,22 +3,24 @@
    ============================================================ */
 import { restoreSession, isAuthenticated, onAuthChange } from './auth.js';
 import {
-  initRouter, registerRoute, setDefaultRoute, protectRoute, navigate, getCurrentRoute,
+  initRouter, registerRoute, setDefaultRoute,
+  protectRoute, navigate, getCurrentRoute,
 } from './router.js';
 import { renderHeader, bindHeader, setOnPeriodChange } from './components/header.js';
 import { renderSidebar, bindSidebar, updateActiveNav } from './components/sidebar.js';
 import { destroyAll } from './components/charts.js';
 
-/* ── Page imports ───────────────────────────── */
-import * as LoginPage        from './pages/login.js';
-import * as DashboardPage    from './pages/dashboard.js';
-import * as NovaMonitoriaPage from './pages/nova-monitoria.js';
-import * as ColabPage        from './pages/colaboradores.js';
-import * as PerfilPage       from './pages/perfil.js';
-import * as RegistrosPage    from './pages/registros.js';
-import * as AIPage           from './pages/ai-analise.js';
-import * as AdminPage        from './pages/admin.js';
-import * as MetasPage        from './pages/metas.js';
+/* ── Page modules ───────────────────────────── */
+import * as LoginPage          from './pages/login.js';
+import * as DashboardPage      from './pages/dashboard.js';
+import * as NovaMonitoriaPage  from './pages/nova-monitoria.js';
+import * as ColabPage          from './pages/colaboradores.js';
+import * as ConsultaPage       from './pages/consulta.js';
+import * as PerfilPage         from './pages/perfil.js';
+import * as RegistrosPage      from './pages/registros.js';
+import * as AIPage             from './pages/ai-analise.js';
+import * as AdminPage          from './pages/admin.js';
+import * as MetasPage          from './pages/metas.js';
 
 const app = document.getElementById('app');
 
@@ -40,7 +42,7 @@ function renderShell() {
   bindSidebar();
 }
 
-/* ── Main content renderer ──────────────────── */
+/* ── Page mount ─────────────────────────────── */
 async function mountPage(page) {
   destroyAll();
   const main = document.getElementById('main-content');
@@ -50,31 +52,30 @@ async function mountPage(page) {
   await page.init?.();
 }
 
-/* ── Route definitions ──────────────────────── */
+/* ── Routes ─────────────────────────────────── */
 function registerRoutes() {
   setDefaultRoute('login');
 
-  /* Public */
   registerRoute('login', async () => {
     if (isAuthenticated()) { navigate('dashboard'); return; }
     app.innerHTML = LoginPage.render();
     LoginPage.init?.();
   });
 
-  /* Protected routes */
-  const protectedPages = [
+  const protected_ = [
     ['dashboard',      DashboardPage],
     ['nova-monitoria', NovaMonitoriaPage],
     ['colaboradores',  ColabPage],
+    ['consulta',       ConsultaPage],
     ['perfil',         PerfilPage],
     ['registros',      RegistrosPage],
     ['ai-analise',     AIPage],
     ['admin',          AdminPage],
     ['metas',          MetasPage],
-    ['comparativo',    DashboardPage], // placeholder
+    ['comparativo',    DashboardPage],
   ];
 
-  protectedPages.forEach(([route, page]) => {
+  protected_.forEach(([route, page]) => {
     protectRoute(route);
     registerRoute(route, async () => {
       mountShell();
@@ -84,19 +85,17 @@ function registerRoutes() {
   });
 }
 
-/* ── Period change re-render ────────────────── */
+/* ── Period refresh ─────────────────────────── */
 function setupPeriodRefresh() {
   setOnPeriodChange(() => {
     const route = getCurrentRoute();
-    if (['dashboard', 'colaboradores', 'registros'].includes(route)) {
-      const pages = {
-        dashboard:      DashboardPage,
-        colaboradores:  ColabPage,
-        registros:      RegistrosPage,
-      };
-      const page = pages[route];
-      if (page) mountPage(page);
-    }
+    const map = {
+      dashboard:     DashboardPage,
+      colaboradores: ColabPage,
+      registros:     RegistrosPage,
+    };
+    const page = map[route];
+    if (page) mountPage(page);
   });
 }
 

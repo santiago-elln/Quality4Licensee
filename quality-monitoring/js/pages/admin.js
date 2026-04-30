@@ -2,7 +2,8 @@
    ADMIN — Gestão de departamentos, equipes e usuários
    ============================================================ */
 import { getCurrentUser } from '../auth.js';
-import { DEPARTMENTS, TEAMS, MOCK_USERS, METRICS_CONFIG } from '../data/mock.js';
+import { DEPARTMENTS, TEAMS, MOCK_USERS } from '../data/mock.js';
+import { METRICS_CONFIG } from '../utils/access.js';
 import { toast } from '../components/toast.js';
 import { ACCESS_LEVELS, roleClass } from '../utils/access.js';
 import { getInitials } from '../utils/formatters.js';

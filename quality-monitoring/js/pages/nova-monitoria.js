@@ -1,25 +1,33 @@
 /* ============================================================
-   NOVA MONITORIA — Formulário de registro
+   NOVA MONITORIA — Formulário dois colunas + sidebar chat
    ============================================================ */
 import { getCurrentUser } from '../auth.js';
 import { navigate } from '../router.js';
 import { toast } from '../components/toast.js';
-import { getCollabsForViewer, EVAL_CATEGORIES, ANALYTICAL_CRITERIA, TOTAL_MAX_PTS, MONITORIAS } from '../data/mock.js';
-import { formatHHMMSS, parseHHMMSS, resultBand } from '../utils/formatters.js';
+import {
+  getCollabsForViewer, EVAL_CATEGORIES, ANALYTICAL_CRITERIA,
+  TOTAL_MAX_PTS, MONITORIAS, getMonitorias, getMonitoriaStats,
+  OBSERVATIONS,
+} from '../data/mock.js';
+import {
+  formatHHMMSS, parseHHMMSS, resultBand, scoreColor, formatDate,
+} from '../utils/formatters.js';
 
-let _scores = {};        // categoryId → earned pts
-let _totalEarned = 0;
+let _observations = [];
+let _totalEarned  = 0;
+let _selectedCollabId = null;
 
 export function render() {
-  const user = getCurrentUser();
+  const user   = getCurrentUser();
   const collabs = getCollabsForViewer(user).filter(c => c.role === 'colaborador');
-  const monCount = MONITORIAS.length + 1;
+  const monNum  = MONITORIAS.length + 1;
 
   const collabOpts = collabs.map(c =>
     `<option value="${c.id}">${c.name}</option>`
   ).join('');
 
   const categorySections = EVAL_CATEGORIES.map(cat => renderCategory(cat)).join('');
+
   const analyticalRows = ANALYTICAL_CRITERIA.map(c => `
     <div class="analytical-item">
       <div class="analytical-item__name">${c.name}</div>
@@ -32,191 +40,235 @@ export function render() {
     </div>
   `).join('');
 
+  const criteriaOpts = [
+    ...EVAL_CATEGORIES.map(c => c.name),
+    ...ANALYTICAL_CRITERIA.map(c => c.name),
+  ].map(n => `<option value="${n}">${n}</option>`).join('');
+
   return `
     <div class="monitoring-page page-enter">
-      <!-- Header -->
+      <!-- Page header -->
       <div class="monitoring-header">
-        <button class="monitoring-header__back" id="btn-back">
-          ← Voltar
-        </button>
+        <button class="monitoring-header__back" id="btn-back">← Voltar</button>
         <div class="monitoring-header__title-wrap">
           <div class="monitoring-header__title">Monitoria de Qualidade</div>
           <div class="monitoring-header__subtitle">Registro de atendimento</div>
         </div>
       </div>
 
-      <!-- Timer calculator -->
-      <div class="timer-calc">
-        <div>
-          <div class="timer-calc__label">Cálculo de diferença entre tempos</div>
-        </div>
-        <div class="timer-calc__fields">
-          <div class="timer-field">
-            <label class="timer-field__label">msg1</label>
-            <input class="timer-field__input" id="timer-msg1" placeholder="00:00:00" value="00:00:00">
-          </div>
-          <div class="timer-field">
-            <label class="timer-field__label">msg2</label>
-            <input class="timer-field__input" id="timer-msg2" placeholder="00:00:00" value="00:00:00">
-          </div>
-          <div class="timer-field">
-            <label class="timer-delta">Δt <span class="timer-delta__val" id="timer-delta">00:00:00</span></label>
-          </div>
-        </div>
-      </div>
+      <!-- Two-column layout -->
+      <div class="monitoring-layout">
 
-      <!-- Collaborator selector -->
-      <div class="collab-selector-section">
-        <div class="collab-selector__avatar" id="collab-avatar">?</div>
-        <div class="collab-selector__field">
-          <label class="collab-selector__label">Selecione o colaborador</label>
-          <select class="form-select collab-selector__select" id="collab-select">
-            <option value="">— escolha um colaborador —</option>
-            ${collabOpts}
-          </select>
-        </div>
-        <div class="monitoring-number-section">
-          <label class="form-label">Monitoria Nº</label>
-          <div class="monitoring-number-val" id="mon-number">${monCount}</div>
-        </div>
-      </div>
+        <!-- ══ LEFT COLUMN: main form ══ -->
+        <div class="monitoring-main">
 
-      <!-- Attendance info -->
-      <div class="attendance-section">
-        <div class="attendance-section__header">
-          <span class="attendance-section__icon">🔧</span>
-          <span class="attendance-section__title">Dados do Atendimento</span>
-        </div>
-        <div class="attendance-grid">
-          <div class="attendance-field">
-            <div class="attendance-field__label">ID / Protocolo do atendimento</div>
-            <input class="attendance-field__input" id="att-id" placeholder="ex: 123456">
-          </div>
-          <div class="attendance-field">
-            <div class="attendance-field__label">Data e hora do início</div>
-            <input class="attendance-field__input" id="att-date" type="datetime-local">
-          </div>
-          <div class="attendance-field">
-            <div class="attendance-field__label">Tempo de primeira resposta</div>
-            <input class="attendance-field__input" id="att-tmpr" placeholder="00:00:00">
-          </div>
-          <div class="attendance-field">
-            <div class="attendance-field__label">Tempo máx. de espera entre respostas</div>
-            <input class="attendance-field__input" id="att-tmer" placeholder="00:00:00">
-          </div>
-          <div class="attendance-field">
-            <div class="attendance-field__label">Tempo de atendimento</div>
-            <input class="attendance-field__input" id="att-tma" placeholder="00:00:00">
-          </div>
-          <div class="attendance-field">
-            <div class="attendance-field__label">Avaliação CSAT</div>
-            <div class="csat-group" id="csat-group">
-              ${[1,2,3,4,5].map(v => `
-                <label class="csat-option">
-                  <input type="radio" name="csat" value="${v}" ${v===5?'checked':''}>
-                  <span class="csat-label">${v}</span>
-                </label>
-              `).join('')}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Score summary -->
-      <div class="score-summary" id="score-summary">
-        <div>
-          <div class="score-summary__title">Pontuação Total</div>
-          <div style="display:flex;align-items:baseline;gap:8px">
-            <div class="score-summary__value" id="score-total">0</div>
-            <div class="score-summary__max">/ ${TOTAL_MAX_PTS}</div>
-          </div>
-        </div>
-        <div>
-          <div class="score-summary__title">Aproveitamento</div>
-          <div class="score-summary__pct" id="score-pct">0%</div>
-        </div>
-        <div>
-          <div class="score-summary__band badge badge--zero" id="score-band">Zerada</div>
-        </div>
-      </div>
-
-      <!-- Evaluation categories -->
-      ${categorySections}
-
-      <!-- Analytical criteria -->
-      <div class="analytical-section">
-        <div class="analytical-section__header">
-          <div class="analytical-section__title">Critérios Analíticos</div>
-        </div>
-        <div style="display:grid;grid-template-columns:1fr 50px 1fr;padding:var(--space-3) var(--space-5);border-bottom:1px solid var(--border-light);gap:var(--space-4)">
-          <div style="font-size:var(--text-xs);font-weight:600;text-transform:uppercase;text-align:right;color:var(--text-secondary)">Critério</div>
-          <div style="font-size:var(--text-xs);font-weight:600;text-transform:uppercase;text-align:center;color:var(--text-secondary)">✓</div>
-          <div style="font-size:var(--text-xs);font-weight:600;text-transform:uppercase;color:var(--text-secondary)">Justificativas</div>
-        </div>
-        ${analyticalRows}
-      </div>
-
-      <!-- Observations panel -->
-      <div class="obs-panel">
-        <div class="obs-panel__header">
-          <div class="obs-panel__title">Observações</div>
-          <button class="btn btn--outline btn--sm" id="btn-add-obs">+ Adicionar</button>
-        </div>
-        <div class="obs-form" id="obs-form" style="display:none">
-          <div class="form-group" style="margin-bottom:0">
-            <label class="form-label">Tipo <span class="required">*</span></label>
-            <select class="form-select" id="obs-type">
-              <option value="G">Genérico (G)</option>
-              <option value="O">Operador (O)</option>
-              <option value="A">Analítico (A)</option>
-              <option value="E">Erro (E)</option>
-            </select>
-          </div>
-          <div class="form-group" style="margin-bottom:0">
-            <label class="form-label">Critério</label>
-            <select class="form-select" id="obs-criteria">
-              <option value="">— selecione —</option>
-              ${[...EVAL_CATEGORIES.map(c => c.name), ...ANALYTICAL_CRITERIA.map(c => c.name)]
-                .map(n => `<option>${n}</option>`).join('')}
-            </select>
-          </div>
-          <div class="obs-form__row">
-            <div class="form-group" style="margin-bottom:0">
-              <label class="form-label">Texto da observação</label>
-              <input class="form-input" id="obs-text" placeholder="Descreva a observação...">
-            </div>
-            <div class="form-group" style="margin-bottom:0">
-              <label class="form-label">Possui Erro?</label>
-              <div class="check-item" style="margin-top:var(--space-2)">
-                <input type="checkbox" id="obs-has-error">
-                <label for="obs-has-error" style="font-size:var(--text-sm)">Sim, registrar como erro</label>
+          <!-- Timer calculator -->
+          <div class="timer-calc">
+            <div><div class="timer-calc__label">Cálculo Δt entre tempos</div></div>
+            <div class="timer-calc__fields">
+              <div class="timer-field">
+                <label class="timer-field__label">msg1</label>
+                <input class="timer-field__input" id="timer-msg1" placeholder="00:00:00" value="00:00:00">
+              </div>
+              <div class="timer-field">
+                <label class="timer-field__label">msg2</label>
+                <input class="timer-field__input" id="timer-msg2" placeholder="00:00:00" value="00:00:00">
+              </div>
+              <div class="timer-field">
+                <label class="timer-delta">Δt <span class="timer-delta__val" id="timer-delta">00:00:00</span></label>
               </div>
             </div>
           </div>
-          <div style="grid-column:1/-1;display:flex;justify-content:flex-end;gap:var(--space-2)">
-            <button class="btn btn--ghost btn--sm" id="btn-obs-cancel">Cancelar</button>
-            <button class="btn btn--primary btn--sm" id="btn-obs-save">Salvar Observação</button>
+
+          <!-- Collaborator + number -->
+          <div class="collab-selector-section">
+            <div class="collab-selector__avatar" id="collab-avatar">?</div>
+            <div class="collab-selector__field">
+              <label class="collab-selector__label">Colaborador</label>
+              <select class="form-select collab-selector__select" id="collab-select">
+                <option value="">— selecione —</option>
+                ${collabOpts}
+              </select>
+            </div>
+            <div class="monitoring-number-section">
+              <label class="form-label">Monitoria Nº</label>
+              <div class="monitoring-number-val">${monNum}</div>
+            </div>
+          </div>
+
+          <!-- Attendance info -->
+          <div class="attendance-section">
+            <div class="attendance-section__header">
+              <span class="attendance-section__icon">🔧</span>
+              <span class="attendance-section__title">Dados do Atendimento</span>
+            </div>
+            <div class="attendance-grid">
+              <div class="attendance-field">
+                <div class="attendance-field__label">ID / Protocolo</div>
+                <input class="attendance-field__input" id="att-id" placeholder="ex: 123456">
+              </div>
+              <div class="attendance-field">
+                <div class="attendance-field__label">Data e hora do início</div>
+                <input class="attendance-field__input" id="att-date" type="datetime-local">
+              </div>
+              <div class="attendance-field">
+                <div class="attendance-field__label">Tempo de primeira resposta</div>
+                <input class="attendance-field__input" id="att-tmpr" placeholder="00:00:00">
+              </div>
+              <div class="attendance-field">
+                <div class="attendance-field__label">Tempo máx. espera entre respostas</div>
+                <input class="attendance-field__input" id="att-tmer" placeholder="00:00:00">
+              </div>
+              <div class="attendance-field">
+                <div class="attendance-field__label">Tempo de atendimento</div>
+                <input class="attendance-field__input" id="att-tma" placeholder="00:00:00">
+              </div>
+              <div class="attendance-field">
+                <div class="attendance-field__label">Avaliação CSAT</div>
+                <div class="csat-group">
+                  ${[1,2,3,4,5].map(v =>
+                    `<label class="csat-option">
+                      <input type="radio" name="csat" value="${v}" ${v===5?'checked':''}>
+                      <span class="csat-label">${v}</span>
+                    </label>`
+                  ).join('')}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Score summary -->
+          <div class="score-summary" id="score-summary">
+            <div>
+              <div class="score-summary__title">Pontuação Total</div>
+              <div style="display:flex;align-items:baseline;gap:8px">
+                <div class="score-summary__value" id="score-total">0</div>
+                <div class="score-summary__max">/ ${TOTAL_MAX_PTS}</div>
+              </div>
+            </div>
+            <div style="flex:1;margin:0 var(--space-5)">
+              <div class="score-summary__title" style="margin-bottom:6px">Progresso</div>
+              <div style="height:8px;background:rgba(255,255,255,0.1);border-radius:var(--radius-full);overflow:hidden">
+                <div id="total-progress-bar"
+                     style="height:100%;width:0%;background:var(--brand-green);border-radius:var(--radius-full);transition:width .4s ease"></div>
+              </div>
+            </div>
+            <div>
+              <div class="score-summary__title">Aproveitamento</div>
+              <div class="score-summary__pct" id="score-pct">0%</div>
+            </div>
+            <div>
+              <span class="badge badge--zero" id="score-band">Zerada</span>
+            </div>
+          </div>
+
+          <!-- Evaluation criteria -->
+          ${categorySections}
+
+          <!-- Analytical criteria -->
+          <div class="analytical-section">
+            <div class="analytical-section__header">
+              <div class="analytical-section__title">Critérios Analíticos</div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 50px 1fr;padding:var(--space-2) var(--space-5);border-bottom:1px solid var(--border-light);gap:var(--space-4)">
+              <div style="font-size:var(--text-xs);font-weight:600;text-transform:uppercase;text-align:right;color:var(--text-secondary)">Critério</div>
+              <div style="font-size:var(--text-xs);font-weight:600;text-transform:uppercase;text-align:center;color:var(--text-secondary)">✓</div>
+              <div style="font-size:var(--text-xs);font-weight:600;text-transform:uppercase;color:var(--text-secondary)">Justificativa</div>
+            </div>
+            ${analyticalRows}
+          </div>
+
+          <!-- Watermark + submit -->
+          <div class="form-logo-mark">
+            <img src="assets/images/logo-light.png" alt="iGreen">
+          </div>
+
+          <div style="display:flex;justify-content:flex-end;gap:var(--space-3);margin-top:var(--space-4)">
+            <button class="btn btn--secondary btn--lg" id="btn-cancel-form">Cancelar</button>
+            <button class="btn btn--primary btn--lg" id="btn-save-monitoring">
+              💾 Salvar Monitoria
+            </button>
           </div>
         </div>
-        <div class="obs-chat-area" id="obs-chat"></div>
-      </div>
 
-      <!-- iGreen watermark -->
-      <div class="form-logo-mark">
-        <img src="assets/images/logo-light.png" alt="iGreen">
-      </div>
+        <!-- ══ RIGHT COLUMN: sidebar ══ -->
+        <div class="monitoring-sidebar">
 
-      <!-- Submit -->
-      <div style="display:flex;justify-content:flex-end;gap:var(--space-3);margin-top:var(--space-6)">
-        <button class="btn btn--secondary btn--lg" id="btn-cancel-form">Cancelar</button>
-        <button class="btn btn--primary btn--lg" id="btn-save-monitoring">
-          💾 Salvar Monitoria
-        </button>
-      </div>
+          <!-- AI Summary -->
+          <div class="ai-summary-panel" id="ai-summary-panel">
+            <div class="ai-summary-panel__header" id="ai-summary-toggle">
+              <span class="ai-summary-panel__title">✨ Resumo IA — Histórico do Colaborador</span>
+              <span class="ai-summary-panel__toggle">▾</span>
+            </div>
+            <div class="ai-summary-panel__body" id="ai-summary-body">
+              <div class="ai-summary-placeholder" id="ai-summary-placeholder">
+                <div class="ai-summary-placeholder__icon">🤖</div>
+                <div>Selecione um colaborador para ver o resumo das monitorias anteriores</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Observations Chat Sidebar -->
+          <div class="obs-sidebar-panel">
+            <div class="obs-sidebar-panel__header">
+              <span class="obs-sidebar-panel__title">💬 Observações</span>
+              <span class="badge badge--dark" id="obs-count-badge">0</span>
+            </div>
+
+            <!-- Add observation form -->
+            <div class="obs-add-form" id="obs-add-form">
+              <div class="obs-add-form__row">
+                <div class="form-group" style="margin-bottom:0">
+                  <label class="form-label">Protocolo</label>
+                  <input class="form-input" id="obs-proto" placeholder="ID do atendimento">
+                </div>
+                <div class="form-group" style="margin-bottom:0">
+                  <label class="form-label">Tipo <span class="required">*</span></label>
+                  <select class="form-select" id="obs-type">
+                    <option value="G">Genérico (G)</option>
+                    <option value="O">Operador (O)</option>
+                    <option value="A">Analítico (A)</option>
+                    <option value="E">Erro (E)</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-group" style="margin-bottom:0">
+                <label class="form-label">Critério (opcional)</label>
+                <select class="form-select" id="obs-criteria">
+                  <option value="">— nenhum —</option>
+                  ${criteriaOpts}
+                </select>
+              </div>
+              <div class="form-group obs-error-field" id="obs-error-field" style="margin-bottom:0">
+                <label class="form-label" style="color:var(--color-danger)">Tipo do Erro</label>
+                <select class="form-select" id="obs-error-type">
+                  <option value="">— selecione —</option>
+                  <option value="Violação de norma legal">Violação de norma legal</option>
+                  <option value="Falha em procedimento interno">Falha em procedimento interno</option>
+                  <option value="Informação incorreta">Informação incorreta</option>
+                  <option value="Conduta inadequada">Conduta inadequada</option>
+                  <option value="Outro">Outro</option>
+                </select>
+              </div>
+              <div class="form-group" style="margin-bottom:0">
+                <label class="form-label">Observação <span class="required">*</span></label>
+                <input class="form-input" id="obs-text" placeholder="Descreva a observação…">
+              </div>
+              <button class="btn btn--primary btn--sm btn--block" id="btn-obs-save" style="margin-top:2px">
+                + Adicionar Observação
+              </button>
+            </div>
+
+            <!-- Bubbles -->
+            <div class="obs-chat-scrollable" id="obs-chat"></div>
+          </div>
+        </div><!-- /sidebar -->
+      </div><!-- /monitoring-layout -->
     </div>
   `;
 }
 
+/* ── Category section HTML ─────────────────── */
 function renderCategory(cat) {
   const items = cat.items.map(item => `
     <div class="eval-item" id="row-${item.id}">
@@ -235,7 +287,7 @@ function renderCategory(cat) {
       <div class="eval-section__header">
         <span class="eval-section__name">${cat.name}</span>
         <div class="eval-section__progress">
-          <div class="eval-section__progress-fill" id="prog-${cat.id}" style="width:100%"></div>
+          <div class="eval-section__progress-fill" id="prog-${cat.id}" style="width:100%;transition:width .35s ease"></div>
         </div>
         <span class="eval-section__pts">
           <span class="current" id="sec-pts-${cat.id}">${cat.totalPts}</span>/${cat.totalPts}
@@ -247,6 +299,7 @@ function renderCategory(cat) {
   `;
 }
 
+/* ── Score recalculation ───────────────────── */
 function recalcScores() {
   let total = 0;
   EVAL_CATEGORIES.forEach(cat => {
@@ -258,79 +311,219 @@ function recalcScores() {
       const ptsEl = document.getElementById(`pts-${item.id}`);
       if (ptsEl) {
         ptsEl.textContent = pts;
-        ptsEl.className = `eval-item__pts-val${chk?.checked ? ' earned' : ''}`;
+        ptsEl.className   = `eval-item__pts-val${chk?.checked ? ' earned' : ''}`;
       }
     });
     total += earned;
+    const pct  = Math.round((earned / cat.totalPts) * 100);
     const prog = document.getElementById(`prog-${cat.id}`);
     const secPts = document.getElementById(`sec-pts-${cat.id}`);
-    if (prog)   prog.style.width = `${Math.round((earned/cat.totalPts)*100)}%`;
+    if (prog) {
+      prog.style.width = `${pct}%`;
+      prog.style.background = scoreColor(pct);
+    }
     if (secPts) secPts.textContent = earned;
   });
 
   _totalEarned = total;
-  const pct = Math.round((total / TOTAL_MAX_PTS) * 100);
+  const pct  = Math.round((total / TOTAL_MAX_PTS) * 100);
   const band = resultBand(pct);
 
+  const bar = document.getElementById('total-progress-bar');
+  if (bar) {
+    bar.style.width      = `${pct}%`;
+    bar.style.background = scoreColor(pct);
+  }
   const totalEl = document.getElementById('score-total');
   const pctEl   = document.getElementById('score-pct');
   const bandEl  = document.getElementById('score-band');
   if (totalEl) totalEl.textContent = total;
-  if (pctEl)   pctEl.textContent   = pct + '%';
+  if (pctEl)   pctEl.textContent   = `${pct}%`;
   if (bandEl) {
-    bandEl.textContent  = band.label;
-    bandEl.className    = `badge badge--${band.cls}`;
+    bandEl.textContent = band.label;
+    bandEl.className   = `badge badge--${band.cls}`;
   }
 }
 
-const _observations = [];
+/* ── AI Summary panel ─────────────────────── */
+function renderAiSummary(collabId) {
+  const body = document.getElementById('ai-summary-body');
+  if (!body) return;
 
-function renderObsBubbles() {
-  const area = document.getElementById('obs-chat');
-  if (!area) return;
-  if (!_observations.length) {
-    area.innerHTML = `<div class="empty-state" style="padding:var(--space-6)">
-      <div class="empty-state__icon">💬</div>
-      <div class="empty-state__title">Nenhuma observação adicionada</div>
-    </div>`;
+  const mons  = getMonitorias({ colaboradorId: collabId });
+  if (!mons.length) {
+    body.innerHTML = `
+      <div class="ai-summary-placeholder">
+        <div class="ai-summary-placeholder__icon">📋</div>
+        <div>Nenhuma monitoria anterior encontrada para este colaborador.</div>
+      </div>`;
     return;
   }
-  area.innerHTML = _observations.map(o => `
-    <div class="obs-bubble obs-bubble--${o.type}">
-      <div class="obs-bubble__type">${typeLabel(o.type)}</div>
-      ${o.criteria ? `<div class="obs-bubble__criteria">${o.criteria}</div>` : ''}
-      <div class="obs-bubble__text">${o.text}</div>
-      <div class="obs-bubble__meta">${new Date().toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit' })} · ${o.hasError ? '⚠️ Erro registrado' : ''}</div>
+
+  const stats = getMonitoriaStats(mons);
+  const last3 = mons.slice(0, 3);
+  const trend = mons.length >= 2
+    ? mons[0].pct - mons[1].pct
+    : null;
+
+  /* Category avgs */
+  const catData = EVAL_CATEGORIES.map(cat => {
+    const earned = mons.length
+      ? mons.reduce((s, m) =>
+          s + cat.items.reduce((cs, item) =>
+            cs + (m.checkedItems?.[item.id] ? item.pts : 0), 0), 0) / mons.length
+      : 0;
+    return { name: cat.name.split(' ')[0], pct: Math.round((earned / cat.totalPts) * 100) };
+  });
+
+  const weakest  = [...catData].sort((a,b) => a.pct - b.pct)[0];
+  const strongest = [...catData].sort((a,b) => b.pct - a.pct)[0];
+
+  const recentObs = OBSERVATIONS.filter(o => o.colaboradorId === collabId).slice(0, 3);
+
+  const trendStr = trend === null ? ''
+    : trend > 0 ? `<span style="color:var(--brand-green)">↑ +${trend}% vs. ant.</span>`
+    : trend < 0 ? `<span style="color:#ff6b6b">↓ ${trend}% vs. ant.</span>`
+    : `<span style="color:rgba(255,255,255,.4)">→ Estável</span>`;
+
+  body.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-3);gap:var(--space-2);flex-wrap:wrap">
+      <span style="font-size:var(--text-xs);color:rgba(255,255,255,.35)">${mons.length} monitorias registradas</span>
+      <span style="font-size:var(--text-xs)">${trendStr}</span>
     </div>
-  `).join('');
+
+    <div class="ai-metric-row">
+      <span class="ai-metric-row__label">Aproveit. médio</span>
+      <span class="ai-metric-row__val" style="color:${scoreColor(stats.avgPct)}">${stats.avgPct}%</span>
+    </div>
+    <div class="ai-metric-row">
+      <span class="ai-metric-row__label">Pts perdidos/mon</span>
+      <span class="ai-metric-row__val">${stats.ptsLost}</span>
+    </div>
+    <div class="ai-metric-row">
+      <span class="ai-metric-row__label">Zeradas</span>
+      <span class="ai-metric-row__val" style="color:${stats.zeroed>0?'#ff6b6b':'inherit'}">${stats.zeroed}</span>
+    </div>
+    <div class="ai-metric-row">
+      <span class="ai-metric-row__label">Mais forte</span>
+      <span class="ai-metric-row__val" style="color:var(--brand-green)">${strongest.name} (${strongest.pct}%)</span>
+    </div>
+    <div class="ai-metric-row">
+      <span class="ai-metric-row__label">Mais fraco</span>
+      <span class="ai-metric-row__val" style="color:#ffd166">${weakest.name} (${weakest.pct}%)</span>
+    </div>
+
+    <div style="margin-top:var(--space-3);padding-top:var(--space-3);border-top:1px solid rgba(255,255,255,.08)">
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:rgba(255,255,255,.35);margin-bottom:var(--space-2)">Últimas 3 monitorias</div>
+      ${last3.map(m => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:var(--text-xs)">
+          <span style="color:rgba(255,255,255,.45)">${formatDate(m.date)}</span>
+          <div style="display:flex;align-items:center;gap:var(--space-2)">
+            <div style="width:50px;height:4px;background:rgba(255,255,255,.1);border-radius:99px;overflow:hidden">
+              <div style="width:${m.pct}%;height:100%;background:${scoreColor(m.pct)};border-radius:99px"></div>
+            </div>
+            <span style="color:${scoreColor(m.pct)};font-weight:700">${m.pct}%</span>
+          </div>
+        </div>
+      `).join('')}
+    </div>
+
+    ${recentObs.length ? `
+      <div style="margin-top:var(--space-3);padding-top:var(--space-3);border-top:1px solid rgba(255,255,255,.08)">
+        <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:rgba(255,255,255,.35);margin-bottom:var(--space-2)">Observações recentes</div>
+        ${recentObs.map(o => `
+          <div style="display:flex;gap:var(--space-2);padding:3px 0;font-size:var(--text-xs);color:rgba(255,255,255,.5)">
+            <span class="obs-type-tag obs-type-tag--${o.type}" style="flex-shrink:0">${o.type}</span>
+            <span style="line-height:var(--leading-snug)">${o.text}</span>
+          </div>
+        `).join('')}
+      </div>
+    ` : ''}
+  `;
 }
 
-function typeLabel(t) {
-  return { G: 'Genérico', O: 'Operador', A: 'Analítico', E: 'Erro' }[t] ?? t;
+/* ── Observation chat render ───────────────── */
+function renderObsChat() {
+  const area  = document.getElementById('obs-chat');
+  const badge = document.getElementById('obs-count-badge');
+  if (!area) return;
+  if (badge) badge.textContent = _observations.length;
+
+  if (!_observations.length) {
+    area.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;padding:var(--space-6) var(--space-4);gap:var(--space-2);color:var(--text-tertiary);text-align:center">
+        <span style="font-size:1.5rem;opacity:.3">💬</span>
+        <span style="font-size:var(--text-xs)">Adicione observações usando o formulário acima</span>
+      </div>`;
+    return;
+  }
+
+  area.innerHTML = _observations.map((o, idx) => `
+    <div class="obs-bubble-compact obs-bubble-compact--${o.type}">
+      <div class="obs-bubble-compact__header">
+        <span class="obs-type-tag obs-type-tag--${o.type}">${o.type}</span>
+        ${o.criteria ? `<span class="obs-bubble-compact__criteria">${o.criteria}</span>` : ''}
+        ${o.proto ? `<span class="obs-bubble-compact__proto">#${o.proto}</span>` : ''}
+      </div>
+      <div class="obs-bubble-compact__text">${o.text}</div>
+      ${o.errorType ? `<div style="font-size:10px;margin-top:3px;color:var(--color-danger);font-weight:600">⚠ ${o.errorType}</div>` : ''}
+      <button class="obs-bubble-compact__delete" data-idx="${idx}" title="Remover">✕</button>
+    </div>
+  `).join('');
+
+  area.querySelectorAll('.obs-bubble-compact__delete').forEach(btn => {
+    btn.addEventListener('click', () => {
+      _observations.splice(Number(btn.dataset.idx), 1);
+      renderObsChat();
+    });
+  });
 }
 
 export function init() {
+  _observations = [];
+  _selectedCollabId = null;
   recalcScores();
-  renderObsBubbles();
+  renderObsChat();
 
+  /* Back / cancel */
   document.getElementById('btn-back')?.addEventListener('click', () => history.back());
   document.getElementById('btn-cancel-form')?.addEventListener('click', () => navigate('dashboard'));
 
-  /* Timer */
+  /* Timer Δt */
   const calcDelta = () => {
-    const t1 = parseHHMMSS(document.getElementById('timer-msg1')?.value);
-    const t2 = parseHHMMSS(document.getElementById('timer-msg2')?.value);
-    const delta = document.getElementById('timer-delta');
-    if (delta) delta.textContent = formatHHMMSS(Math.abs(t2 - t1));
+    const t1 = parseHHMMSS(document.getElementById('timer-msg1')?.value || '0');
+    const t2 = parseHHMMSS(document.getElementById('timer-msg2')?.value || '0');
+    const el = document.getElementById('timer-delta');
+    if (el) el.textContent = formatHHMMSS(Math.abs(t2 - t1));
   };
   document.getElementById('timer-msg1')?.addEventListener('input', calcDelta);
   document.getElementById('timer-msg2')?.addEventListener('input', calcDelta);
 
-  /* Collab select → avatar */
+  /* Collaborator select → avatar + AI summary */
   document.getElementById('collab-select')?.addEventListener('change', e => {
-    const sel = e.target.options[e.target.selectedIndex];
+    _selectedCollabId = e.target.value || null;
     const av = document.getElementById('collab-avatar');
-    if (av) av.textContent = sel.text ? sel.text.split(' ').slice(0,2).map(w=>w[0]).join('').toUpperCase() : '?';
+    if (av) {
+      const sel = e.target.options[e.target.selectedIndex];
+      av.textContent = sel.text
+        ? sel.text.trim().split(' ').slice(0,2).map(w => w[0]).join('').toUpperCase()
+        : '?';
+    }
+    if (_selectedCollabId) {
+      renderAiSummary(_selectedCollabId);
+    } else {
+      const body = document.getElementById('ai-summary-body');
+      if (body) body.innerHTML = `
+        <div class="ai-summary-placeholder">
+          <div class="ai-summary-placeholder__icon">🤖</div>
+          <div>Selecione um colaborador para ver o resumo das monitorias anteriores</div>
+        </div>`;
+    }
+  });
+
+  /* AI summary collapse */
+  document.getElementById('ai-summary-toggle')?.addEventListener('click', () => {
+    document.getElementById('ai-summary-panel')?.classList.toggle('collapsed');
   });
 
   /* Eval checkboxes */
@@ -338,44 +531,47 @@ export function init() {
     chk.addEventListener('change', recalcScores);
   });
 
-  /* Section collapse */
+  /* Section collapse toggle */
   document.querySelectorAll('.eval-section__header').forEach(hdr => {
     hdr.addEventListener('click', e => {
-      if (e.target.closest('.eval-item__check')) return;
-      hdr.closest('.eval-section').classList.toggle('collapsed');
+      if (e.target.closest('.eval-item__check, label')) return;
+      hdr.closest('.eval-section')?.classList.toggle('collapsed');
     });
   });
 
-  /* Observations */
-  document.getElementById('btn-add-obs')?.addEventListener('click', () => {
-    document.getElementById('obs-form').style.display = 'grid';
+  /* Obs type change: show/hide error field */
+  document.getElementById('obs-type')?.addEventListener('change', e => {
+    const errField = document.getElementById('obs-error-field');
+    if (errField) errField.classList.toggle('visible', e.target.value === 'E');
   });
-  document.getElementById('btn-obs-cancel')?.addEventListener('click', () => {
-    document.getElementById('obs-form').style.display = 'none';
-  });
+
+  /* Add observation */
   document.getElementById('btn-obs-save')?.addEventListener('click', () => {
-    const text = document.getElementById('obs-text').value.trim();
+    const text = document.getElementById('obs-text')?.value.trim();
     if (!text) { toast.warning('Atenção', 'Preencha o texto da observação.'); return; }
-    _observations.push({
-      type:     document.getElementById('obs-type').value,
-      criteria: document.getElementById('obs-criteria').value,
-      text,
-      hasError: document.getElementById('obs-has-error').checked,
-    });
+
+    const type      = document.getElementById('obs-type')?.value ?? 'G';
+    const criteria  = document.getElementById('obs-criteria')?.value ?? '';
+    const proto     = document.getElementById('obs-proto')?.value.trim() ?? '';
+    const errorType = type === 'E'
+      ? (document.getElementById('obs-error-type')?.value ?? '') : '';
+
+    _observations.push({ type, criteria, proto, text, errorType });
     document.getElementById('obs-text').value = '';
-    document.getElementById('obs-form').style.display = 'none';
-    renderObsBubbles();
-    toast.success('Observação adicionada');
+    document.getElementById('obs-proto').value = '';
+    renderObsChat();
   });
 
-  /* Save */
+  /* Save monitoring */
   document.getElementById('btn-save-monitoring')?.addEventListener('click', () => {
-    const collabId = document.getElementById('collab-select').value;
+    const collabId = document.getElementById('collab-select')?.value;
     if (!collabId) { toast.warning('Atenção', 'Selecione um colaborador.'); return; }
-    const attId = document.getElementById('att-id').value.trim();
+    const attId = document.getElementById('att-id')?.value.trim();
     if (!attId)   { toast.warning('Atenção', 'Informe o ID/protocolo do atendimento.'); return; }
 
-    toast.success('Monitoria salva!', `Pontuação: ${_totalEarned}/${TOTAL_MAX_PTS} (${Math.round(_totalEarned/TOTAL_MAX_PTS*100)}%)`);
+    const pct = Math.round(_totalEarned / TOTAL_MAX_PTS * 100);
+    toast.success('Monitoria salva!',
+      `${_totalEarned}/${TOTAL_MAX_PTS} pts (${pct}%) · ${_observations.length} observação(ões)`);
     setTimeout(() => navigate('registros'), 1500);
   });
 }

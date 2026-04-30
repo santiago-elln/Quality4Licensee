@@ -13,6 +13,10 @@
   min-height: 100vh;
 }
 
+/* ── SLOT WRAPPERS — grid-area must be on direct grid children ── */
+#header-slot  { grid-area: header; }
+#sidebar-slot { grid-area: sidebar; }
+
 /* ── HEADER ─────────────────────────────────── */
 .app-header {
   grid-area: header;

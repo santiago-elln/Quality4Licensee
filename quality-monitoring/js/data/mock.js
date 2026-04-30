@@ -21,46 +21,46 @@ export const MOCK_USERS = [
   /* Coordenação */
   {
     id: 'user-coord-1', email: 'nathalia@igreen.com', password: 'demo123',
-    name: 'Nathalia Ferreira', role: 'coordenador', accessLevel: 5,
+    name: 'Nathalia Menezes', role: 'coordenador', accessLevel: 5,
     deptId: 'dept-1', teamId: null,
     title: 'Coordenadora', dept: 'Suporte ao Licenciado',
   },
   /* Gestor */
   {
     id: 'user-gest-1', email: 'matheus@igreen.com', password: 'demo123',
-    name: 'Matheus Oliveira', role: 'gestor', accessLevel: 5,
+    name: 'Matheus Urias', role: 'gestor', accessLevel: 5,
     deptId: 'dept-1', teamId: null,
     title: 'Gestor', dept: 'Suporte ao Licenciado',
   },
   /* Analista */
   {
     id: 'user-anal-1', email: 'ellian.santiago@igreenenergy.com.br', password: '123456',
-    name: 'Ellian Costa', role: 'analista', accessLevel: 4,
+    name: 'Ellian Santiago', role: 'analista', accessLevel: 4,
     deptId: 'dept-1', teamId: null,
     title: 'Analista de Qualidade', dept: 'Suporte ao Licenciado',
   },
   /* Supervisores */
   {
     id: 'user-sup-1', email: 'annacara@igreen.com', password: 'demo123',
-    name: 'Anna Clara Lopes', role: 'supervisor', accessLevel: 3,
+    name: 'Anna Clara Ferreira', role: 'supervisor', accessLevel: 3,
     deptId: 'dept-1', teamId: 'team-1',
     title: 'Supervisora', dept: 'Suporte ao Licenciado',
   },
   {
     id: 'user-sup-2', email: 'matheus.moura@igreen.com', password: 'demo123',
-    name: 'Matheus Moura', role: 'supervisor', accessLevel: 3,
+    name: 'Matheus de Jesus', role: 'supervisor', accessLevel: 3,
     deptId: 'dept-1', teamId: 'team-2',
     title: 'Supervisor', dept: 'Suporte ao Licenciado',
   },
   {
     id: 'user-sup-3', email: 'marcelle@igreen.com', password: 'demo123',
-    name: 'Marcelle Santos', role: 'supervisor', accessLevel: 3,
+    name: 'Marcelle Rabello', role: 'supervisor', accessLevel: 3,
     deptId: 'dept-1', teamId: 'team-3',
     title: 'Supervisora', dept: 'Suporte ao Licenciado',
   },
   {
     id: 'user-sup-4', email: 'analuiza@igreen.com', password: 'demo123',
-    name: 'Ana Luiza Pires', role: 'supervisor', accessLevel: 3,
+    name: 'Ana Luiza Santos', role: 'supervisor', accessLevel: 3,
     deptId: 'dept-1', teamId: 'team-4',
     title: 'Supervisora', dept: 'Suporte ao Licenciado',
   },
