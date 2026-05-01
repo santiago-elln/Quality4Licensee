@@ -1,160 +1,489 @@
 /* ============================================================
-   DASHBOARD — Painel principal
+   DASHBOARD — Painel operacional
    ============================================================ */
 
-/* KPI responsive */
-@media (max-width: 1200px) {
-  .kpi-grid { grid-template-columns: repeat(3, 1fr); }
+/* ── Period nav (inside dashboard) ─────────── */
+.dash-period-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
 }
-@media (max-width: 768px) {
-  .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+.dash-period-nav__btn {
+  width: 30px; height: 30px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 1.1rem;
+  transition: all var(--transition-fast);
 }
-@media (max-width: 480px) {
-  .kpi-grid { grid-template-columns: 1fr; }
+.dash-period-nav__btn:hover { background: var(--bg-surface-3); color: var(--text-primary); }
+.dash-period-nav__select {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+  outline: none;
+  min-width: 130px;
+  text-align: center;
 }
 
-/* Evolution chart panel */
-.evolution-panel .panel__body {
-  padding: var(--space-4) var(--space-5) var(--space-5);
+/* ── Summary strip (top card rows) ─────────── */
+.sum-section {
+  margin-bottom: var(--space-3);
+}
+.sum-section__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+.sum-section__tag {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-tertiary);
 }
 
-/* Goals section */
-.goals-panel .goal-row:first-child { padding-top: 0; }
-.goals-panel .goal-row:last-child { padding-bottom: 0; }
+.sum-cards-row {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: var(--space-3);
+}
 
-/* Points lost chart */
-.pts-lost-list {
+.sum-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sum-card__label {
+  font-size: 10px;
+  font-weight: var(--weight-bold);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-tertiary);
+}
+.sum-card__value {
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-black);
+  color: var(--text-primary);
+  line-height: 1.1;
+}
+.sum-card__sub {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+
+/* CSAT card variant */
+.sum-card--csat { gap: var(--space-2); }
+.sum-card__csat-inner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.sum-card__csat-meta {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  line-height: 1.4;
+}
+
+/* CSS-only mini donut */
+.mini-donut {
+  width: 52px; height: 52px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  position: relative;
+  flex-shrink: 0;
+}
+.mini-donut::after {
+  content: '';
+  position: absolute;
+  inset: 11px;
+  border-radius: 50%;
+  background: var(--bg-surface);
+}
+.mini-donut__val {
+  position: relative;
+  z-index: 1;
+  font-size: 10px;
+  font-weight: var(--weight-bold);
+  color: var(--text-primary);
+}
+
+/* ── Detail sections ────────────────────────── */
+.detail-section {
+  margin-bottom: var(--space-6);
+}
+.detail-section__title {
+  font-size: var(--text-base);
+  font-weight: var(--weight-bold);
+  color: var(--text-primary);
+  margin-bottom: var(--space-4);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+
+/* ── panel--stretch: fills its CSS-Grid area ── */
+.panel--stretch {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding-block: var(--space-8);
+}
+/* chart body (no fixed height class) grows to fill remaining panel space */
+.panel--stretch .panel__body {
+  flex: 1;
+  min-height: 0;
+}
+/* Heatmap inside a stretched panel fills vertically */
+.panel--stretch .hm2d-wrap--fill {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.panel--stretch .hm2d-grid--fill {
+  height: 100%;
+  grid-template-rows: 14px repeat(13, 1fr) !important; /* override fixed template */
+}
+
+/* ── 2-D heatmap (hour × day grid) ────────── */
+.hm2d-wrap {
+  padding: var(--space-1) var(--space-3) var(--space-3);
+  overflow: hidden;
+}
+.hm2d-grid {
+  display: grid;
+  gap: 2px;
+  /* grid-template-columns set inline; rows fixed for non-stretched */
+  /* 13px cell height → square cells at 1440px design target          */
+  grid-template-rows: 14px repeat(13, 13px);
+}
+.hm2d-day {
+  font-size: 8px;
+  color: var(--text-tertiary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+.hm2d-hlbl {
+  font-size: 8px;
+  color: var(--text-tertiary);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 3px;
+  white-space: nowrap;
+}
+.hm2d-cell {
+  border-radius: 2px;
+  cursor: default;
+  transition: filter 0.1s;
+}
+.hm2d-cell:hover { filter: brightness(1.3); }
+
+/* ── OLD 1-D heatmap placeholder (kept for safety) */
+.hm-track {
+  height: 8px;
+  background: var(--bg-surface-3);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+.hm-fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  transition: width 0.5s ease;
+}
+.hm-val {
+  font-size: 10px;
+  font-weight: var(--weight-semibold);
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* ── Stat card (simple KPI) ─────────────────── */
+.stat-card .stat-card__val {
+  padding: var(--space-4) var(--space-5);
+  font-size: var(--text-4xl);
+  font-weight: var(--weight-black);
+  color: var(--text-primary);
+  line-height: 1;
+}
+.stat-card__sub {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  padding: 0 var(--space-5) var(--space-4);
+}
+.stat-card--ok   { border-color: rgba(74,186,61,0.35); }
+.stat-card--warn { border-color: rgba(245,158,11,0.35); }
+
+/* ── Conversão card ─────────────────────────── */
+.conv-total {
+  font-size: var(--text-3xl);
+  font-weight: var(--weight-black);
+  color: var(--text-primary);
+  margin-bottom: var(--space-3);
+}
+.conv-total span { font-size: var(--text-sm); color: var(--text-tertiary); font-weight: var(--weight-normal); }
+.conv-split { display: flex; flex-direction: column; gap: var(--space-2); }
+.conv-row { display: grid; grid-template-columns: 70px 1fr 36px; align-items: center; gap: var(--space-2); }
+.conv-row__label { font-size: var(--text-xs); color: var(--text-secondary); }
+.conv-bar-track { height: 8px; background: var(--bg-surface-3); border-radius: var(--radius-full); overflow: hidden; }
+.conv-bar-fill { height: 100%; border-radius: var(--radius-full); background: #a855f7; }
+.conv-bar-fill--alt { background: #06b6d4; }
+.conv-row__val { font-size: var(--text-xs); font-weight: var(--weight-bold); color: var(--text-primary); text-align: right; }
+
+/* ── Telephony tabulações (exec/gest) ────────── */
+.tabu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: var(--space-2) var(--space-4) var(--space-3);
+  overflow-y: auto;
+}
+.tabu-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 22px;
+}
+.tabu-row__tag {
+  font-size: 10px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.tabu-row__track {
+  width: 52px;
+  height: 5px;
+  background: var(--bg-surface-3);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.tabu-row__fill {
+  height: 100%;
+  background: var(--brand-green);
+  border-radius: var(--radius-full);
+  transition: width 0.5s ease;
+}
+.tabu-row__pct {
+  font-size: 10px;
+  font-weight: var(--weight-bold);
+  color: var(--text-primary);
+  white-space: nowrap;
+  min-width: 26px;
+  text-align: right;
+}
+.tabu-row__n {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  min-width: 32px;
+  text-align: right;
+}
+
+/* ── Performance tabulações card ─────────────── */
+.tabul-body {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-4);
+  align-items: start;
+  padding: var(--space-4) var(--space-5);
+}
+.tabul-total {
+  font-size: 3.5rem;
+  font-weight: var(--weight-black);
+  color: var(--text-primary);
+  line-height: 1;
+}
+.tabul-tags { display: flex; flex-direction: column; gap: 6px; }
+.tab-tag-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border-light);
+}
+.tab-tag-row:last-child { border-bottom: none; }
+.tab-tag-row__tag { font-size: var(--text-xs); color: var(--text-secondary); }
+.tab-tag-row__n { font-size: var(--text-xs); font-weight: var(--weight-bold); color: var(--text-primary); }
+
+/* ═══════════════════════════════════════════════
+   EXECUTIVOS grid — 9 cols × 2 rows
+   Row 1 : ENT/FIN (cols 1-5) | TME+TMA wrap (cols 6-9)
+   Row 2 : CSAT donut (cols 1-3) | TMPR (cols 4-6) | CSAT bar (cols 7-9)
+   ═══════════════════════════════════════════════ */
+.exec-grid {
+  display: grid;
+  grid-template-columns: repeat(9, 1fr);
+  gap: var(--space-4);
+  align-items: stretch;
+}
+.eg-enf     { grid-column: 1 / 6;  grid-row: 1; }
+.eg-tme-tma { grid-column: 6 / 10; grid-row: 1; }
+.eg-csatdnt { grid-column: 1 / 3;  grid-row: 2; }
+.eg-csatbar { grid-column: 3 / 6;  grid-row: 2; }
+.eg-tmpr    { grid-column: 6 / 10; grid-row: 2; }
+
+/* ═══════════════════════════════════════════════
+   GESTORES grid — 9 cols × 2 rows  (mirrors Executivos)
+   Row 1 : ENT/FIN (cols 1-5) | TME+TMA wrap (cols 6-9)
+   Row 2 : CSAT donut (cols 1-3) | Tabulations (cols 4-6) | CSAT bar (cols 7-9)
+   ═══════════════════════════════════════════════ */
+.gest-grid {
+  display: grid;
+  grid-template-columns: repeat(9, 1fr);
+  gap: var(--space-4);
+  align-items: stretch;
+}
+.gg-enf     { grid-column: 1 / 6;  grid-row: 1; }
+.gg-tme-tma { grid-column: 6 / 10; grid-row: 1; }
+.gg-csatdnt { grid-column: 1 / 3;  grid-row: 2; }
+.gg-csatbar { grid-column: 3 / 6;  grid-row: 2; }
+.gg-tabul   { grid-column: 6 / 10; grid-row: 2; }
+
+/* ── TME+TMA flex wrapper ────────────────────── */
+/*
+  Cells are square at 1440px (sidebar 220px, gap 2px, 31-day month):
+    wrapper ≈ (1172−128)/9×4 + 3×16 = 512px
+    cell_width = (512 − 26 label − 60 gaps) / 31 ≈ 13.9px
+    → cell_height = 13px  (ratio ≈ 1.07, nearly square)
+
+  The wrapper has natural/content height; ENT/FIN (panel--stretch) fills it.
+*/
+.eg-tme-tma,
+.gg-tme-tma {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
 }
-.pts-lost-item {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: center;
-  gap: var(--space-3);
-}
-.pts-lost-item__name {
-  font-size: var(--text-sm);
-  font-weight: var(--weight-medium);
-  color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.pts-lost-item__bar {
-  width: 100%;
-  height: 6px;
-  background: var(--bg-surface-3);
-  border-radius: var(--radius-full);
-  overflow: hidden;
-  margin-top: 4px;
-  grid-column: 1;
-}
-.pts-lost-item__fill {
+/* ── Row 2: equal heights ───────────────────── */
+/* All three row-2 panels fill their grid cell so borders line up. */
+.eg-csatdnt > .panel, .eg-csatbar > .panel, .eg-tmpr > .panel,
+.gg-csatdnt > .panel, .gg-csatbar > .panel, .gg-tabul > .panel {
   height: 100%;
-  border-radius: var(--radius-full);
-  background: var(--color-danger);
-  transition: width 0.7s ease;
-}
-.pts-lost-item__val {
-  font-size: var(--text-xs);
-  font-weight: var(--weight-bold);
-  color: var(--color-danger);
-  white-space: nowrap;
-}
-
-/* Period selector in header */
-.period-nav {
   display: flex;
-  align-items: center;
-  gap: var(--space-2);
+  flex-direction: column;
 }
-.period-nav__btn {
-  width: 28px; height: 28px;
+/* Bar chart (maintainAspectRatio:false) fills the available body height */
+.eg-csatbar .panel__body,
+.gg-csatbar .panel__body {
+  flex: 1;
+  min-height: 0;
+}
+/* Donut (maintainAspectRatio:true → square) is centred in the extra height */
+.eg-csatdnt .panel__body,
+.gg-csatdnt .panel__body {
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-sm);
-  background: rgba(255,255,255,0.07);
-  border: 1px solid rgba(255,255,255,0.12);
-  color: rgba(255,255,255,0.6);
-  cursor: pointer;
-  transition: all var(--transition-fast);
-  font-size: 0.7rem;
 }
-.period-nav__btn:hover {
-  background: rgba(255,255,255,0.14);
-  color: rgba(255,255,255,0.9);
-}
-.period-nav__label {
-  font-size: var(--text-sm);
-  font-weight: var(--weight-semibold);
-  color: var(--text-inverse);
-  min-width: 110px;
-  text-align: center;
+/* TMPR / Tabulations panel body fills height */
+.eg-tmpr .panel__body,
+.gg-tabul .panel__body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
-/* AI badge on panel */
-.ai-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px var(--space-2);
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
-  border-radius: var(--radius-full);
-  font-size: var(--text-xs);
-  font-weight: var(--weight-semibold);
-  color: #fff;
+/* TMPR is now 4 cols (same width as TME/TMA) → default 13px cells are square */
+
+/* ── Global: breathing room inside every chart panel body ─── */
+.panel__body.chart-container {
+  padding-block: var(--space-3); /* 12px top + 12px bottom inside every chart */
 }
 
-/* Dashboard summary header */
-.dash-page-header {
-  margin-bottom: var(--space-5);
+/* ── ENT/FIN: extra padding trims the stretched chart height ─ */
+/* Panel fills ~546px (from TME+TMA); extra padding gives proportion */
+.eg-enf .panel__body,
+.gg-enf .panel__body {
+  padding-block: var(--space-8); /* 32px each side — overrides the global 12px */
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  flex-direction: column;
+}
+.eg-enf .chart-container,
+.gg-enf .chart-container {
+  flex: 1;
+  min-height: 0;
+  padding-block: var(--space-6);
+}
+
+/* ═══════════════════════════════════════════════
+   PERFORMANCE grid (4 cols × 5 rows)
+   ═══════════════════════════════════════════════ */
+.perf-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
   gap: var(--space-4);
 }
-.dash-page-header__info {}
-.dash-page-header__title {
-  font-size: var(--text-xl);
-  font-weight: var(--weight-bold);
-  color: var(--text-primary);
-}
-.dash-page-header__meta {
-  font-size: var(--text-sm);
-  color: var(--text-secondary);
-  margin-top: 2px;
-}
-.dash-page-header__actions {
-  display: flex;
-  gap: var(--space-2);
-  align-items: center;
-  flex-shrink: 0;
-}
+.pg-enf      { grid-column: 1 / 3; grid-row: 1 / 3; }
+/* EFICIÊNCIA: col 3, row 1 */
+/* CONVERSÃO: col 4, row 1 */
+/* TMPR: col 3, row 2 */
+/* TMR: col 4, row 2 */
+.pg-csat-bar { grid-column: 1 / 4; grid-row: 3; }
+.pg-csat-dnt { grid-column: 4;     grid-row: 3; }
+.pg-ces-bar  { grid-column: 1 / 4; grid-row: 4; }
+.pg-ces-dnt  { grid-column: 4;     grid-row: 4; }
+.pg-agua     { grid-column: 1 / 2; grid-row: 5; }
+.pg-atrib    { grid-column: 2 / 3; grid-row: 5; }
+.pg-tabul    { grid-column: 3 / 5; grid-row: 5; }
 
-/* Distribution section */
-.dist-section {
-  margin-bottom: var(--space-5);
-}
-.dist-section-header {
-  margin-bottom: var(--space-3);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-.dist-section-title {
-  font-size: var(--text-xs);
-  font-weight: var(--weight-semibold);
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  color: var(--text-secondary);
-}
+/* ── Responsive ─────────────────────────────── */
+@media (max-width: 1024px) {
+  .sum-cards-row { grid-template-columns: repeat(3, 1fr); }
 
-/* Score color helpers for dashboard */
-.score-fill--excellent { background: var(--result-excellent); }
-.score-fill--good      { background: var(--result-good); }
-.score-fill--regular   { background: var(--result-regular); }
-.score-fill--critical  { background: var(--result-critical); }
-.score-fill--zero      { background: var(--result-zero); }
+  /* Exec / Gest → 2-col stacked */
+  .exec-grid, .gest-grid { grid-template-columns: 1fr 1fr; }
+
+  .eg-enf     { grid-column: 1 / 3; grid-row: 1; }
+  .eg-tme-tma { grid-column: 1 / 3; grid-row: 2; flex-direction: row; }
+  .eg-csatdnt { grid-column: 1;     grid-row: 3; }
+  .eg-tmpr    { grid-column: 2;     grid-row: 3; }
+  .eg-csatbar { grid-column: 1 / 3; grid-row: 4; }
+
+  .gg-enf     { grid-column: 1 / 3; grid-row: 1; }
+  .gg-tme-tma { grid-column: 1 / 3; grid-row: 2; flex-direction: row; }
+  .gg-csatdnt { grid-column: 1;     grid-row: 3; }
+  .gg-tabul   { grid-column: 2;     grid-row: 3; }
+  .gg-csatbar { grid-column: 1 / 3; grid-row: 4; }
+
+  /* Performance */
+  .perf-grid { grid-template-columns: repeat(2, 1fr); }
+  .pg-enf      { grid-column: 1 / 3; grid-row: 1; }
+  .pg-csat-bar { grid-column: 1;     grid-row: 4; }
+  .pg-csat-dnt { grid-column: 2;     grid-row: 4; }
+  .pg-ces-bar  { grid-column: 1;     grid-row: 5; }
+  .pg-ces-dnt  { grid-column: 2;     grid-row: 5; }
+  .pg-agua     { grid-column: 1;     grid-row: 6; }
+  .pg-atrib    { grid-column: 2;     grid-row: 6; }
+  .pg-tabul    { grid-column: 1 / 3; grid-row: 7; }
+}
+@media (max-width: 640px) {
+  .sum-cards-row { grid-template-columns: repeat(2, 1fr); }
+  .sum-card--csat { grid-column: 1 / 3; }
+  .exec-grid, .gest-grid { grid-template-columns: 1fr; }
+  .eg-enf, .gg-enf,
+  .eg-tme-tma, .gg-tme-tma,
+  .eg-tmpr, .eg-csatbar, .eg-csatdnt,
+  .gg-tabul, .gg-csatbar, .gg-csatdnt { grid-column: 1; }
+  .eg-tme-tma, .gg-tme-tma { flex-direction: column; }
+}

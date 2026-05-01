@@ -1,490 +1,504 @@
 /* ============================================================
-   DASHBOARD — Painel principal de métricas (enhanced)
+   DASHBOARD — Painel operacional por segmento
    ============================================================ */
 import { getCurrentUser } from '../auth.js';
-import { getCurrentPeriod } from '../components/header.js';
+import { getCurrentPeriod, setPeriod } from '../components/header.js';
+import { MOCK_USERS, getQueueStats, getPerfStats, QUEUE_HOURS } from '../data/mock.js';
+import { monthOptions, getInitials } from '../utils/formatters.js';
 import {
-  getCollabsForViewer, getMonitorias, getMonitoriaStats,
-  MOCK_USERS, TEAMS, TEAM_GOALS, AI_INSIGHTS, OBSERVATIONS,
-  getTeam, getDept,
-} from '../data/mock.js';
-import {
-  scoreColor, monthOptions, getInitials,
-} from '../utils/formatters.js';
-import { ACCESS_LEVELS } from '../utils/access.js';
-import { navigate } from '../router.js';
+  destroyAll, renderCountChart, renderBarChart, renderDoughnutChart,
+} from '../components/charts.js';
 
-export function render() {
-  const user   = getCurrentUser();
-  const period = getCurrentPeriod() ?? monthOptions(1)[0].key;
-  const periodLabel = monthOptions(12).find(m => m.key === period)?.label ?? period;
-  const prevPeriod  = prevMonth(period);
+let _period = null;
 
-  const collabs  = getCollabsForViewer(user).filter(c => c.role === 'colaborador');
-  const deptMons = getMonitorias({ month: period, deptId: user.deptId })
-    .filter(m => collabs.some(c => c.id === m.colaboradorId));
-  const stats  = getMonitoriaStats(deptMons);
-
-  const dept  = getDept(user.deptId);
-  const title = user.accessLevel >= ACCESS_LEVELS.ANALISTA
-    ? (dept?.name ?? 'Departamento')
-    : (getTeam(user.teamId)?.name ?? 'Minha Equipe');
-
-  const goals = user.teamId ? TEAM_GOALS[user.teamId] : { minScore: 36, qualityTarget: 80 };
-  const goalsAchieved = deptMons.filter(m => m.pct >= goals.qualityTarget).length;
-  const goalsAchievedPct = deptMons.length
-    ? Math.round((goalsAchieved / deptMons.length) * 100) : 0;
-
-  return `
-    <div class="page-enter">
-      <!-- Page header -->
-      <div class="dash-page-header">
-        <div class="dash-page-header__info">
-          <div class="dash-page-header__title">${title} — Painel</div>
-          <div class="dash-page-header__meta">${periodLabel} · ${stats.count} monitoria${stats.count !== 1 ? 's' : ''} · Meta: ${goals.minScore} pts</div>
-        </div>
-        <div class="dash-page-header__actions">
-          <button class="btn btn--outline btn--sm" onclick="window.location.hash='#consulta'">
-            🔍 Consultar Associados
-          </button>
-        </div>
-      </div>
-
-      <!-- KPI Cards -->
-      <div class="kpi-grid">
-        ${kpiCard('Monitorias', stats.count, '', 'green',
-          `<a href="#registros" class="text-brand">ver registros</a>`)}
-        ${kpiCard('Aproveitamento Médio', stats.count ? stats.avgPct + '%' : '—', '', 'blue',
-          stats.count ? `Pontos: ${Math.round(stats.avgPct)} / 100` : 'sem dados')}
-        ${kpiCard('Pts Perdidos / Mon', stats.count ? stats.ptsLost : '—', '', 'red',
-          `média por monitoria`)}
-        ${kpiCard('Meta de Qualidade', goalsAchievedPct + '%', '', 'orange',
-          `Alvo: ${goals.qualityTarget}% · ${goalsAchieved} de ${deptMons.length}`)}
-        ${kpiCard('Zeradas', stats.zeroed, '', 'purple',
-          stats.zeroed === 0 ? '<span class="text-success">Nenhuma ✓</span>' : '<span class="text-danger">atenção</span>')}
-      </div>
-
-      <!-- Supervisor/Sector Quality Table + AI Insights -->
-      <div class="content-row cols-2">
-        ${supervisorTable(user, period, prevPeriod)}
-        ${aiHighlightsPanel(user)}
-      </div>
-
-      <!-- Insights: Errors / Strengths / Opportunities -->
-      ${insightsBucketsSection(user, period, collabs, deptMons)}
-
-      <!-- Distribution -->
-      <div class="dist-section">
-        <div class="dist-section-header">
-          <span class="dist-section-title">Distribuição de Resultados — ${periodLabel}</span>
-        </div>
-        <div class="dist-grid">
-          ${distCard('Excelente', stats.dist.excellent, stats.count, '≥95%',  'excellent')}
-          ${distCard('Bom',       stats.dist.good,      stats.count, '70–94%', 'good')}
-          ${distCard('Regular',   stats.dist.regular,   stats.count, '50–69%', 'regular')}
-          ${distCard('Crítico',   stats.dist.critical,  stats.count, '1–49%',  'critical')}
-          ${distCard('Zerada',    stats.dist.zero,      stats.count, '0%',     'zero')}
-        </div>
-      </div>
-
-      <!-- Evolution + Ranking + Goals -->
-      <div class="content-row cols-2">
-        ${evolutionPanel()}
-        ${rankingPanel(collabs, deptMons)}
-      </div>
-
-      <div class="content-row cols-2">
-        ${ptsLostPanel(collabs, deptMons)}
-        ${goalsPanel(goals, goalsAchievedPct, stats)}
-      </div>
-    </div>
-  `;
+/* ── Utils ───────────────────────────────────── */
+function reloadDashboard() {
+  destroyAll();
+  const main = document.getElementById('main-content');
+  if (!main) return;
+  main.innerHTML = render();
+  init();
 }
-
-/* ── Sub-render helpers ──────────────────── */
 
 function prevMonth(ym) {
   const [y, m] = ym.split('-').map(Number);
   const d = new Date(y, m - 2, 1);
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
-function kpiCard(label, value, unit, accent, meta) {
+function fmt(sec) {
+  if (!sec && sec !== 0) return '—';
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function fmtH(sec) { /* e.g. 3725 → "1h 02m" */
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+  return h > 0 ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m ${String(sec % 60).padStart(2, '0')}s`;
+}
+
+function csatPct(csat, total) {
+  return total > 0 ? Math.round((csat[3] + csat[4]) / total * 100) : 0;
+}
+
+const CSAT_COLORS = ['#ef4444', '#f97316', '#eab308', '#84cc16', '#22c55e'];
+const SHOW_DAYS   = new Set([1, 5, 10, 15, 20, 25, 30]);
+
+/* ── Period nav ──────────────────────────────── */
+function renderPeriodNav() {
+  const months = monthOptions(12);
+  const opts = months.map(m =>
+    `<option value="${m.key}" ${m.key === _period ? 'selected' : ''}>${m.label}</option>`
+  ).join('');
   return `
-    <div class="kpi-card">
-      <div class="kpi-card__accent kpi-card__accent--${accent}"></div>
-      <div class="kpi-card__body">
-        <div class="kpi-card__label">${label}</div>
-        <div class="kpi-card__value">${value}${unit}</div>
-        <div class="kpi-card__meta">${meta}</div>
+    <div class="dash-period-nav">
+      <button class="dash-period-nav__btn" id="dash-period-prev">&#8249;</button>
+      <select class="dash-period-nav__select" id="dash-period-select">${opts}</select>
+      <button class="dash-period-nav__btn" id="dash-period-next">&#8250;</button>
+    </div>`;
+}
+
+/* ── Summary card row (top KPI strip) ─────────── */
+function summaryCardRow(segKey, label, tag, stats) {
+  const pct   = csatPct(stats.csat, stats.csatTotal);
+  const angle = (pct / 100 * 360).toFixed(1);
+  const hue   = pct >= 75 ? 120 : pct >= 55 ? 60 : 0;
+  const col   = `hsl(${hue},65%,42%)`;
+  const good  = stats.csat[3] + stats.csat[4];
+
+  const card = (lbl, val, sub = '') => `
+    <div class="sum-card">
+      <div class="sum-card__label">${lbl}</div>
+      <div class="sum-card__value">${val}</div>
+      ${sub ? `<div class="sum-card__sub">${sub}</div>` : ''}
+    </div>`;
+
+  const csatCard = `
+    <div class="sum-card sum-card--csat">
+      <div class="sum-card__label">CSAT</div>
+      <div class="sum-card__csat-inner">
+        <div class="mini-donut" style="background:conic-gradient(${col} 0deg ${angle}deg,var(--bg-surface-3) ${angle}deg 360deg)">
+          <span class="mini-donut__val">${pct}%</span>
+        </div>
+        <div class="sum-card__csat-meta">${good.toLocaleString('pt-BR')} de ${stats.csatTotal.toLocaleString('pt-BR')}<br>avaliações 4+5</div>
       </div>
-    </div>
-  `;
-}
+    </div>`;
 
-function distCard(label, count, total, range, cls) {
-  const pct = total ? Math.round((count / total) * 100) : 0;
-  return `
-    <div class="dist-card dist-card--${cls}">
-      <div class="dist-card__pct">${pct}%</div>
-      <div class="dist-card__label">${label}</div>
-      <div class="dist-card__range">${range}</div>
-      <div class="dist-card__count">${count}</div>
-    </div>
-  `;
-}
-
-function supervisorTable(user, period, prevPeriod) {
-  const teams = TEAMS.filter(t => t.deptId === user.deptId);
-  const rows = teams.map(team => {
-    const collabs = MOCK_USERS.filter(u => u.teamId === team.id && u.role === 'colaborador');
-    const ids = new Set(collabs.map(c => c.id));
-    const cur  = getMonitorias({ month: period }).filter(m => ids.has(m.colaboradorId));
-    const prev = getMonitorias({ month: prevPeriod }).filter(m => ids.has(m.colaboradorId));
-    const cs = getMonitoriaStats(cur);
-    const ps = getMonitoriaStats(prev);
-    const sup = MOCK_USERS.find(u => u.id === team.supervisorId);
-    const delta = cs.count && ps.count ? cs.avgPct - ps.avgPct : null;
-    const trend = delta === null ? 'same'
-      : delta > 2 ? 'up' : delta < -2 ? 'down' : 'same';
-    const trendLabel = delta === null ? '—'
-      : delta > 0 ? `↑ +${delta}%` : delta < 0 ? `↓ ${delta}%` : '→ estável';
-    return { team, sup, cs, trend, trendLabel };
-  });
-
-  const tableRows = rows.map(({ team, sup, cs, trend, trendLabel }) => `
-    <tr class="supervisor-row" data-team="${team.id}">
-      <td>
-        <div style="font-weight:600;color:var(--text-primary)">${team.name}</div>
-      </td>
-      <td>
-        <div style="display:flex;align-items:center;gap:var(--space-2)">
-          <div class="user-avatar" style="width:24px;height:24px;font-size:10px;background:linear-gradient(135deg,var(--brand-green),var(--brand-green-dark))">
-            ${getInitials(sup?.name ?? '?')}
-          </div>
-          <span style="font-size:var(--text-sm)">${sup?.name?.split(' ')[0] ?? '—'}</span>
-        </div>
-      </td>
-      <td class="text-center">${cs.count}</td>
-      <td>
-        <div class="score-cell">
-          <div class="score-bar" style="min-width:50px">
-            <div class="score-bar__fill" style="width:${cs.avgPct}%;background:${scoreColor(cs.avgPct)}"></div>
-          </div>
-          <span class="score-val" style="color:${scoreColor(cs.avgPct)}">${cs.count ? cs.avgPct + '%' : '—'}</span>
-        </div>
-      </td>
-      <td class="text-center" style="color:var(--color-danger);font-weight:600">${cs.count ? cs.ptsLost : '—'}</td>
-      <td class="text-center">${cs.zeroed ?? 0}</td>
-      <td class="text-center">
-        <span class="trend-pill trend-pill--${trend}">${trendLabel}</span>
-      </td>
-    </tr>
-  `).join('');
+  const sup = MOCK_USERS.find(u => u.id === (segKey === 'exec' ? 'user-sup-1' : null));
 
   return `
-    <div class="panel">
-      <div class="panel__header">
-        <div class="panel__title">Qualidade por Equipe e Supervisor</div>
-        <span class="panel__hint">vs. mês anterior</span>
+    <div class="sum-section">
+      <div class="sum-section__header">
+        <span class="sum-section__tag">${tag}</span>
       </div>
-      <div class="supervisor-table-wrap">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Equipe</th>
-              <th>Supervisor</th>
-              <th style="text-align:center">Mons</th>
-              <th>Aproveit.</th>
-              <th style="text-align:center">Pts Perdidos</th>
-              <th style="text-align:center">Zeradas</th>
-              <th style="text-align:center">Tendência</th>
-            </tr>
-          </thead>
-          <tbody>${tableRows || '<tr><td colspan="7" style="text-align:center;padding:var(--space-6);color:var(--text-tertiary)">Sem dados para o período</td></tr>'}</tbody>
-        </table>
+      <div class="sum-cards-row">
+        ${card('Entrantes',    stats.totals.ent.toLocaleString('pt-BR'))}
+        ${card('Finalizações', stats.totals.fin.toLocaleString('pt-BR'), `${Math.round(stats.totals.fin / stats.totals.ent * 100)}% do volume`)}
+        ${card('TME',  fmt(stats.totals.tme),  'espera na fila')}
+        ${card('TMA',  fmt(stats.totals.tma),  'tempo de atendimento')}
+        ${csatCard}
       </div>
-    </div>
-  `;
+    </div>`;
 }
 
-function aiHighlightsPanel(user) {
-  const relevantInsights = AI_INSIGHTS.slice(0, 3);
-  const cards = relevantInsights.map(insight => {
-    const sev = insight.severity;
-    const sevCls = { high: 'warning', medium: 'info', critical: 'danger', low: 'success' }[sev] ?? 'neutral';
-    const typeIcon = { deviation: '⚠️', trend: '📈', pattern: '🔍', praise: '🌟' }[insight.type] ?? '📌';
-    return `
-      <div style="padding:var(--space-3);border-bottom:1px solid var(--border-light);cursor:pointer"
-           class="ai-highlight-item" data-insight="${insight.id}">
-        <div style="display:flex;align-items:flex-start;gap:var(--space-2)">
-          <span style="font-size:.9rem;flex-shrink:0;margin-top:1px">${typeIcon}</span>
-          <div style="flex:1;min-width:0">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:var(--space-2);margin-bottom:3px">
-              <span style="font-size:var(--text-xs);font-weight:700;color:var(--text-primary)">${insight.title}</span>
-              <span class="badge badge--${sevCls}" style="flex-shrink:0">${insight.severity}</span>
-            </div>
-            <p style="font-size:var(--text-xs);color:var(--text-secondary);line-height:var(--leading-snug);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${insight.summary}</p>
-            <div style="font-size:10px;color:var(--text-tertiary);margin-top:3px">Alvo: <strong>${insight.targetName}</strong></div>
-          </div>
-        </div>
+/* ── 2-D heatmap (hour × day grid) ──────────── */
+function renderHeatmap2D(title, matrix, numDays, stretch = false) {
+  const flat = matrix.flat().filter(v => v > 0);
+  const maxV = Math.max(...flat, 1);
+
+  /* Red intensity: 0 activity → transparent; high value → deep red */
+  const cellBg = v =>
+    v === 0
+      ? 'var(--bg-surface-2)'
+      : `rgba(30,200,30,${(0.06 + (v / maxV) * 0.86).toFixed(2)})`;
+
+  const corner   = '<div class="hm2d-corner"></div>';
+  const dayLbls  = Array.from({ length: numDays }, (_, i) =>
+    `<div class="hm2d-day">${SHOW_DAYS.has(i + 1) ? i + 1 : ''}</div>`
+  ).join('');
+
+  const rows = QUEUE_HOURS.map((h, hi) =>
+    `<div class="hm2d-hlbl">${String(h).padStart(2, '0')}h</div>` +
+    matrix[hi].slice(0, numDays).map(v =>
+      `<div class="hm2d-cell" style="background:${cellBg(v)}" title="${String(h).padStart(2,'0')}h: ${fmt(v)}"></div>`
+    ).join('')
+  ).join('');
+
+  const cols = `grid-template-columns:26px repeat(${numDays},1fr)`;
+  const panelCls = `panel${stretch ? ' panel--stretch' : ''}`;
+
+  return `<div class="${panelCls}">
+    <div class="panel__header"><div class="panel__title">${title}</div></div>
+    <div class="hm2d-wrap${stretch ? ' hm2d-wrap--fill' : ''}">
+      <div class="hm2d-grid${stretch ? ' hm2d-grid--fill' : ''}" style="${cols}">
+        ${corner}${dayLbls}${rows}
       </div>
-    `;
+    </div>
+  </div>`;
+}
+
+/* ── CSAT / CES individual panels ────────────── */
+function csatBarPanel(barId, csat, total, label = 'CSAT', fillHeight = false) {
+  const bodyCls = fillHeight ? 'chart-container' : 'chart-container chart-h-160';
+  return `<div class="panel">
+    <div class="panel__header">
+      <div class="panel__title">${label} — Distribuição de Notas</div>
+      <span class="panel__hint">${total.toLocaleString('pt-BR')} avaliações</span>
+    </div>
+    <div class="panel__body ${bodyCls}">
+      <canvas id="${barId}"></canvas>
+    </div>
+  </div>`;
+}
+
+function csatDntPanel(dntId, csat, total, label = 'CSAT') {
+  const pct = csatPct(csat, total);
+  return `<div class="panel">
+    <div class="panel__header">
+      <div class="panel__title">${label} — Satisfação</div>
+      <span class="panel__hint" style="color:${pct >= 75 ? 'var(--color-success)' : 'var(--color-danger)'}">
+        ${pct}% satisfeitos
+      </span>
+    </div>
+    <div class="panel__body chart-container chart-h-160">
+      <canvas id="${dntId}"></canvas>
+    </div>
+  </div>`;
+}
+
+/* ── Telephony tabulações panel ──────────────── */
+/* Row-2 height ≈ TMPR (4 cols, 13px cells) = 267px.
+   Body available: 267 − 44 (header) − 20 (padding) = 203px.
+   Each tabu-row: 22px min-height + 5px gap = 27px → max 7 rows fit. */
+const TABU_MAX_ROWS = 7;
+
+function renderTabuPanel(tabu) {
+  const visible = tabu.top10.slice(0, TABU_MAX_ROWS);
+  const rows = visible.map(t => {
+    const label = t.tag.length > 38 ? t.tag.slice(0, 36) + '…' : t.tag;
+    return `<div class="tabu-row">
+      <span class="tabu-row__tag" title="${t.tag}">${label}</span>
+      <div class="tabu-row__track">
+        <div class="tabu-row__fill" style="width:${t.pct}%"></div>
+      </div>
+      <span class="tabu-row__pct">${t.pct}%</span>
+      <span class="tabu-row__n">${t.n.toLocaleString('pt-BR')}</span>
+    </div>`;
   }).join('');
-
-  return `
-    <div class="panel">
-      <div class="panel__header">
-        <div class="panel__title">Análise por IA</div>
-        <span class="ai-badge">✨ Claude</span>
-      </div>
-      <div style="font-size:var(--text-xs);color:var(--text-secondary);padding:var(--space-2) var(--space-5) 0;display:flex;align-items:center;gap:var(--space-2)">
-        <span>🕐</span> Última análise: hoje · Baseada em ${AI_INSIGHTS.length} insights gerados
-      </div>
-      ${cards}
-      <div class="panel__footer" style="text-align:center">
-        <a href="#ai-analise" style="font-size:var(--text-xs);font-weight:600;color:var(--brand-green)">
-          Ver análise completa →
-        </a>
-      </div>
+  return `<div class="panel">
+    <div class="panel__header">
+      <div class="panel__title">Tabulações — Top Motivos</div>
+      <span class="panel__hint">${tabu.total.toLocaleString('pt-BR')} tabuladas</span>
     </div>
-  `;
+    <div class="panel__body tabu-list">${rows}</div>
+  </div>`;
 }
 
-function insightsBucketsSection(_user, _period, collabs, _deptMons) {
-  const obs = OBSERVATIONS.filter(o => collabs.some(c => c.id === o.colaboradorId));
+/* ── Stat card (simple KPI box) ──────────────── */
+function statCard(title, value, sub = '', accent = '') {
+  return `<div class="panel stat-card ${accent ? 'stat-card--' + accent : ''}">
+    <div class="panel__header"><div class="panel__title">${title}</div></div>
+    <div class="stat-card__val">${value}</div>
+    ${sub ? `<div class="stat-card__sub">${sub}</div>` : ''}
+  </div>`;
+}
 
-  /* Errors: group by criteria */
-  const errorsByCriteria = {};
-  obs.filter(o => o.type === 'E').forEach(o => {
-    const key = o.criteria ?? 'Geral';
-    if (!errorsByCriteria[key]) errorsByCriteria[key] = { count: 0, names: new Set() };
-    errorsByCriteria[key].count++;
-    errorsByCriteria[key].names.add(MOCK_USERS.find(u=>u.id===o.colaboradorId)?.name?.split(' ')[0] ?? '?');
-  });
-  const topErrors = Object.entries(errorsByCriteria)
-    .sort((a,b) => b[1].count - a[1].count).slice(0, 5);
+/* ── Executivos detailed grid ─────────────────── */
+function renderExecDetail(stats) {
+  return `
+    <div class="detail-section">
+      <div class="detail-section__title">★ Executivos &amp; Acima — Detalhamento</div>
+      <div class="exec-grid">
 
-  /* Strengths: type A by criteria */
-  const strengthsByCriteria = {};
-  obs.filter(o => o.type === 'A').forEach(o => {
-    const key = o.criteria ?? 'Geral';
-    if (!strengthsByCriteria[key]) strengthsByCriteria[key] = { count: 0, names: new Set() };
-    strengthsByCriteria[key].count++;
-    strengthsByCriteria[key].names.add(MOCK_USERS.find(u=>u.id===o.colaboradorId)?.name?.split(' ')[0] ?? '?');
-  });
-  const topStrengths = Object.entries(strengthsByCriteria)
-    .sort((a,b) => b[1].count - a[1].count).slice(0, 5);
-
-  /* Opportunities: type O */
-  const oppsByCriteria = {};
-  obs.filter(o => o.type === 'O').forEach(o => {
-    const key = o.criteria ?? 'Geral';
-    if (!oppsByCriteria[key]) oppsByCriteria[key] = { count: 0, names: new Set() };
-    oppsByCriteria[key].count++;
-    oppsByCriteria[key].names.add(MOCK_USERS.find(u=>u.id===o.colaboradorId)?.name?.split(' ')[0] ?? '?');
-  });
-  const topOpps = Object.entries(oppsByCriteria)
-    .sort((a,b) => b[1].count - a[1].count).slice(0, 5);
-
-  const errorItems = topErrors.length
-    ? topErrors.map(([k, v]) => `
-        <div class="insight-bucket-item">
-          <div>
-            <div class="insight-bucket-item__name">${k}</div>
-            <div class="insight-bucket-item__sub">${Array.from(v.names).slice(0,3).join(', ')}</div>
+        <!-- ENT/FIN: cols 1-5, row 1 — stretches to fill height set by TME+TMA wrapper -->
+        <div class="eg-enf panel panel--stretch">
+          <div class="panel__header">
+            <div class="panel__title">Entrantes vs Finalizações</div>
+            <span class="panel__hint">ao longo do período</span>
           </div>
-          <span class="insight-bucket-item__count badge badge--danger">${v.count}×</span>
-        </div>
-      `).join('')
-    : `<div style="font-size:var(--text-xs);color:var(--text-tertiary);padding:var(--space-3)">Nenhum erro registrado</div>`;
-
-  const strengthItems = topStrengths.length
-    ? topStrengths.map(([k, v]) => `
-        <div class="insight-bucket-item">
-          <div>
-            <div class="insight-bucket-item__name">${k}</div>
-            <div class="insight-bucket-item__sub">${Array.from(v.names).slice(0,3).join(', ')}</div>
+          <div class="panel__body">
+            <div class="chart-container">
+              <canvas id="cht-exec-enf"></canvas>
+            </div>
           </div>
-          <span class="insight-bucket-item__count badge badge--success">${v.count}×</span>
         </div>
-      `).join('')
-    : `<div style="font-size:var(--text-xs);color:var(--text-tertiary);padding:var(--space-3)">Sem registros analíticos</div>`;
 
-  const oppItems = topOpps.length
-    ? topOpps.map(([k, v]) => `
-        <div class="insight-bucket-item">
-          <div>
-            <div class="insight-bucket-item__name">${k}</div>
-            <div class="insight-bucket-item__sub">${Array.from(v.names).slice(0,3).join(', ')}</div>
+        <!-- TME + TMA wrapper: cols 6-9, row 1 — natural height drives the row -->
+        <div class="eg-tme-tma">
+          ${renderHeatmap2D('TME — hora × dia', stats.tmeMatrix, stats.numDays)}
+          ${renderHeatmap2D('TMA — hora × dia', stats.tmaMatrix, stats.numDays)}
+        </div>
+
+        <!-- Row 2: donut (left) | CSAT bar (centre) | TMPR (right) -->
+        <div class="eg-csatdnt">${csatDntPanel('cht-exec-csatdnt', stats.csat, stats.csatTotal)}</div>
+        <div class="eg-csatbar">${csatBarPanel('cht-exec-csatbar', stats.csat, stats.csatTotal, 'CSAT', true)}</div>
+        <div class="eg-tmpr">${renderHeatmap2D('TMPR — hora × dia', stats.tmprMatrix, stats.numDays)}</div>
+
+      </div>
+    </div>`;
+}
+
+/* ── Gestores detailed grid ──────────────────── */
+function renderGestDetail(stats) {
+  return `
+    <div class="detail-section">
+      <div class="detail-section__title">⚡ Gestores &amp; Abaixo — Detalhamento</div>
+      <div class="gest-grid">
+
+        <!-- ENT/FIN: cols 1-5, row 1 — stretches to fill height set by TME+TMA wrapper -->
+        <div class="gg-enf panel panel--stretch">
+          <div class="panel__header">
+            <div class="panel__title">Entrantes vs Finalizações</div>
+            <span class="panel__hint">ao longo do período</span>
           </div>
-          <span class="insight-bucket-item__count badge badge--info">${v.count}×</span>
+          <div class="panel__body">
+            <div class=chart-container>
+              <canvas id="cht-gest-enf"></canvas>
+            </div>
+          </div>
         </div>
-      `).join('')
-    : `<div style="font-size:var(--text-xs);color:var(--text-tertiary);padding:var(--space-3)">Sem oportunidades registradas</div>`;
 
-  return `
-    <div class="insights-dashboard" style="margin-bottom:var(--space-5)">
-      <div class="insight-bucket insight-bucket--errors">
-        <div class="insight-bucket__header">⚠️ Erros Mais Frequentes</div>
-        <div class="insight-bucket__body">${errorItems}</div>
-      </div>
-      <div class="insight-bucket insight-bucket--strengths">
-        <div class="insight-bucket__header">💚 Maiores Acertos</div>
-        <div class="insight-bucket__body">${strengthItems}</div>
-      </div>
-      <div class="insight-bucket insight-bucket--opps">
-        <div class="insight-bucket__header">📘 Oportunidades Identificadas</div>
-        <div class="insight-bucket__body">${oppItems}</div>
-      </div>
-    </div>
-  `;
-}
-
-function evolutionPanel() {
-  return `
-    <div class="panel evolution-panel">
-      <div class="panel__header">
-        <div class="panel__title">Evolução Mensal — Aproveitamento Médio</div>
-        <span class="panel__hint">últimos 6 meses</span>
-      </div>
-      <div class="panel__body">
-        <div class="chart-container chart-h-250">
-          <canvas id="chart-evolution"></canvas>
+        <!-- TME + TMA wrapper: cols 6-9, row 1 — natural height drives the row -->
+        <div class="gg-tme-tma">
+          ${renderHeatmap2D('TME — hora × dia', stats.tmeMatrix, stats.numDays)}
+          ${renderHeatmap2D('TMA — hora × dia', stats.tmaMatrix, stats.numDays)}
         </div>
+
+        <!-- Row 2: donut (left) | CSAT bar (centre) | Tabulations (right) -->
+        <div class="gg-csatdnt">${csatDntPanel('cht-gest-csatdnt', stats.csat, stats.csatTotal)}</div>
+        <div class="gg-csatbar">${csatBarPanel('cht-gest-csatbar', stats.csat, stats.csatTotal, 'CSAT', true)}</div>
+        <div class="gg-tabul">${renderTabuPanel(stats.tabulacoes)}</div>
+
       </div>
-    </div>
-  `;
+    </div>`;
 }
 
-function rankingPanel(collabs, deptMons) {
-  const scores = collabs.map(c => {
-    const mons = deptMons.filter(m => m.colaboradorId === c.id);
-    const avg  = mons.length ? Math.round(mons.reduce((s,m) => s+m.pct,0) / mons.length) : null;
-    const loss = mons.length ? Math.round(mons.reduce((s,m) => s+(100-m.pct),0) / mons.length*10)/10 : null;
-    return { ...c, avgPct: avg, avgLoss: loss, count: mons.length };
-  }).filter(c => c.count > 0).sort((a,b) => (a.avgLoss??999) - (b.avgLoss??999));
+/* ── Performance detailed section ────────────── */
+function renderPerfDetail(ps) {
+  const convTotal = Math.round((ps.conversao.influencers + ps.conversao.lebes) / 2);
+  const top5Html = ps.tabulacoes.top5.map(t => `
+    <div class="tab-tag-row">
+      <span class="tab-tag-row__tag">${t.tag}</span>
+      <span class="tab-tag-row__n">${t.n}</span>
+    </div>`).join('');
 
-  const items = scores.slice(0,8).map((c,i) => {
-    const posClass = i===0 ? 'gold' : i===1 ? 'silver' : i===2 ? 'bronze' : '';
-    return `
-      <div class="ranking-item" data-collab="${c.id}">
-        <div class="ranking-item__pos ${posClass}">${i+1}</div>
-        <div class="ranking-item__avatar">${getInitials(c.name)}</div>
-        <div class="ranking-item__info">
-          <div class="ranking-item__name">${c.name}</div>
-          <div class="ranking-item__team">${c.count} mon · ${getTeam(c.teamId)?.name ?? '—'}</div>
+  const aguaPct = ps.aguardando.cliente + ps.aguardando.suporte;
+  const atribTotal = ps.atribuicoes.atribuido + ps.atribuicoes.livre;
+
+  return `
+    <div class="detail-section">
+      <div class="detail-section__title">🚀 Performance — Detalhamento</div>
+      <div class="perf-grid">
+
+        <!-- ENT/FIN -->
+        <div class="pg-enf panel">
+          <div class="panel__header">
+            <div class="panel__title">Entrantes vs Finalizações</div>
+            <span class="panel__hint">ao longo do período</span>
+          </div>
+          <div class="panel__body chart-container chart-h-260">
+            <canvas id="cht-perf-enf"></canvas>
+          </div>
         </div>
-        <div>
-          <div class="ranking-item__score" style="color:${scoreColor(c.avgPct ?? 0)}">${c.avgPct}%</div>
-          <div class="ranking-item__loss">-${c.avgLoss} pts</div>
+
+        <!-- EFICIÊNCIA -->
+        ${statCard('Eficiência de Backlog',
+          `<span style="color:${ps.eficiencia >= 90 ? 'var(--color-success)' : 'var(--color-warning)'}; font-size:var(--text-4xl);font-weight:900">${ps.eficiencia}%</span>`,
+          'leads fechados / leads entrados', ps.eficiencia >= 90 ? 'ok' : 'warn'
+        )}
+
+        <!-- CONVERSÃO -->
+        <div class="panel">
+          <div class="panel__header"><div class="panel__title">Conversão</div></div>
+          <div class="panel__body">
+            <div class="conv-total">${convTotal}% <span>total</span></div>
+            <div class="conv-split">
+              <div class="conv-row">
+                <span class="conv-row__label">Influencers</span>
+                <div class="conv-bar-track">
+                  <div class="conv-bar-fill" style="width:${Math.min(100, ps.conversao.influencers * 2)}%"></div>
+                </div>
+                <span class="conv-row__val">${ps.conversao.influencers}%</span>
+              </div>
+              <div class="conv-row">
+                <span class="conv-row__label">Lebes</span>
+                <div class="conv-bar-track">
+                  <div class="conv-bar-fill conv-bar-fill--alt" style="width:${Math.min(100, ps.conversao.lebes * 2)}%"></div>
+                </div>
+                <span class="conv-row__val">${ps.conversao.lebes}%</span>
+              </div>
+            </div>
+          </div>
         </div>
-      </div>
-    `;
-  }).join('') || `<div class="empty-state"><div class="empty-state__icon">📊</div><div class="empty-state__title">Sem dados</div></div>`;
 
-  return `
-    <div class="panel">
-      <div class="panel__header">
-        <div class="panel__title">Ranking — Menor Perda</div>
-        <span class="panel__hint">menor perda = melhor</span>
+        <!-- TMPR -->
+        ${statCard('TMPR', fmt(ps.tmpr), 'tempo médio de primeira resposta')}
+
+        <!-- TMR -->
+        ${statCard('TMR', fmtH(ps.tmr), 'tempo médio entre mensagens')}
+
+        <!-- CSAT bar -->
+        <div class="pg-csat-bar">${csatBarPanel('cht-perf-csatbar', ps.csat, ps.csatTotal)}</div>
+        <!-- CSAT donut -->
+        <div class="pg-csat-dnt">${csatDntPanel('cht-perf-csatdnt', ps.csat, ps.csatTotal)}</div>
+
+        <!-- CES bar -->
+        <div class="pg-ces-bar">${csatBarPanel('cht-perf-cesbar', ps.ces, ps.cesTotal, 'CES — Esforço do Cliente')}</div>
+        <!-- CES donut -->
+        <div class="pg-ces-dnt">${csatDntPanel('cht-perf-cesdnt', ps.ces, ps.cesTotal, 'CES')}</div>
+
+        <!-- AGUARDANDO MENSAGEM -->
+        <div class="pg-agua panel">
+          <div class="panel__header">
+            <div class="panel__title">Aguardando Mensagem</div>
+            <span class="panel__hint">${aguaPct} conversas</span>
+          </div>
+          <div class="panel__body chart-container chart-h-180">
+            <canvas id="cht-perf-agua"></canvas>
+          </div>
+        </div>
+
+        <!-- ATRIBUIÇÕES -->
+        <div class="pg-atrib panel">
+          <div class="panel__header">
+            <div class="panel__title">Atribuições</div>
+            <span class="panel__hint">${atribTotal.toLocaleString('pt-BR')} conversas</span>
+          </div>
+          <div class="panel__body chart-container chart-h-180">
+            <canvas id="cht-perf-atrib"></canvas>
+          </div>
+        </div>
+
+        <!-- TABULAÇÕES -->
+        <div class="pg-tabul panel">
+          <div class="panel__header">
+            <div class="panel__title">Tabulações</div>
+            <span class="panel__hint">${ps.tabulacoes.total.toLocaleString('pt-BR')} conversas etiquetadas</span>
+          </div>
+          <div class="panel__body tabul-body">
+            <div class="tabul-total">${ps.tabulacoes.total.toLocaleString('pt-BR')}</div>
+            <div class="tabul-tags">${top5Html}</div>
+          </div>
+        </div>
+
       </div>
-      <div class="panel__body panel__body--compact">
-        <div class="ranking-list">${items}</div>
-      </div>
-    </div>
-  `;
+    </div>`;
 }
 
-function ptsLostPanel(collabs, deptMons) {
-  const data = collabs.map(c => {
-    const mons = deptMons.filter(m => m.colaboradorId === c.id);
-    const loss = mons.length ? Math.round(mons.reduce((s,m) => s+(100-m.pct),0)/mons.length*10)/10 : 0;
-    return { name: c.name.split(' ')[0], loss, count: mons.length };
-  }).filter(d => d.count > 0).sort((a,b) => b.loss - a.loss);
+/* ── Main render ──────────────────────────────── */
+export function render() {
+  if (!_period) _period = getCurrentPeriod() ?? monthOptions(1)[0].key;
 
-  const maxLoss = data.length ? data[0].loss : 1;
+  const periodLabel = monthOptions(12).find(m => m.key === _period)?.label ?? _period;
 
-  const items = data.slice(0,7).map(d => `
-    <div class="pts-lost-item">
-      <div class="pts-lost-item__name">${d.name}</div>
-      <div class="pts-lost-item__val">${d.loss}</div>
-      <div class="pts-lost-item__bar">
-        <div class="pts-lost-item__fill" style="width:${Math.round((d.loss/maxLoss)*100)}%"></div>
-      </div>
-    </div>
-  `).join('') || `<div class="empty-state"><div class="empty-state__title">Sem dados</div></div>`;
+  const execStats = getQueueStats(['team-1'], _period);
+  const gestStats = getQueueStats(['team-2', 'team-3'], _period);
+  const perfStats = getPerfStats(_period);
 
   return `
-    <div class="panel">
-      <div class="panel__header">
-        <div class="panel__title">Pontos Perdidos por Operador</div>
-        <span class="panel__hint">média / monitoria</span>
+    <div class="page-enter">
+      <div class="dash-page-header">
+        <div class="dash-page-header__info">
+          <div class="dash-page-header__title">Suporte ao Licenciado — Painel Operacional</div>
+          <div class="dash-page-header__meta">${periodLabel}</div>
+        </div>
+        ${renderPeriodNav()}
       </div>
-      <div class="panel__body"><div class="pts-lost-list">${items}</div></div>
-    </div>
-  `;
+
+      ${summaryCardRow('exec', 'Executivos & Acima', '★', execStats)}
+      ${summaryCardRow('gest', 'Gestores & Abaixo',  '⚡', gestStats)}
+
+      ${renderExecDetail(execStats)}
+      ${renderGestDetail(gestStats)}
+      ${renderPerfDetail(perfStats)}
+    </div>`;
 }
 
-function goalsPanel(goals, pct, stats) {
-  const cls = pct >= goals.qualityTarget ? 'ok' : pct >= 50 ? 'warn' : 'danger';
-  return `
-    <div class="panel goals-panel">
-      <div class="panel__header"><div class="panel__title">Meta vs Realizado</div></div>
-      <div class="panel__body">
-        <div class="goal-row"><span class="goal-row__label">Pontuação mínima</span><span class="goal-row__value">${goals.minScore} pts</span></div>
-        <div class="goal-row"><span class="goal-row__label">Meta de qualidade</span><span class="goal-row__value">${goals.qualityTarget}%</span></div>
-        <div class="goal-row"><span class="goal-row__label">Atingiram a meta</span><span class="goal-row__value goal-row__value--${cls}">${pct}%</span></div>
-        <div class="goal-row"><span class="goal-row__label">Aproveitamento médio</span><span class="goal-row__value">${stats.avgPct}%</span></div>
-        <div class="goal-row"><span class="goal-row__label">Total monitorias</span><span class="goal-row__value">${stats.count}</span></div>
-      </div>
-      <div class="panel__footer">
-        <span style="font-size:var(--text-xs);color:${pct >= goals.qualityTarget ? 'var(--color-success)' : 'var(--color-warning)'}">
-          ${pct >= goals.qualityTarget ? '✓ Meta atingida' : '⚠ Meta não atingida'} — ${pct}% da equipe
-        </span>
-      </div>
-    </div>
-  `;
-}
-
+/* ── Init ─────────────────────────────────────── */
 export function init() {
-  const user   = getCurrentUser();
-  const collabs = getCollabsForViewer(user).filter(c => c.role === 'colaborador');
-  const months  = monthOptions(6).reverse();
+  if (!_period) _period = getCurrentPeriod() ?? monthOptions(1)[0].key;
 
-  const evolutionData = months.map(m => {
-    const mons = getMonitorias({ month: m.key, deptId: user.deptId })
-      .filter(x => collabs.some(c => c.id === x.colaboradorId));
-    return mons.length ? Math.round(mons.reduce((s,x) => s+x.pct,0) / mons.length) : null;
+  /* Period nav */
+  const months = monthOptions(12);
+  document.getElementById('dash-period-select')?.addEventListener('change', e => {
+    _period = e.target.value; setPeriod(_period); reloadDashboard();
+  });
+  document.getElementById('dash-period-prev')?.addEventListener('click', () => {
+    const i = months.findIndex(m => m.key === _period);
+    if (i < months.length - 1) { _period = months[i + 1].key; setPeriod(_period); reloadDashboard(); }
+  });
+  document.getElementById('dash-period-next')?.addEventListener('click', () => {
+    const i = months.findIndex(m => m.key === _period);
+    if (i > 0) { _period = months[i - 1].key; setPeriod(_period); reloadDashboard(); }
   });
 
-  import('../components/charts.js').then(({ renderEvolutionChart }) => {
-    renderEvolutionChart('chart-evolution', months.map(m => m.label.split(' ')[0]), [{
-      label: 'Aproveitamento Médio (%)',
-      data: evolutionData,
-      borderColor: '#4aba3d',
-      backgroundColor: 'rgba(74,186,61,0.1)',
-      borderWidth: 2,
-      tension: 0.35,
-      fill: true,
-      pointRadius: 4,
-      pointBackgroundColor: '#4aba3d',
-      spanGaps: true,
-    }]);
-  });
+  const exec = getQueueStats(['team-1'], _period);
+  const gest = getQueueStats(['team-2', 'team-3'], _period);
+  const perf = getPerfStats(_period);
 
-  /* Supervisor rows → filter to consulta */
-  document.querySelectorAll('.supervisor-row[data-team]').forEach(row => {
-    row.addEventListener('click', () => navigate('consulta', { teamId: row.dataset.team }));
-  });
+  const dayLabels = (stats) => stats.daily.map(d => String(d.day));
 
-  /* Ranking items */
-  document.querySelectorAll('.ranking-item[data-collab]').forEach(el => {
-    el.addEventListener('click', () => navigate('perfil', { id: el.dataset.collab }));
-  });
+  /* Executivos charts */
+  renderCountChart('cht-exec-enf', dayLabels(exec), [
+    { label: 'Finalizações', data: exec.daily.map(d => d.fin),
+      borderColor: '#4aba3d', backgroundColor: 'rgba(74,186,61,0.18)',
+      fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2, spanGaps: true },
+    { label: 'Entrantes', data: exec.daily.map(d => d.ent),
+      borderColor: '#f59e0b', backgroundColor: 'transparent',
+      fill: false, tension: 0.3, pointRadius: 2, borderWidth: 2, borderDash: [4, 3], spanGaps: true },
+  ]);
+  renderBarChart('cht-exec-csatbar', ['1★', '2★', '3★', '4★', '5★'], exec.csat, CSAT_COLORS);
+  renderDoughnutChart('cht-exec-csatdnt',
+    ['Satisfeitos (4+5)', 'Outros (1–3)'],
+    [exec.csat[3] + exec.csat[4], exec.csat[0] + exec.csat[1] + exec.csat[2]],
+    ['#22c55e', '#e5e7eb'], 'top'
+  );
 
-  /* AI highlights */
-  document.querySelectorAll('.ai-highlight-item').forEach(el => {
-    el.addEventListener('click', () => navigate('ai-analise'));
-  });
+  /* Gestores charts */
+  renderCountChart('cht-gest-enf', dayLabels(gest), [
+    { label: 'Finalizações', data: gest.daily.map(d => d.fin),
+      borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.15)',
+      fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2, spanGaps: true },
+    { label: 'Entrantes', data: gest.daily.map(d => d.ent),
+      borderColor: '#f59e0b', backgroundColor: 'transparent',
+      fill: false, tension: 0.3, pointRadius: 2, borderWidth: 2, borderDash: [4, 3], spanGaps: true },
+  ]);
+  renderBarChart('cht-gest-csatbar', ['1★', '2★', '3★', '4★', '5★'], gest.csat, CSAT_COLORS);
+  renderDoughnutChart('cht-gest-csatdnt',
+    ['Satisfeitos (4+5)', 'Outros (1–3)'],
+    [gest.csat[3] + gest.csat[4], gest.csat[0] + gest.csat[1] + gest.csat[2]],
+    ['#22c55e', '#e5e7eb'], 'top'
+  );
+
+  /* Performance charts */
+  renderCountChart('cht-perf-enf', dayLabels(perf), [
+    { label: 'Finalizações', data: perf.daily.map(d => d.fin),
+      borderColor: '#a855f7', backgroundColor: 'rgba(168,85,247,0.15)',
+      fill: true, tension: 0.3, pointRadius: 2, borderWidth: 2, spanGaps: true },
+    { label: 'Entrantes', data: perf.daily.map(d => d.ent),
+      borderColor: '#f59e0b', backgroundColor: 'transparent',
+      fill: false, tension: 0.3, pointRadius: 2, borderWidth: 2, borderDash: [4, 3], spanGaps: true },
+  ]);
+  renderBarChart('cht-perf-csatbar', ['1★', '2★', '3★', '4★', '5★'], perf.csat, CSAT_COLORS);
+  renderDoughnutChart('cht-perf-csatdnt',
+    ['Satisfeitos (4+5)', 'Outros (1–3)'],
+    [perf.csat[3] + perf.csat[4], perf.csat[0] + perf.csat[1] + perf.csat[2]],
+    ['#22c55e', '#e5e7eb']
+  );
+  renderBarChart('cht-perf-cesbar', ['1★', '2★', '3★', '4★', '5★'], perf.ces, CSAT_COLORS);
+  renderDoughnutChart('cht-perf-cesdnt',
+    ['Fácil (4+5)', 'Difícil (1–3)'],
+    [perf.ces[3] + perf.ces[4], perf.ces[0] + perf.ces[1] + perf.ces[2]],
+    ['#06b6d4', '#e5e7eb']
+  );
+  renderDoughnutChart('cht-perf-agua',
+    ['Aguardando cliente', 'Aguardando suporte'],
+    [perf.aguardando.cliente, perf.aguardando.suporte],
+    ['#3b82f6', '#f59e0b']
+  );
+  renderDoughnutChart('cht-perf-atrib',
+    ['Atribuído', 'Sem fila'],
+    [perf.atribuicoes.atribuido, perf.atribuicoes.livre],
+    ['#4aba3d', '#e5e7eb']
+  );
 }

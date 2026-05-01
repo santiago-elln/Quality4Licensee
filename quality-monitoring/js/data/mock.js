@@ -314,6 +314,142 @@ export const OBSERVATIONS = [
     text: 'Informou nome de outro licenciado durante o atendimento — Crítico',
     authorId: 'user-anal-1', date: '2026-03-15', attendanceId: '260310534698',
   },
+  /* ── Team-1 (Alpha) – extras ─── */
+  {
+    id: 'obs-6', monitoriaId: null, colaboradorId: 'collab-3',
+    type: 'E', criteria: 'Procedimento Correto',
+    text: 'Não seguiu o protocolo de escalonamento para clientes executivos',
+    authorId: 'user-anal-1', date: '2026-04-20', attendanceId: '260310534699',
+  },
+  {
+    id: 'obs-7', monitoriaId: null, colaboradorId: 'collab-4',
+    type: 'A', criteria: 'Registro e Documentação',
+    text: 'Documentação exemplar — histórico completo e tabulação correta',
+    authorId: 'user-sup-1', date: '2026-04-18', attendanceId: '260310534700',
+  },
+  {
+    id: 'obs-8', monitoriaId: null, colaboradorId: 'collab-2',
+    type: 'O', criteria: 'Comunicação e Linguagem',
+    text: 'Pode melhorar a empatia verbal ao lidar com reclamações de executivos',
+    authorId: 'user-anal-1', date: '2026-04-22', attendanceId: '260310534701',
+  },
+  {
+    id: 'obs-9', monitoriaId: null, colaboradorId: 'collab-3',
+    type: 'E', criteria: 'Conhecimento e Assertividade',
+    text: 'Informação sobre prazo de ativação estava incorreta para plano executivo',
+    authorId: 'user-anal-1', date: '2026-04-25', attendanceId: '260310534702',
+  },
+  /* ── Team-2 (Beta) ─── */
+  {
+    id: 'obs-10', monitoriaId: null, colaboradorId: 'collab-5',
+    type: 'E', criteria: 'Eficiência e Tempo',
+    text: 'TMA acima de 45 min — não utilizou histórico antes de responder',
+    authorId: 'user-anal-1', date: '2026-04-12', attendanceId: '382710934501',
+  },
+  {
+    id: 'obs-11', monitoriaId: null, colaboradorId: 'collab-5',
+    type: 'E', criteria: 'Comunicação e Linguagem',
+    text: 'Utilizou jargões técnicos sem explicação para o cliente gestor',
+    authorId: 'user-anal-1', date: '2026-04-18', attendanceId: '382710934502',
+  },
+  {
+    id: 'obs-12', monitoriaId: null, colaboradorId: 'collab-6',
+    type: 'A', criteria: 'Procedimento Correto',
+    text: 'Seguiu todos os passos do protocolo — demanda resolvida no primeiro contato',
+    authorId: 'user-sup-2', date: '2026-04-10', attendanceId: '382710934503',
+  },
+  {
+    id: 'obs-13', monitoriaId: null, colaboradorId: 'collab-6',
+    type: 'O', criteria: 'Eficiência e Tempo',
+    text: 'Pode reduzir TMA usando templates de resposta para demandas recorrentes',
+    authorId: 'user-anal-1', date: '2026-04-15', attendanceId: '382710934504',
+  },
+  {
+    id: 'obs-14', monitoriaId: null, colaboradorId: 'collab-7',
+    type: 'E', criteria: 'Eficiência e Tempo',
+    text: 'Encerrou sem aguardar confirmação do cliente — FCR comprometido',
+    authorId: 'user-anal-1', date: '2026-04-20', attendanceId: '382710934505',
+  },
+  {
+    id: 'obs-15', monitoriaId: null, colaboradorId: 'collab-7',
+    type: 'A', criteria: 'Registro e Documentação',
+    text: 'Registro com alto nível de detalhe — histórico facilita recontatos',
+    authorId: 'user-sup-2', date: '2026-04-23', attendanceId: '382710934506',
+  },
+  /* ── Team-3 (Gamma) ─── */
+  {
+    id: 'obs-16', monitoriaId: null, colaboradorId: 'collab-8',
+    type: 'E', criteria: 'Comunicação e Linguagem',
+    text: 'Pouca empatia com cliente insatisfeito — contribuiu para CSAT ≤ 3',
+    authorId: 'user-anal-1', date: '2026-04-08', attendanceId: '472810934601',
+  },
+  {
+    id: 'obs-17', monitoriaId: null, colaboradorId: 'collab-8',
+    type: 'E', criteria: 'Conhecimento e Assertividade',
+    text: 'Repassou prazo de ativação incorreto — cliente recontactou na sequência',
+    authorId: 'user-anal-1', date: '2026-04-14', attendanceId: '472810934602',
+  },
+  {
+    id: 'obs-18', monitoriaId: null, colaboradorId: 'collab-8',
+    type: 'O', criteria: 'Comunicação e Linguagem',
+    text: 'Trabalhar escuta ativa e validação do entendimento ao longo do atendimento',
+    authorId: 'user-sup-3', date: '2026-04-16', attendanceId: '472810934603',
+  },
+  {
+    id: 'obs-19', monitoriaId: null, colaboradorId: 'collab-9',
+    type: 'A', criteria: 'Eficiência e Tempo',
+    text: 'FCR excelente — resolveu a demanda em 18 min, abaixo da média da equipe',
+    authorId: 'user-anal-1', date: '2026-04-11', attendanceId: '472810934604',
+  },
+  {
+    id: 'obs-20', monitoriaId: null, colaboradorId: 'collab-9',
+    type: 'E', criteria: 'Comunicação e Linguagem',
+    text: 'Tom inadequado ao lidar com cliente insatisfeito — escalonamento necessário',
+    authorId: 'user-sup-3', date: '2026-04-22', attendanceId: '472810934605',
+  },
+  {
+    id: 'obs-21', monitoriaId: null, colaboradorId: 'collab-8',
+    type: 'O', criteria: 'Registro e Documentação',
+    text: 'Melhorar tabulação — demandas categorizadas incorretamente em 3 atendimentos',
+    authorId: 'user-anal-1', date: '2026-04-26', attendanceId: '472810934606',
+  },
+  /* ── Team-4 (Delta – Performance) ─── */
+  {
+    id: 'obs-22', monitoriaId: null, colaboradorId: 'collab-10',
+    type: 'E', criteria: 'Conversão',
+    text: 'Não utilizou argumentos de valor ao apresentar produto a lead de influenciador',
+    authorId: 'user-anal-1', date: '2026-04-09', attendanceId: '592810934701',
+  },
+  {
+    id: 'obs-23', monitoriaId: null, colaboradorId: 'collab-10',
+    type: 'A', criteria: 'Eficiência de Backlog',
+    text: 'Cleared 12 leads atrasados no dia, superando a meta diária individual',
+    authorId: 'user-sup-4', date: '2026-04-17', attendanceId: '592810934702',
+  },
+  {
+    id: 'obs-24', monitoriaId: null, colaboradorId: 'collab-11',
+    type: 'O', criteria: 'Conversão',
+    text: 'Explorar gatilhos de escassez e prova social ao abordar parceiros B2B',
+    authorId: 'user-anal-1', date: '2026-04-13', attendanceId: '592810934703',
+  },
+  {
+    id: 'obs-25', monitoriaId: null, colaboradorId: 'collab-11',
+    type: 'A', criteria: 'Comunicação e Linguagem',
+    text: 'Rapport excelente com parceiro B2B — abordagem consultiva e profissional',
+    authorId: 'user-anal-1', date: '2026-04-19', attendanceId: '592810934704',
+  },
+  {
+    id: 'obs-26', monitoriaId: null, colaboradorId: 'collab-11',
+    type: 'E', criteria: 'Conversão',
+    text: 'Perdeu oportunidade de upsell durante onboarding de novo parceiro',
+    authorId: 'user-sup-4', date: '2026-04-25', attendanceId: '592810934705',
+  },
+  {
+    id: 'obs-27', monitoriaId: null, colaboradorId: 'collab-10',
+    type: 'O', criteria: 'Eficiência de Backlog',
+    text: 'Priorizar leads mais quentes ao abrir o backlog — aumenta conversão marginal',
+    authorId: 'user-anal-1', date: '2026-04-28', attendanceId: '592810934706',
+  },
 ];
 
 /* ── AI Insights mock ─────────────────────── */
@@ -376,6 +512,194 @@ export const TEAM_GOALS = {
   'team-3': { minScore: 36, qualityTarget: 80 },
   'team-4': { minScore: 36, qualityTarget: 80 },
 };
+
+/* ── Queue stats generator (telephony) ──────── */
+function mkSeeded(str) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  let s = h || 1;
+  return function () {
+    s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+    return (s >>> 0) / 0xffffffff;
+  };
+}
+
+const QUEUE_BASE = {
+  'team-1': { ent: 38, tme: 72,  tma: 385, tmpr: 48 },
+  'team-2': { ent: 63, tme: 138, tma: 545, tmpr: 90 },
+  'team-3': { ent: 55, tme: 118, tma: 510, tmpr: 82 },
+};
+export const QUEUE_HOURS = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20];
+
+export function getQueueStats(teamIds, month) {
+  const r = mkSeeded(teamIds.join(',') + '|' + month);
+  const [yr, mo] = month.split('-').map(Number);
+  const numDays = new Date(yr, mo, 0).getDate();
+
+  const bases = teamIds.map(id => QUEUE_BASE[id] ?? { ent: 40, tme: 100, tma: 450, tmpr: 70 });
+  const base = {
+    ent:  bases.reduce((s, b) => s + b.ent, 0),
+    tme:  Math.round(bases.reduce((s, b) => s + b.tme, 0)  / bases.length),
+    tma:  Math.round(bases.reduce((s, b) => s + b.tma, 0)  / bases.length),
+    tmpr: Math.round(bases.reduce((s, b) => s + b.tmpr, 0) / bases.length),
+  };
+
+  /* Daily series — also record the activity factor per day */
+  const daily = Array.from({ length: numDays }, (_, i) => {
+    const d = new Date(yr, mo - 1, i + 1);
+    const wknd = d.getDay() === 0 || d.getDay() === 6;
+    const f = wknd ? 0.12 + r() * 0.10 : 0.80 + r() * 0.34;
+    const ent = Math.max(0, Math.round(base.ent * f));
+    const fin = Math.round(ent * (0.87 + r() * 0.10));
+    return { day: i + 1, ent, fin, f };   /* f = activity factor 0-1 */
+  });
+
+  /* ── 2-D matrices [hourIdx][dayIdx] ─────────── */
+  const rTme  = mkSeeded(teamIds.join(',') + '|' + month + '|tme');
+  const rTma  = mkSeeded(teamIds.join(',') + '|' + month + '|tma');
+  const rTmpr = mkSeeded(teamIds.join(',') + '|' + month + '|tmpr');
+
+  const tmeMatrix = QUEUE_HOURS.map(h => {
+    const pk = (h >= 9 && h <= 11) || (h >= 14 && h <= 16);
+    const hf = pk ? 1.50 : 0.58;
+    return daily.map(d =>
+      d.ent === 0 ? 0
+        : Math.max(5, Math.round(base.tme * hf * (0.72 + d.f * 0.38) + (rTme() - .5) * 38))
+    );
+  });
+
+  const tmaMatrix = QUEUE_HOURS.map(h => {
+    /* TMA slightly higher in morning and after-lunch transitions */
+    const hf = (h === 8 || h === 13) ? 1.15 : 1.0;
+    return daily.map(d =>
+      d.ent === 0 ? 0
+        : Math.max(60, Math.round(base.tma * hf * (0.86 + d.f * 0.22) + (rTma() - .5) * 110))
+    );
+  });
+
+  const tmprMatrix = QUEUE_HOURS.map(h => {
+    const pk = (h >= 9 && h <= 11) || (h >= 14 && h <= 16);
+    const hf = pk ? 1.38 : 0.70;
+    return daily.map(d =>
+      d.ent === 0 ? 0
+        : Math.max(5, Math.round(base.tmpr * hf * (0.80 + d.f * 0.26) + (rTmpr() - .5) * 22))
+    );
+  });
+
+  /* 1-D averages (business hours only) for summary cards */
+  const avg1D = (matrix) => {
+    const vals = matrix.flat().filter(v => v > 0);
+    return vals.length ? Math.round(vals.reduce((s, v) => s + v, 0) / vals.length) : 0;
+  };
+
+  const csatN = daily.reduce((s, d) => s + Math.round(d.fin * 0.53), 0);
+  const c5 = Math.round(csatN * (0.41 + r() * 0.09));
+  const c4 = Math.round(csatN * (0.27 + r() * 0.07));
+  const c3 = Math.round(csatN * (0.13 + r() * 0.04));
+  const c2 = Math.round(csatN * (0.06 + r() * 0.02));
+  const c1 = Math.max(0, csatN - c5 - c4 - c3 - c2);
+
+  const totFin = daily.reduce((s, d) => s + d.fin, 0);
+  const rTab   = mkSeeded(teamIds.join(',') + '|' + month + '|tab');
+  const tagRows = EXEC_GEST_TAGS.map(t => ({
+    tag: t.tag,
+    n: Math.max(1, Math.round(t.base * (base.ent / 38) * (0.70 + rTab() * 0.55))),
+  })).sort((a, b) => b.n - a.n);
+  const tagSum = tagRows.reduce((s, t) => s + t.n, 0);
+  tagRows.forEach(t => { t.pct = tagSum > 0 ? Math.round(t.n / tagSum * 100) : 0; });
+
+  return {
+    daily, numDays,
+    tmeMatrix, tmaMatrix, tmprMatrix,
+    csat: [c1, c2, c3, c4, c5], csatTotal: csatN,
+    tabulacoes: { total: Math.round(totFin * 0.68), top10: tagRows },
+    totals: {
+      ent:  daily.reduce((s, d) => s + d.ent, 0),
+      fin:  totFin,
+      tme:  avg1D(tmeMatrix),
+      tma:  avg1D(tmaMatrix),
+      tmpr: avg1D(tmprMatrix),
+    },
+  };
+}
+
+/* ── Telephony call-tagging taxonomy ────────── */
+const EXEC_GEST_TAGS = [
+  { tag: 'Contrato (envio/atualização) - Licenciados', base: 42 },
+  { tag: 'Boleto (envio/atualização) - Licenciados',   base: 36 },
+  { tag: 'Devolutiva',                                  base: 30 },
+  { tag: 'Ativação de cliente: validação em atraso',    base: 25 },
+  { tag: 'Correção de contrato',                        base: 20 },
+  { tag: 'Cancelamento de cliente',                     base: 16 },
+  { tag: 'Repasse - Conexão Expansão',                  base: 14 },
+  { tag: 'Bug no app - Licenciados',                    base: 12 },
+  { tag: 'Contrato Redigido Instalador - Conexão Placas', base: 10 },
+  { tag: 'Débito: informações sobre faturas em aberto', base: 9  },
+];
+
+/* ── Performance channel stats generator ────── */
+const PERF_TAGS = [
+  { tag: 'Onboarding B2B',   base: 45 },
+  { tag: 'Conv. Influencer', base: 38 },
+  { tag: 'Suporte Técnico',  base: 29 },
+  { tag: 'Renovação',        base: 22 },
+  { tag: 'Cancelamento',     base: 18 },
+];
+
+export function getPerfStats(month) {
+  const r = mkSeeded('perf|' + month);
+  const [yr, mo] = month.split('-').map(Number);
+  const days = new Date(yr, mo, 0).getDate();
+
+  const daily = Array.from({ length: days }, (_, i) => {
+    const d = new Date(yr, mo - 1, i + 1);
+    const wknd = d.getDay() === 0 || d.getDay() === 6;
+    const f = wknd ? 0.28 + r() * 0.18 : 0.75 + r() * 0.42;
+    const ent = Math.max(0, Math.round(22 * f));
+    const fin = Math.round(ent * (0.85 + r() * 0.12));
+    return { day: i + 1, ent, fin };
+  });
+
+  const totEnt = daily.reduce((s, d) => s + d.ent, 0);
+  const totFin = daily.reduce((s, d) => s + d.fin, 0);
+
+  const csatN = Math.round(totFin * 0.6);
+  const c5c = Math.round(csatN * (0.44 + r() * 0.08));
+  const c4c = Math.round(csatN * (0.28 + r() * 0.07));
+  const c3c = Math.round(csatN * (0.13 + r() * 0.04));
+  const c2c = Math.round(csatN * (0.07 + r() * 0.02));
+  const c1c = Math.max(0, csatN - c5c - c4c - c3c - c2c);
+
+  const cesN = csatN;
+  const e5c = Math.round(cesN * (0.37 + r() * 0.08));
+  const e4c = Math.round(cesN * (0.29 + r() * 0.07));
+  const e3c = Math.round(cesN * (0.17 + r() * 0.04));
+  const e2c = Math.round(cesN * (0.10 + r() * 0.02));
+  const e1c = Math.max(0, cesN - e5c - e4c - e3c - e2c);
+
+  const atrib = Math.round(totFin * (0.82 + r() * 0.1));
+  const top5 = PERF_TAGS.map(t => ({ tag: t.tag, n: Math.round(t.base * (0.78 + r() * 0.44)) }))
+    .sort((a, b) => b.n - a.n);
+
+  return {
+    daily, totEnt, totFin,
+    eficiencia:  Math.round(80 + r() * 14),
+    conversao: {
+      influencers: Math.round(28 + r() * 10),
+      lebes:       Math.round(21 + r() * 10),
+    },
+    tmpr: Math.round(175 + r() * 85),
+    tmr:  Math.round(3400 + r() * 2600),
+    csat: [c1c, c2c, c3c, c4c, c5c], csatTotal: csatN,
+    ces:  [e1c, e2c, e3c, e4c, e5c],  cesTotal:  cesN,
+    aguardando:   { cliente: Math.round(38 + r() * 22), suporte: Math.round(22 + r() * 18) },
+    atribuicoes:  { atribuido: atrib, livre: Math.max(0, totFin - atrib) },
+    tabulacoes:   { total: totFin, top5 },
+  };
+}
 
 /* ── Helpers ─────────────────────────────── */
 export function getUser(id) { return MOCK_USERS.find(u => u.id === id); }

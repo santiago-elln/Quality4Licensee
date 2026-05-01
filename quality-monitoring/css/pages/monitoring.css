@@ -2,10 +2,6 @@
    MONITORING — Formulário de nova monitoria
    ============================================================ */
 
-.monitoring-page {
-  /* Two-column layout — no max-width restriction */
-}
-
 /* ── Two-column layout ─────────────────────── */
 .monitoring-layout {
   display: grid;
@@ -241,7 +237,6 @@
   padding: 0;
 }
 .monitoring-header__back:hover { color: var(--brand-green-dark); }
-.monitoring-header__title-wrap {}
 .monitoring-header__title {
   font-size: var(--text-xl);
   font-weight: var(--weight-bold);

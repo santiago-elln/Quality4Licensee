@@ -106,7 +106,6 @@
   flex-shrink: 0;
   border: 2px solid rgba(74,186,61,0.4);
 }
-.cc-card__info {}
 .cc-card__name {
   font-size: var(--text-md);
   font-weight: var(--weight-bold);
@@ -157,7 +156,6 @@
   border-bottom: 1px solid rgba(255,255,255,0.06);
   align-items: center;
 }
-.cc-metrics {}
 .cc-metric-row {
   display: flex;
   align-items: center;

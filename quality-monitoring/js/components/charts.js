@@ -170,7 +170,7 @@ export function renderRadarChart(canvasId, labels, datasets) {
 }
 
 /* ── Doughnut / Pie Chart ─────────────────── */
-export function renderDoughnutChart(canvasId, labels, data, colors) {
+export function renderDoughnutChart(canvasId, labels, data, colors, legendPosition = 'right') {
   return create(canvasId, {
     type: 'doughnut',
     data: {
@@ -183,7 +183,7 @@ export function renderDoughnutChart(canvasId, labels, data, colors) {
       cutout: '60%',
       plugins: {
         legend: {
-          position: 'right',
+          position: legendPosition,
           labels: { font: { size: 11 }, boxWidth: 12, padding: 12 },
         },
         tooltip: {
@@ -194,6 +194,68 @@ export function renderDoughnutChart(canvasId, labels, data, colors) {
               return ` ${ctx.label}: ${ctx.parsed} (${pct}%)`;
             },
           },
+        },
+      },
+    },
+  });
+}
+
+/* ── Vertical Bar Chart (CSAT / CES grades) ── */
+export function renderBarChart(canvasId, labels, data, colors) {
+  return create(canvasId, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        data,
+        backgroundColor: colors,
+        borderRadius: 5,
+        borderSkipped: false,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { font: { size: 13, weight: '700' }, color: '#374151' },
+        },
+        y: {
+          beginAtZero: true,
+          grid: { color: 'rgba(0,0,0,0.06)' },
+          ticks: { font: { size: 10 }, color: '#9ca3af' },
+        },
+      },
+    },
+  });
+}
+
+/* ── Count Line/Area Chart (ENT vs FIN) ──── */
+export function renderCountChart(canvasId, labels, datasets) {
+  return create(canvasId, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: true, labels: { font: { size: 11 }, boxWidth: 12 } },
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: {
+            font: { size: 10 }, color: '#9ca3af', maxRotation: 0,
+            callback: (_, i) => (i % 4 === 0 ? labels[i] : ''),
+          },
+        },
+        y: {
+          beginAtZero: true,
+          grid: { color: 'rgba(0,0,0,0.05)' },
+          ticks: { font: { size: 10 }, color: '#9ca3af' },
         },
       },
     },

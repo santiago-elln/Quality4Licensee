@@ -90,7 +90,6 @@ function setupPeriodRefresh() {
   setOnPeriodChange(() => {
     const route = getCurrentRoute();
     const map = {
-      dashboard:     DashboardPage,
       colaboradores: ColabPage,
       registros:     RegistrosPage,
     };
