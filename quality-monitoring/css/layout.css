@@ -10,12 +10,13 @@
   grid-template-areas:
     "header header"
     "sidebar main";
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
-/* ── SLOT WRAPPERS — grid-area must be on direct grid children ── */
-#header-slot  { grid-area: header; }
-#sidebar-slot { grid-area: sidebar; }
+/* ── SLOT WRAPPERS — transparent to grid; children carry grid-area ── */
+#header-slot,
+#sidebar-slot { display: contents; }
 
 /* ── HEADER ─────────────────────────────────── */
 .app-header {
@@ -165,9 +166,6 @@
   display: flex;
   flex-direction: column;
   overflow-y: auto;
-  position: sticky;
-  top: var(--header-height);
-  height: calc(100vh - var(--header-height));
 }
 
 .sidebar-user {
@@ -279,7 +277,7 @@
 /* ── MAIN CONTENT ─────────────────────────────── */
 .app-main {
   grid-area: main;
-  padding: var(--space-6);
+  padding: var(--space-4) var(--space-6);
   overflow-y: auto;
   min-width: 0;
 }
@@ -329,7 +327,7 @@
     grid-template-areas: "header" "main";
   }
   .app-sidebar { display: none; }
-  .app-main { padding: var(--space-4); }
+  .app-main { padding: var(--space-1); }
   .content-row.cols-2,
   .content-row.cols-3,
   .content-row.cols-4,

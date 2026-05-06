@@ -63,6 +63,23 @@
   --result-zero:          #6b7280;
   --result-zero-bg:       #f3f4f6;
 
+  /* --- Heatmap green scale (13 steps, level 0 = lowest activity) ---
+       Empty cells (v = 0) use --bg-surface-2, not this scale.
+       Darkest tone is capped at #0B6514 (L ≈ 22%).               */
+  --hm-0:  rgba(255, 255, 255, 0.50); /* white 50% — barely-there  */
+  --hm-1:  #f0fdf4;                   /* green-50  — cream          */
+  --hm-2:  #dcfce7;                   /* green-100                  */
+  --hm-3:  #bbf7d0;                   /* green-200                  */
+  --hm-4:  #86efac;                   /* green-300                  */
+  --hm-5:  #4ade80;                   /* green-400                  */
+  --hm-6:  #22c55e;                   /* green-500                  */
+  --hm-7:  #16a34a;                   /* green-600  L ≈ 38%         */
+  --hm-8:  #15803d;                   /* green-700  L ≈ 30%         */
+  --hm-9:  #166534;                   /* green-800  L ≈ 24%         */
+  --hm-10: #136131;                   /* custom     L ≈ 22.5%       */
+  --hm-11: #0f6220;                   /* custom     L ≈ 22.2%       */
+  --hm-12: #0B6514;                   /* max dark   L ≈ 22%         */
+
   /* --- Observation Types --- */
   --obs-G:  #6b7280;   /* Genérico */
   --obs-O:  #3b82f6;   /* Operador */

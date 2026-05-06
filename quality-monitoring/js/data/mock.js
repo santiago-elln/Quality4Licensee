@@ -558,9 +558,19 @@ export function getQueueStats(teamIds, month) {
   });
 
   /* ── 2-D matrices [hourIdx][dayIdx] ─────────── */
+  const rEnt  = mkSeeded(teamIds.join(',') + '|' + month + '|ent');
   const rTme  = mkSeeded(teamIds.join(',') + '|' + month + '|tme');
   const rTma  = mkSeeded(teamIds.join(',') + '|' + month + '|tma');
   const rTmpr = mkSeeded(teamIds.join(',') + '|' + month + '|tmpr');
+
+  const entMatrix = QUEUE_HOURS.map(h => {
+    const pk = (h >= 9 && h <= 11) || (h >= 14 && h <= 16);
+    const hf = pk ? 1.6 : 0.55;
+    return daily.map(d =>
+      d.ent === 0 ? 0
+        : Math.max(0, Math.round((d.ent / QUEUE_HOURS.length) * hf * (0.6 + rEnt() * 0.8)))
+    );
+  });
 
   const tmeMatrix = QUEUE_HOURS.map(h => {
     const pk = (h >= 9 && h <= 11) || (h >= 14 && h <= 16);
@@ -613,7 +623,7 @@ export function getQueueStats(teamIds, month) {
 
   return {
     daily, numDays,
-    tmeMatrix, tmaMatrix, tmprMatrix,
+    entMatrix, tmeMatrix, tmaMatrix, tmprMatrix,
     csat: [c1, c2, c3, c4, c5], csatTotal: csatN,
     tabulacoes: { total: Math.round(totFin * 0.68), top10: tagRows },
     totals: {
@@ -680,12 +690,23 @@ export function getPerfStats(month) {
   const e2c = Math.round(cesN * (0.10 + r() * 0.02));
   const e1c = Math.max(0, cesN - e5c - e4c - e3c - e2c);
 
+  const rEntP = mkSeeded('perf|' + month + '|ent');
+  const entMatrix = QUEUE_HOURS.map(h => {
+    const pk = (h >= 9 && h <= 11) || (h >= 14 && h <= 16);
+    const hf = pk ? 1.6 : 0.55;
+    return daily.map(d =>
+      d.ent === 0 ? 0
+        : Math.max(0, Math.round((d.ent / QUEUE_HOURS.length) * hf * (0.6 + rEntP() * 0.8)))
+    );
+  });
+
   const atrib = Math.round(totFin * (0.82 + r() * 0.1));
+  const taggedTotal = Math.round(totFin * (0.65 + r() * 0.20));
   const top5 = PERF_TAGS.map(t => ({ tag: t.tag, n: Math.round(t.base * (0.78 + r() * 0.44)) }))
     .sort((a, b) => b.n - a.n);
 
   return {
-    daily, totEnt, totFin,
+    daily, numDays: days, entMatrix, totEnt, totFin,
     eficiencia:  Math.round(80 + r() * 14),
     conversao: {
       influencers: Math.round(28 + r() * 10),
@@ -695,9 +716,11 @@ export function getPerfStats(month) {
     tmr:  Math.round(3400 + r() * 2600),
     csat: [c1c, c2c, c3c, c4c, c5c], csatTotal: csatN,
     ces:  [e1c, e2c, e3c, e4c, e5c],  cesTotal:  cesN,
+    backlog:       Math.round(12 + r() * 48),
+    oldestWaitSec: Math.round(180 + r() * 2820),
     aguardando:   { cliente: Math.round(38 + r() * 22), suporte: Math.round(22 + r() * 18) },
     atribuicoes:  { atribuido: atrib, livre: Math.max(0, totFin - atrib) },
-    tabulacoes:   { total: totFin, top5 },
+    tabulacoes:   { total: taggedTotal, top5 },
   };
 }
 

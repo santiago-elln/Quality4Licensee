@@ -170,7 +170,24 @@ export function renderRadarChart(canvasId, labels, datasets) {
 }
 
 /* ── Doughnut / Pie Chart ─────────────────── */
-export function renderDoughnutChart(canvasId, labels, data, colors, legendPosition = 'right') {
+export function renderDoughnutChart(canvasId, labels, data, colors, legendPosition = 'top', centerLabel = null) {
+  const centerTextPlugin = {
+    id: 'centerText',
+    afterDraw(chart) {
+      if (!chart.options.plugins.centerText?.label) return;
+      const { ctx, chartArea: { top, bottom, left, right } } = chart;
+      const cx = (left + right) / 2;
+      const cy = (top + bottom) / 2;
+      ctx.save();
+      ctx.font = 'bold 15px Inter, "Segoe UI", sans-serif';
+      ctx.fillStyle = '#111827';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(chart.options.plugins.centerText.label, cx, cy);
+      ctx.restore();
+    },
+  };
+
   return create(canvasId, {
     type: 'doughnut',
     data: {
@@ -180,7 +197,7 @@ export function renderDoughnutChart(canvasId, labels, data, colors, legendPositi
     options: {
       responsive: true,
       maintainAspectRatio: true,
-      cutout: '60%',
+      cutout: '62%',
       plugins: {
         legend: {
           position: legendPosition,
@@ -191,17 +208,41 @@ export function renderDoughnutChart(canvasId, labels, data, colors, legendPositi
             label: ctx => {
               const total = ctx.dataset.data.reduce((a, b) => a + b, 0);
               const pct = ((ctx.parsed / total) * 100).toFixed(1);
-              return ` ${ctx.label}: ${ctx.parsed} (${pct}%)`;
+              return ` ${ctx.label}: ${ctx.parsed.toLocaleString('pt-BR')} (${pct}%)`;
             },
           },
         },
+        centerText: centerLabel ? { label: centerLabel } : false,
       },
     },
+    plugins: centerLabel ? [centerTextPlugin] : [],
   });
 }
 
 /* ── Vertical Bar Chart (CSAT / CES grades) ── */
 export function renderBarChart(canvasId, labels, data, colors) {
+  const dataLabelsPlugin = {
+    id: 'barDataLabels',
+    afterDatasetsDraw(chart) {
+      const { ctx } = chart;
+      chart.data.datasets.forEach((dataset, i) => {
+        const meta = chart.getDatasetMeta(i);
+        if (meta.hidden) return;
+        meta.data.forEach((bar, j) => {
+          const value = dataset.data[j];
+          if (!value) return;
+          ctx.save();
+          ctx.font = 'bold 10px Inter, "Segoe UI", sans-serif';
+          ctx.fillStyle = '#374151';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'bottom';
+          ctx.fillText(value.toLocaleString('pt-BR'), bar.x, bar.y - 3);
+          ctx.restore();
+        });
+      });
+    },
+  };
+
   return create(canvasId, {
     type: 'bar',
     data: {
@@ -216,6 +257,7 @@ export function renderBarChart(canvasId, labels, data, colors) {
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      layout: { padding: { top: 18 } },
       plugins: { legend: { display: false } },
       scales: {
         x: {
@@ -229,6 +271,7 @@ export function renderBarChart(canvasId, labels, data, colors) {
         },
       },
     },
+    plugins: [dataLabelsPlugin],
   });
 }
 
