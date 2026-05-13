@@ -49,7 +49,6 @@ export function render() {
     <div class="monitoring-page page-enter">
       <!-- Page header -->
       <div class="monitoring-header">
-        <button class="monitoring-header__back" id="btn-back">← Voltar</button>
         <div class="monitoring-header__title-wrap">
           <div class="monitoring-header__title">Monitoria de Qualidade</div>
           <div class="monitoring-header__subtitle">Registro de atendimento</div>
@@ -92,7 +91,7 @@ export function render() {
             </div>
             <div class="monitoring-number-section">
               <label class="form-label">Monitoria Nº</label>
-              <div class="monitoring-number-val">${monNum}</div>
+              <input class="monitoring-number-input" type="number" id="monitoring-number" value="${monNum}" min="1">
             </div>
           </div>
 
@@ -127,7 +126,7 @@ export function render() {
                 <div class="attendance-field__label">Avaliação CSAT</div>
                 <div class="csat-group">
                   ${[1,2,3,4,5].map(v =>
-                    `<label class="csat-option">
+                    `<label class="csat-option csat-option--${v}">
                       <input type="radio" name="csat" value="${v}" ${v===5?'checked':''}>
                       <span class="csat-label">${v}</span>
                     </label>`
@@ -183,11 +182,16 @@ export function render() {
             <img src="assets/images/logo-light.png" alt="iGreen">
           </div>
 
-          <div style="display:flex;justify-content:flex-end;gap:var(--space-3);margin-top:var(--space-4)">
-            <button class="btn btn--secondary btn--lg" id="btn-cancel-form">Cancelar</button>
-            <button class="btn btn--primary btn--lg" id="btn-save-monitoring">
-              💾 Salvar Monitoria
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:var(--space-3);margin-top:var(--space-4)">
+            <button class="btn btn--danger btn--lg btn--ghost" id="btn-reset-monitoring" title="Zerar todas as respostas da monitoria">
+              ⚠️ Zerar Monitoria
             </button>
+            <div style="display:flex;gap:var(--space-3)">
+              <button class="btn btn--secondary btn--lg" id="btn-cancel-form">Cancelar</button>
+              <button class="btn btn--primary btn--lg" id="btn-save-monitoring">
+                💾 Salvar Monitoria
+              </button>
+            </div>
           </div>
         </div>
 
@@ -195,7 +199,7 @@ export function render() {
         <div class="monitoring-sidebar">
 
           <!-- AI Summary -->
-          <div class="ai-summary-panel" id="ai-summary-panel">
+          <!-- <div class="ai-summary-panel" id="ai-summary-panel">
             <div class="ai-summary-panel__header" id="ai-summary-toggle">
               <span class="ai-summary-panel__title">✨ Resumo IA — Histórico do Colaborador</span>
               <span class="ai-summary-panel__toggle">▾</span>
@@ -206,7 +210,7 @@ export function render() {
                 <div>Selecione um colaborador para ver o resumo das monitorias anteriores</div>
               </div>
             </div>
-          </div>
+          </div> -->
 
           <!-- Observations Chat Sidebar -->
           <div class="obs-sidebar-panel">
@@ -225,10 +229,10 @@ export function render() {
                 <div class="form-group" style="margin-bottom:0">
                   <label class="form-label">Tipo <span class="required">*</span></label>
                   <select class="form-select" id="obs-type">
-                    <option value="G">Genérico (G)</option>
-                    <option value="O">Operador (O)</option>
-                    <option value="A">Analítico (A)</option>
-                    <option value="E">Erro (E)</option>
+                    <option value="G">Genérico</option>
+                    <option value="O">Oportunidade</option>
+                    <option value="A">Acerto</option>
+                    <option value="E">Erro</option>
                   </select>
                 </div>
               </div>
@@ -264,6 +268,44 @@ export function render() {
           </div>
         </div><!-- /sidebar -->
       </div><!-- /monitoring-layout -->
+
+      <!-- Modal: Zerar Monitoria -->
+      <div class="modal-overlay modal-overlay--hidden" id="modal-reset-overlay"></div>
+      <div class="modal modal--hidden" id="modal-reset-monitoring">
+        <div class="modal__header">
+          <div class="modal__title">Zerar Monitoria</div>
+          <button class="modal__close" id="btn-modal-close">✕</button>
+        </div>
+        <div class="modal__body">
+          <div class="form-group">
+            <label class="form-label">Tipo de Erro <span class="required">*</span></label>
+            <select class="form-select" id="reset-error-type">
+              <option value="">— selecione —</option>
+              <option value="Violação de norma legal">Violação de norma legal</option>
+              <option value="Falha em procedimento interno">Falha em procedimento interno</option>
+              <option value="Informação incorreta">Informação incorreta</option>
+              <option value="Conduta inadequada">Conduta inadequada</option>
+              <option value="Outro">Outro</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Protocolo do Atendimento</label>
+            <input class="form-input" id="reset-protocol" placeholder="ex: 123456" type="text">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Data e Horário da Violação</label>
+            <input class="form-input" id="reset-datetime" type="datetime-local">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Justificativa <span class="required">*</span></label>
+            <textarea class="form-textarea" id="reset-justification" placeholder="Explique o motivo do zeramento..."></textarea>
+          </div>
+        </div>
+        <div class="modal__footer">
+          <button class="btn btn--secondary" id="btn-reset-cancel">Cancelar</button>
+          <button class="btn btn--danger" id="btn-reset-confirm">Confirmar Zeramento</button>
+        </div>
+      </div>
     </div>
   `;
 }
@@ -274,7 +316,8 @@ function renderCategory(cat) {
     <div class="eval-item" id="row-${item.id}">
       <input type="checkbox" class="eval-item__check" data-cat="${cat.id}"
              data-pts="${item.pts}" data-item="${item.id}" id="chk-${item.id}" checked>
-      <label class="eval-item__name" for="chk-${item.id}">${item.name}</label>
+      <label class="eval-item__name eval-item__criterion" for="chk-${item.id}"
+             data-description="${item.description || ''}">${item.name}</label>
       <div class="eval-item__pts">
         <span class="eval-item__pts-val earned" id="pts-${item.id}">${item.pts}</span>
         <span class="eval-item__pts-max">/${item.pts}</span>
@@ -488,6 +531,68 @@ export function init() {
   /* Back / cancel */
   document.getElementById('btn-back')?.addEventListener('click', () => history.back());
   document.getElementById('btn-cancel-form')?.addEventListener('click', () => navigate('dashboard'));
+
+  /* Reset monitoring */
+  document.getElementById('btn-reset-monitoring')?.addEventListener('click', () => {
+    // Desmarcar todos os checkboxes
+    document.querySelectorAll('.eval-item__check').forEach(chk => {
+      chk.checked = false;
+    });
+    recalcScores();
+
+    // Delay de 1 segundo antes de abrir o modal
+    setTimeout(() => {
+      openResetModal();
+    }, 1000);
+  });
+
+  // Modal: Abrir/Fechar
+  function openResetModal() {
+    const modal = document.getElementById('modal-reset-monitoring');
+    if (modal) modal.classList.remove('modal--hidden');
+  }
+  function closeResetModal() {
+    const modal = document.getElementById('modal-reset-monitoring');
+    if (modal) modal.classList.add('modal--hidden');
+    // Limpar campos
+    document.getElementById('reset-error-type').value = '';
+    document.getElementById('reset-protocol').value = '';
+    document.getElementById('reset-datetime').value = '';
+    document.getElementById('reset-justification').value = '';
+  }
+
+  // Fechar modal ao clicar no X ou no overlay
+  document.getElementById('btn-modal-close')?.addEventListener('click', closeResetModal);
+  document.getElementById('modal-reset-overlay')?.addEventListener('click', closeResetModal);
+
+  // Botão Cancelar
+  document.getElementById('btn-reset-cancel')?.addEventListener('click', closeResetModal);
+
+  // Botão Confirmar
+  document.getElementById('btn-reset-confirm')?.addEventListener('click', () => {
+    const errorType = document.getElementById('reset-error-type')?.value.trim();
+    const justification = document.getElementById('reset-justification')?.value.trim();
+
+    if (!errorType) {
+      toast.warning('Atenção', 'Selecione o tipo de erro.');
+      return;
+    }
+    if (!justification) {
+      toast.warning('Atenção', 'Preencha a justificativa.');
+      return;
+    }
+
+    // TODO: Implementar salvamento do zeramento
+    console.log('Zeramento confirmado:', {
+      errorType,
+      protocol: document.getElementById('reset-protocol')?.value || '',
+      datetime: document.getElementById('reset-datetime')?.value || '',
+      justification,
+    });
+
+    toast.success('Monitoria zerada', 'O zeramento foi registrado com sucesso.');
+    closeResetModal();
+  });
 
   /* Timer Δt */
   const calcDelta = () => {

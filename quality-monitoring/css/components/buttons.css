@@ -77,6 +77,13 @@
   background: var(--bg-surface-3);
   color: var(--text-primary);
 }
+.btn--ghost.btn--danger {
+  color: var(--color-danger);
+}
+.btn--ghost.btn--danger:hover {
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+}
 
 .btn--danger {
   background: var(--color-danger);

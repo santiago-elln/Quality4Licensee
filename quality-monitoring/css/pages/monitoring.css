@@ -355,10 +355,10 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  align-items: flex-end;
+  align-items: center;
 }
-.monitoring-number-section .form-label { text-align: right; }
-.monitoring-number-val {
+.monitoring-number-section .form-label { text-align: center; }
+.monitoring-number-input {
   font-size: var(--text-2xl);
   font-weight: var(--weight-black);
   color: var(--text-primary);
@@ -368,6 +368,13 @@
   padding: var(--space-2) var(--space-4);
   min-width: 80px;
   text-align: center;
+  outline: none;
+  transition: all var(--transition-fast);
+  font-family: monospace;
+}
+.monitoring-number-input:focus {
+  border-color: var(--brand-green);
+  box-shadow: 0 0 0 2px rgba(74,186,61,0.15);
 }
 
 /* Attendance info section */
@@ -414,7 +421,7 @@
   color: var(--text-secondary);
   font-weight: var(--weight-semibold);
   margin-bottom: var(--space-2);
-  text-align: right;
+  text-align: center;
 }
 .attendance-field__value {
   background: var(--brand-green-muted);
@@ -504,7 +511,7 @@
 .eval-section.collapsed .eval-section__toggle { transform: rotate(-90deg); }
 .eval-section.collapsed .eval-items { display: none; }
 
-.eval-items { padding: var(--space-2) 0; }
+.eval-items { padding: var(--space-2) 0; overflow: visible; }
 
 .eval-item {
   display: grid;
@@ -546,6 +553,38 @@
 .eval-item__name {
   font-size: var(--text-sm);
   color: var(--text-primary);
+}
+.eval-item__criterion {
+  position: relative;
+  cursor: help;
+  transition: color var(--transition-fast);
+}
+.eval-item__criterion:hover {
+  color: var(--brand-green-dark);
+}
+.eval-item__criterion::after {
+  content: attr(data-description);
+  position: fixed;
+  background: var(--brand-dark);
+  color: var(--text-inverse);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  line-height: var(--leading-relaxed);
+  white-space: normal;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-fast);
+  z-index: 10000;
+  border: 1px solid var(--border-dark);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  word-wrap: break-word;
+  max-width: 320px;
+  display: none;
+}
+.eval-item__criterion:hover::after {
+  display: block;
+  opacity: 1;
 }
 .eval-item__pts {
   display: flex;
@@ -630,7 +669,7 @@
   display: grid;
   grid-template-columns: 1fr 50px 1fr;
   align-items: center;
-  padding: var(--space-3) var(--space-5);
+  padding: var(--space-5);
   border-bottom: 1px solid var(--border-light);
   gap: var(--space-4);
 }
@@ -796,4 +835,9 @@
 .form-logo-mark img {
   height: 28px;
   opacity: 0.35;
+}
+
+/* Reset monitoring button */
+#btn-reset-monitoring {
+  font-weight: var(--weight-bold);
 }

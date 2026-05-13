@@ -26,11 +26,12 @@ export function renderSidebar() {
   const myTeam = `
     <div class="sidebar-nav__section">
       <div class="sidebar-nav__label">Minha Equipe</div>
-      ${item('dashboard',  '📊', 'Painel',       'dashboard')}
-      ${item('comparacao', '📈', 'Comparativo',  'comparacao')}
+      ${item('dashboard',      '📊', 'Painel',                   'dashboard')}
+      ${item('nova-monitoria', '📝', 'Nova Monitoria',           'nova-monitoria')}
     </div>`;
 
-  const dados  = '';
+  const dados = '';
+
   const config = '';
 
   return `

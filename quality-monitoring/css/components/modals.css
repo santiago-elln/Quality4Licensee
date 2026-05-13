@@ -127,20 +127,9 @@
   padding: var(--space-6);
 }
 
-/* Confirm dialog */
-.confirm-dialog {
-  max-width: 400px;
+.modal--hidden {
+  display: none !important;
 }
-.confirm-dialog .modal__body {
-  text-align: center;
-  padding: var(--space-8) var(--space-6);
-}
-.confirm-icon {
-  font-size: 3rem;
-  margin-bottom: var(--space-4);
-}
-.confirm-message {
-  font-size: var(--text-base);
-  color: var(--text-secondary);
-  line-height: var(--leading-relaxed);
+.modal-overlay--hidden {
+  display: none !important;
 }
