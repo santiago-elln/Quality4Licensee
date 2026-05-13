@@ -1,0 +1,157 @@
+/* ============================================================
+   COMPARAÇÃO — Comparativo de períodos
+   ============================================================ */
+
+/* ── Controls panel ─────────────────────────── */
+.comp-controls {
+  margin-bottom: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+}
+.comp-controls__row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+}
+.comp-ctrl-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.comp-ctrl-label {
+  font-size: 9px;
+  font-weight: var(--weight-bold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-tertiary);
+}
+.comp-ctrl-select,
+.comp-ctrl-date {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-primary);
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-dark);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  outline: none;
+  cursor: pointer;
+  transition: border-color var(--transition-fast);
+  height: 36px;
+}
+.comp-ctrl-select:focus,
+.comp-ctrl-date:focus { border-color: var(--brand-green); }
+.comp-ctrl-select { min-width: 210px; }
+.comp-date-range {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.comp-date-sep {
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+.comp-apply-btn {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+  background: var(--brand-green);
+  color: var(--brand-dark);
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-5);
+  height: 36px;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.comp-apply-btn:hover { background: var(--brand-green-light); }
+
+/* ── Info strip ─────────────────────────────── */
+.comp-info-strip {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border-light);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  flex-wrap: wrap;
+  min-height: 20px;
+}
+.comp-info__dept {
+  font-weight: var(--weight-bold);
+  color: var(--text-primary);
+}
+.comp-info__sep { color: var(--border-dark); }
+.comp-info__period strong {
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+.comp-info__days {
+  margin-left: var(--space-1);
+  color: var(--text-tertiary);
+}
+.comp-info__days::before { content: '('; }
+.comp-info__days::after  { content: ')'; }
+
+/* ── ENT/FIN line chart ─────────────────────── */
+.comp-chart-body {
+  height: 380px;
+  padding: var(--space-4) var(--space-2) var(--space-3);
+}
+
+/* ── Metric heatmap panels — 2-column grid ───── */
+#comp-heatmaps {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+.comp-hm-panel { overflow: hidden; }
+
+/* Side card: [heatmap flex:1] [card fixed-width] */
+.comp-hm-body {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-3);
+}
+.comp-hm-body .hm2d-wrap { flex: 1; min-width: 0; overflow-x: auto; }
+.comp-hm-card {
+  flex-shrink: 0;
+  width: 68px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+}
+.comp-hm-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.comp-hm-stat__label {
+  font-size: 9px;
+  font-weight: var(--weight-bold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+}
+.comp-hm-stat__val {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-black);
+  color: var(--text-primary);
+  text-align: center;
+  line-height: 1.1;
+}
+.comp-hm-stat__val--better { color: var(--color-success); }
+.comp-hm-stat__val--worse  { color: var(--color-danger); }
+

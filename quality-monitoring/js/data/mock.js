@@ -757,6 +757,83 @@ export function getMonitorias(filters = {}) {
   return list.sort((a, b) => b.date.localeCompare(a.date));
 }
 
+/* ── Per-hour metric bases for TMR (Performance reply time) ─ */
+const TMR_BASE = { 'team-1': 165, 'team-2': 230, 'team-3': 210 };
+
+/* ── Daily ENT/FIN generator (any date) ─────── */
+export function getDailyStats(teamIds, dateStr) {
+  // dateStr: 'YYYY-MM-DD' — noon anchor avoids DST edge-cases
+  const key = teamIds.slice().sort().join(',') + '|' + dateStr;
+  const r = mkSeeded(key);
+
+  const bases = teamIds.map(id => QUEUE_BASE[id] ?? { ent: 40, tme: 100, tma: 450, tmpr: 70 });
+  const baseEnt = bases.reduce((s, b) => s + b.ent, 0);
+
+  const date = new Date(dateStr + 'T12:00:00');
+  const dow = date.getDay();
+  const isWeekend = dow === 0 || dow === 6;
+
+  const f = isWeekend ? 0.12 + r() * 0.10 : 0.80 + r() * 0.34;
+  const ent = Math.max(0, Math.round(baseEnt * f));
+  const fin = Math.round(ent * (0.87 + r() * 0.10));
+
+  return { ent, fin };
+}
+
+/* ── Daily per-hour metric generator (any date) ─ */
+export function getDailyHeatmapStats(teamIds, dateStr) {
+  const sorted = teamIds.slice().sort().join(',');
+
+  // Separate seeder per metric so values are independent
+  const rF    = mkSeeded(sorted + '|' + dateStr + '|f');
+  const rTme  = mkSeeded(sorted + '|' + dateStr + '|tme');
+  const rTma  = mkSeeded(sorted + '|' + dateStr + '|tma');
+  const rTmpr = mkSeeded(sorted + '|' + dateStr + '|tmpr');
+  const rTmr  = mkSeeded(sorted + '|' + dateStr + '|tmr');
+
+  const bases = teamIds.map(id => QUEUE_BASE[id] ?? { ent: 40, tme: 100, tma: 450, tmpr: 70 });
+  const avg = arr => Math.round(arr.reduce((s, v) => s + v, 0) / arr.length);
+  const base = {
+    tme:  avg(bases.map(b => b.tme)),
+    tma:  avg(bases.map(b => b.tma)),
+    tmpr: avg(bases.map(b => b.tmpr)),
+    tmr:  avg(teamIds.map(id => TMR_BASE[id] ?? 200)),
+  };
+
+  const date = new Date(dateStr + 'T12:00:00');
+  const dow = date.getDay();
+  const isWeekend = dow === 0 || dow === 6;
+  const f = isWeekend ? 0.12 + rF() * 0.10 : 0.80 + rF() * 0.34;
+  const zero = isWeekend && f < 0.15;
+
+  // Mirror exactly the formulas in getQueueStats for each metric
+  const tme = QUEUE_HOURS.map(h => {
+    if (zero) return 0;
+    const pk = (h >= 9 && h <= 11) || (h >= 14 && h <= 16);
+    return Math.max(5, Math.round(base.tme * (pk ? 1.50 : 0.58) * (0.72 + f * 0.38) + (rTme() - 0.5) * 38));
+  });
+
+  const tma = QUEUE_HOURS.map(h => {
+    if (zero) return 0;
+    const hf = (h === 8 || h === 13) ? 1.15 : 1.0;
+    return Math.max(60, Math.round(base.tma * hf * (0.86 + f * 0.22) + (rTma() - 0.5) * 110));
+  });
+
+  const tmpr = QUEUE_HOURS.map(h => {
+    if (zero) return 0;
+    const pk = (h >= 9 && h <= 11) || (h >= 14 && h <= 16);
+    return Math.max(5, Math.round(base.tmpr * (pk ? 1.38 : 0.70) * (0.80 + f * 0.26) + (rTmpr() - 0.5) * 22));
+  });
+
+  const tmr = QUEUE_HOURS.map(h => {
+    if (zero) return 0;
+    const pk = (h >= 9 && h <= 11) || (h >= 14 && h <= 16);
+    return Math.max(5, Math.round(base.tmr * (pk ? 1.35 : 0.65) * (0.78 + f * 0.28) + (rTmr() - 0.5) * 28));
+  });
+
+  return { tme, tma, tmpr, tmr };
+}
+
 export function getMonitoriaStats(monitorias) {
   if (!monitorias.length) return { count: 0, avgScore: 0, avgPct: 0, ptsLost: 0, zeroed: 0, dist: {} };
   const count  = monitorias.length;

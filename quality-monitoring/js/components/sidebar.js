@@ -26,24 +26,12 @@ export function renderSidebar() {
   const myTeam = `
     <div class="sidebar-nav__section">
       <div class="sidebar-nav__label">Minha Equipe</div>
-      ${item('dashboard',     '📊', 'Painel',          'dashboard')}
-      ${lvl >= ACCESS_LEVELS.SUPERVISOR ? item('colaboradores', '👥', 'Colaboradores', 'colaboradores') : ''}
-      ${lvl >= ACCESS_LEVELS.SUPERVISOR ? item('consulta',      '🔍', 'Consulta por Associado', 'consulta') : ''}
+      ${item('dashboard',  '📊', 'Painel',       'dashboard')}
+      ${item('comparacao', '📈', 'Comparativo',  'comparacao')}
     </div>`;
 
-  const dados = `
-    <div class="sidebar-nav__section">
-      <div class="sidebar-nav__label">Dados</div>
-      ${item('registros', '📋', 'Registros', 'registros')}
-      ${lvl >= ACCESS_LEVELS.ANALISTA ? item('ai-analise', '🤖', 'Análise por IA', 'ai-analise') : ''}
-    </div>`;
-
-  const config = lvl >= ACCESS_LEVELS.SUPERVISOR ? `
-    <div class="sidebar-nav__section">
-      <div class="sidebar-nav__label">Configurações</div>
-      ${item('metas', '🎯', 'Metas da Equipe', 'metas')}
-      ${lvl >= ACCESS_LEVELS.GESTOR ? item('admin', '⚙️', 'Administração', 'admin') : ''}
-    </div>` : '';
+  const dados  = '';
+  const config = '';
 
   return `
     <aside class="app-sidebar">

@@ -21,6 +21,7 @@ import * as RegistrosPage      from './pages/registros.js';
 import * as AIPage             from './pages/ai-analise.js';
 import * as AdminPage          from './pages/admin.js';
 import * as MetasPage          from './pages/metas.js';
+import * as ComparacaoPage     from './pages/comparacao.js';
 
 const app = document.getElementById('app');
 
@@ -72,7 +73,7 @@ function registerRoutes() {
     ['ai-analise',     AIPage],
     ['admin',          AdminPage],
     ['metas',          MetasPage],
-    ['comparativo',    DashboardPage],
+    ['comparacao',     ComparacaoPage],
   ];
 
   protected_.forEach(([route, page]) => {
