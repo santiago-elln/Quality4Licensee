@@ -1,15 +1,10 @@
 /* ============================================================
    CONFIG — Variáveis de ambiente e configuração do Supabase
-   ATENÇÃO: Preencha as chaves abaixo antes de conectar ao banco.
    ============================================================ */
 
-export const SUPABASE_URL     = 'https://SEU-PROJETO.supabase.co';
-export const SUPABASE_ANON_KEY = 'sua-anon-key-aqui';
+export const SUPABASE_URL      = 'https://yhvymqzanixmnmciljmu.supabase.co';
+export const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlodnltcXphbml4bW5tY2lsam11Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc5NTQzMjMsImV4cCI6MjA5MzUzMDMyM30.cVxWiJxhuUfL9cmACIgdaRf6rryuBxNJf3YItSSK0lo';
 
-/* Modo de dados: 'mock' usa dados locais, 'supabase' usa o banco real */
-export const DATA_MODE = 'mock';
-
-/* Configuração geral da aplicação */
 export const APP_CONFIG = {
   name:    'iGreen Performance',
   version: '1.0.0',

@@ -4,11 +4,8 @@
 import { getCurrentUser } from '../auth.js';
 import { navigate } from '../router.js';
 import { toast } from '../components/toast.js';
-import {
-  getCollabsForViewer, EVAL_CATEGORIES, ANALYTICAL_CRITERIA,
-  TOTAL_MAX_PTS, MONITORIAS, getMonitorias, getMonitoriaStats,
-  OBSERVATIONS,
-} from '../data/mock.js';
+import { EVAL_CATEGORIES, ANALYTICAL_CRITERIA, TOTAL_MAX_PTS } from '../data/config.js';
+import { supabase } from '../supabase.js';
 import {
   formatHHMMSS, parseHHMMSS, resultBand, scoreColor, formatDate,
 } from '../utils/formatters.js';
@@ -19,8 +16,8 @@ let _selectedCollabId = null;
 
 export function render() {
   const user   = getCurrentUser();
-  const collabs = getCollabsForViewer(user).filter(c => c.role === 'colaborador');
-  const monNum  = MONITORIAS.length + 1;
+  const collabs = [];
+  const monNum  = 1;
 
   const collabOpts = collabs.map(c =>
     `<option value="${c.id}">${c.name}</option>`
@@ -270,40 +267,41 @@ export function render() {
       </div><!-- /monitoring-layout -->
 
       <!-- Modal: Zerar Monitoria -->
-      <div class="modal-overlay modal-overlay--hidden" id="modal-reset-overlay"></div>
-      <div class="modal modal--hidden" id="modal-reset-monitoring">
-        <div class="modal__header">
-          <div class="modal__title">Zerar Monitoria</div>
-          <button class="modal__close" id="btn-modal-close">✕</button>
-        </div>
-        <div class="modal__body">
-          <div class="form-group">
-            <label class="form-label">Tipo de Erro <span class="required">*</span></label>
-            <select class="form-select" id="reset-error-type">
-              <option value="">— selecione —</option>
-              <option value="Violação de norma legal">Violação de norma legal</option>
-              <option value="Falha em procedimento interno">Falha em procedimento interno</option>
-              <option value="Informação incorreta">Informação incorreta</option>
-              <option value="Conduta inadequada">Conduta inadequada</option>
-              <option value="Outro">Outro</option>
-            </select>
+      <div class="modal-overlay modal-overlay--hidden" id="modal-reset-overlay">
+        <div class="modal" id="modal-reset-monitoring">
+          <div class="modal__header">
+            <div class="modal__title">Zerar Monitoria</div>
+            <button class="modal__close" id="btn-modal-close">✕</button>
           </div>
-          <div class="form-group">
-            <label class="form-label">Protocolo do Atendimento</label>
-            <input class="form-input" id="reset-protocol" placeholder="ex: 123456" type="text">
+          <div class="modal__body">
+            <div class="form-group">
+              <label class="form-label">Tipo de Erro <span class="required">*</span></label>
+              <select class="form-select" id="reset-error-type">
+                <option value="">— selecione —</option>
+                <option value="Violação de norma legal">Violação de norma legal</option>
+                <option value="Falha em procedimento interno">Falha em procedimento interno</option>
+                <option value="Informação incorreta">Informação incorreta</option>
+                <option value="Conduta inadequada">Conduta inadequada</option>
+                <option value="Outro">Outro</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Protocolo do Atendimento</label>
+              <input class="form-input" id="reset-protocol" placeholder="ex: 123456" type="text">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Data e Horário da Violação</label>
+              <input class="form-input" id="reset-datetime" type="datetime-local">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Justificativa <span class="required">*</span></label>
+              <textarea class="form-textarea" id="reset-justification" placeholder="Explique o motivo do zeramento..."></textarea>
+            </div>
           </div>
-          <div class="form-group">
-            <label class="form-label">Data e Horário da Violação</label>
-            <input class="form-input" id="reset-datetime" type="datetime-local">
+          <div class="modal__footer">
+            <button class="btn btn--secondary" id="btn-reset-cancel">Cancelar</button>
+            <button class="btn btn--danger" id="btn-reset-confirm">Confirmar Zeramento</button>
           </div>
-          <div class="form-group">
-            <label class="form-label">Justificativa <span class="required">*</span></label>
-            <textarea class="form-textarea" id="reset-justification" placeholder="Explique o motivo do zeramento..."></textarea>
-          </div>
-        </div>
-        <div class="modal__footer">
-          <button class="btn btn--secondary" id="btn-reset-cancel">Cancelar</button>
-          <button class="btn btn--danger" id="btn-reset-confirm">Confirmar Zeramento</button>
         </div>
       </div>
     </div>
@@ -388,103 +386,6 @@ function recalcScores() {
   }
 }
 
-/* ── AI Summary panel ─────────────────────── */
-function renderAiSummary(collabId) {
-  const body = document.getElementById('ai-summary-body');
-  if (!body) return;
-
-  const mons  = getMonitorias({ colaboradorId: collabId });
-  if (!mons.length) {
-    body.innerHTML = `
-      <div class="ai-summary-placeholder">
-        <div class="ai-summary-placeholder__icon">📋</div>
-        <div>Nenhuma monitoria anterior encontrada para este colaborador.</div>
-      </div>`;
-    return;
-  }
-
-  const stats = getMonitoriaStats(mons);
-  const last3 = mons.slice(0, 3);
-  const trend = mons.length >= 2
-    ? mons[0].pct - mons[1].pct
-    : null;
-
-  /* Category avgs */
-  const catData = EVAL_CATEGORIES.map(cat => {
-    const earned = mons.length
-      ? mons.reduce((s, m) =>
-          s + cat.items.reduce((cs, item) =>
-            cs + (m.checkedItems?.[item.id] ? item.pts : 0), 0), 0) / mons.length
-      : 0;
-    return { name: cat.name.split(' ')[0], pct: Math.round((earned / cat.totalPts) * 100) };
-  });
-
-  const weakest  = [...catData].sort((a,b) => a.pct - b.pct)[0];
-  const strongest = [...catData].sort((a,b) => b.pct - a.pct)[0];
-
-  const recentObs = OBSERVATIONS.filter(o => o.colaboradorId === collabId).slice(0, 3);
-
-  const trendStr = trend === null ? ''
-    : trend > 0 ? `<span style="color:var(--brand-green)">↑ +${trend}% vs. ant.</span>`
-    : trend < 0 ? `<span style="color:#ff6b6b">↓ ${trend}% vs. ant.</span>`
-    : `<span style="color:rgba(255,255,255,.4)">→ Estável</span>`;
-
-  body.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-3);gap:var(--space-2);flex-wrap:wrap">
-      <span style="font-size:var(--text-xs);color:rgba(255,255,255,.35)">${mons.length} monitorias registradas</span>
-      <span style="font-size:var(--text-xs)">${trendStr}</span>
-    </div>
-
-    <div class="ai-metric-row">
-      <span class="ai-metric-row__label">Aproveit. médio</span>
-      <span class="ai-metric-row__val" style="color:${scoreColor(stats.avgPct)}">${stats.avgPct}%</span>
-    </div>
-    <div class="ai-metric-row">
-      <span class="ai-metric-row__label">Pts perdidos/mon</span>
-      <span class="ai-metric-row__val">${stats.ptsLost}</span>
-    </div>
-    <div class="ai-metric-row">
-      <span class="ai-metric-row__label">Zeradas</span>
-      <span class="ai-metric-row__val" style="color:${stats.zeroed>0?'#ff6b6b':'inherit'}">${stats.zeroed}</span>
-    </div>
-    <div class="ai-metric-row">
-      <span class="ai-metric-row__label">Mais forte</span>
-      <span class="ai-metric-row__val" style="color:var(--brand-green)">${strongest.name} (${strongest.pct}%)</span>
-    </div>
-    <div class="ai-metric-row">
-      <span class="ai-metric-row__label">Mais fraco</span>
-      <span class="ai-metric-row__val" style="color:#ffd166">${weakest.name} (${weakest.pct}%)</span>
-    </div>
-
-    <div style="margin-top:var(--space-3);padding-top:var(--space-3);border-top:1px solid rgba(255,255,255,.08)">
-      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:rgba(255,255,255,.35);margin-bottom:var(--space-2)">Últimas 3 monitorias</div>
-      ${last3.map(m => `
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:var(--text-xs)">
-          <span style="color:rgba(255,255,255,.45)">${formatDate(m.date)}</span>
-          <div style="display:flex;align-items:center;gap:var(--space-2)">
-            <div style="width:50px;height:4px;background:rgba(255,255,255,.1);border-radius:99px;overflow:hidden">
-              <div style="width:${m.pct}%;height:100%;background:${scoreColor(m.pct)};border-radius:99px"></div>
-            </div>
-            <span style="color:${scoreColor(m.pct)};font-weight:700">${m.pct}%</span>
-          </div>
-        </div>
-      `).join('')}
-    </div>
-
-    ${recentObs.length ? `
-      <div style="margin-top:var(--space-3);padding-top:var(--space-3);border-top:1px solid rgba(255,255,255,.08)">
-        <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:rgba(255,255,255,.35);margin-bottom:var(--space-2)">Observações recentes</div>
-        ${recentObs.map(o => `
-          <div style="display:flex;gap:var(--space-2);padding:3px 0;font-size:var(--text-xs);color:rgba(255,255,255,.5)">
-            <span class="obs-type-tag obs-type-tag--${o.type}" style="flex-shrink:0">${o.type}</span>
-            <span style="line-height:var(--leading-snug)">${o.text}</span>
-          </div>
-        `).join('')}
-      </div>
-    ` : ''}
-  `;
-}
-
 /* ── Observation chat render ───────────────── */
 function renderObsChat() {
   const area  = document.getElementById('obs-chat');
@@ -522,15 +423,28 @@ function renderObsChat() {
   });
 }
 
-export function init() {
+export async function init() {
   _observations = [];
   _selectedCollabId = null;
   recalcScores();
   renderObsChat();
 
+  /* Populate collaborator select from Supabase */
+  const { data: employees } = await supabase
+    .from('employees')
+    .select('id, name')
+    .eq('active', true)
+    .order('name');
+
+  const sel = document.getElementById('collab-select');
+  if (sel && employees?.length) {
+    sel.innerHTML = `<option value="">— selecione —</option>` +
+      employees.map(e => `<option value="${e.id}">${e.name}</option>`).join('');
+  }
+
   /* Back / cancel */
   document.getElementById('btn-back')?.addEventListener('click', () => history.back());
-  document.getElementById('btn-cancel-form')?.addEventListener('click', () => navigate('dashboard'));
+  document.getElementById('btn-cancel-form')?.addEventListener('click', () => navigate('nova-monitoria'));
 
   /* Reset monitoring */
   document.getElementById('btn-reset-monitoring')?.addEventListener('click', () => {
@@ -547,23 +461,25 @@ export function init() {
   });
 
   // Modal: Abrir/Fechar
+  const appMain = document.querySelector('.app-main');
+
   function openResetModal() {
-    const modal = document.getElementById('modal-reset-monitoring');
-    if (modal) modal.classList.remove('modal--hidden');
+    document.getElementById('modal-reset-overlay')?.classList.remove('modal-overlay--hidden');
+    if (appMain) appMain.style.overflowY = 'hidden';
   }
   function closeResetModal() {
-    const modal = document.getElementById('modal-reset-monitoring');
-    if (modal) modal.classList.add('modal--hidden');
-    // Limpar campos
+    document.getElementById('modal-reset-overlay')?.classList.add('modal-overlay--hidden');
+    if (appMain) appMain.style.overflowY = '';
     document.getElementById('reset-error-type').value = '';
     document.getElementById('reset-protocol').value = '';
     document.getElementById('reset-datetime').value = '';
     document.getElementById('reset-justification').value = '';
   }
 
-  // Fechar modal ao clicar no X ou no overlay
-  document.getElementById('btn-modal-close')?.addEventListener('click', closeResetModal);
+  // Fechar ao clicar no overlay (fundo); clique dentro do modal não propaga
   document.getElementById('modal-reset-overlay')?.addEventListener('click', closeResetModal);
+  document.getElementById('modal-reset-monitoring')?.addEventListener('click', e => e.stopPropagation());
+  document.getElementById('btn-modal-close')?.addEventListener('click', closeResetModal);
 
   // Botão Cancelar
   document.getElementById('btn-reset-cancel')?.addEventListener('click', closeResetModal);
@@ -604,7 +520,7 @@ export function init() {
   document.getElementById('timer-msg1')?.addEventListener('input', calcDelta);
   document.getElementById('timer-msg2')?.addEventListener('input', calcDelta);
 
-  /* Collaborator select → avatar + AI summary */
+  /* Collaborator select → avatar */
   document.getElementById('collab-select')?.addEventListener('change', e => {
     _selectedCollabId = e.target.value || null;
     const av = document.getElementById('collab-avatar');
@@ -614,21 +530,6 @@ export function init() {
         ? sel.text.trim().split(' ').slice(0,2).map(w => w[0]).join('').toUpperCase()
         : '?';
     }
-    if (_selectedCollabId) {
-      renderAiSummary(_selectedCollabId);
-    } else {
-      const body = document.getElementById('ai-summary-body');
-      if (body) body.innerHTML = `
-        <div class="ai-summary-placeholder">
-          <div class="ai-summary-placeholder__icon">🤖</div>
-          <div>Selecione um colaborador para ver o resumo das monitorias anteriores</div>
-        </div>`;
-    }
-  });
-
-  /* AI summary collapse */
-  document.getElementById('ai-summary-toggle')?.addEventListener('click', () => {
-    document.getElementById('ai-summary-panel')?.classList.toggle('collapsed');
   });
 
   /* Eval checkboxes */

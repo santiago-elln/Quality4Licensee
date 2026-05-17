@@ -1,39 +1,11 @@
 /* ============================================================
    LOGIN PAGE
    ============================================================ */
-import { login, loginAs } from '../auth.js';
+import { login } from '../auth.js';
 import { navigate } from '../router.js';
 import { toast } from '../components/toast.js';
-import { MOCK_USERS } from '../data/mock.js';
-import { getInitials } from '../utils/formatters.js';
-import { roleClass } from '../utils/access.js';
-
-const DEMO_USERS = [
-  'user-coord-1',
-  'user-gest-1',
-  'user-anal-1',
-  'user-sup-1',
-  'collab-1',
-];
 
 export function render() {
-  const demoTiles = DEMO_USERS.map(id => {
-    const u = MOCK_USERS.find(x => x.id === id);
-    if (!u) return '';
-    return `
-      <button class="demo-user-btn" data-user-id="${u.id}">
-        <div class="demo-user-btn__avatar">${getInitials(u.name)}</div>
-        <div>
-          <div class="demo-user-btn__name">${u.name}</div>
-          <div class="demo-user-btn__role">${u.title ?? u.role}</div>
-        </div>
-        <span class="role-badge role-badge--${roleClass(u.role)}" style="margin-left:auto">
-          ${u.role}
-        </span>
-      </button>
-    `;
-  }).join('');
-
   return `
     <div class="auth-page">
       <!-- Brand Panel -->
@@ -94,12 +66,6 @@ export function render() {
               Entrar
             </button>
           </form>
-
-          <div class="auth-divider">ou entre como usuário de demonstração</div>
-
-          <div class="demo-users">
-            ${demoTiles}
-          </div>
         </div>
       </div>
     </div>
@@ -107,8 +73,8 @@ export function render() {
 }
 
 export function init() {
-  const form = document.getElementById('login-form');
-  const errorEl = document.getElementById('auth-error');
+  const form     = document.getElementById('login-form');
+  const errorEl  = document.getElementById('auth-error');
   const errorMsg = document.getElementById('auth-error-msg');
 
   form?.addEventListener('submit', async e => {
@@ -117,28 +83,20 @@ export function init() {
     const pass  = document.getElementById('login-password').value;
     const btn   = document.getElementById('btn-login');
 
-    btn.disabled = true;
+    btn.disabled    = true;
     btn.textContent = 'Entrando…';
     errorEl.classList.add('hidden');
 
     try {
       await login(email, pass);
       toast.success('Bem-vindo!', 'Login realizado com sucesso.');
-      navigate('dashboard');
+      navigate('nova-monitoria');
     } catch (err) {
       errorEl.classList.remove('hidden');
       errorMsg.textContent = err.message;
     } finally {
-      btn.disabled = false;
+      btn.disabled    = false;
       btn.textContent = 'Entrar';
     }
-  });
-
-  document.querySelectorAll('.demo-user-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      loginAs(btn.dataset.userId);
-      toast.success('Bem-vindo!', 'Acesso de demonstração ativado.');
-      navigate('dashboard');
-    });
   });
 }

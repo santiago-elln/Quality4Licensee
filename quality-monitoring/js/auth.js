@@ -1,9 +1,7 @@
 /* ============================================================
-   AUTH — Estado de autenticação (mock; trocar por Supabase)
+   AUTH — Autenticação via Supabase
    ============================================================ */
-import { MOCK_USERS } from './data/mock.js';
-
-const SESSION_KEY = 'igreen_session';
+import { supabase } from './supabase.js';
 
 let _currentUser = null;
 const _listeners = new Set();
@@ -25,41 +23,56 @@ export function isAuthenticated() {
   return _currentUser !== null;
 }
 
-/* Tenta restaurar sessão salva no sessionStorage */
-export function restoreSession() {
-  try {
-    const raw = sessionStorage.getItem(SESSION_KEY);
-    if (raw) {
-      _currentUser = JSON.parse(raw);
-      return true;
-    }
-  } catch { /* noop */ }
-  return false;
+/* Busca perfil do banco e compõe o objeto de usuário da aplicação */
+async function buildUser(authUser) {
+  if (!authUser) return null;
+
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('name, role, access_level, department_id')
+    .eq('id', authUser.id)
+    .single();
+
+  return {
+    id:           authUser.id,
+    email:        authUser.email,
+    name:         profile?.name          ?? authUser.email,
+    role:         profile?.role          ?? 'supervisor',
+    accessLevel:  profile?.access_level  ?? 2,
+    departmentId: profile?.department_id ?? null,
+  };
+}
+
+/*
+  Restaura a sessão persistida no localStorage pelo Supabase e registra
+  o listener de mudanças de estado (login, logout, refresh de token).
+  Deve ser aguardado no bootstrap antes de inicializar o roteador.
+*/
+export async function restoreSession() {
+  const { data: { session } } = await supabase.auth.getSession();
+
+  if (session?.user) {
+    _currentUser = await buildUser(session.user);
+  }
+
+  supabase.auth.onAuthStateChange(async (_event, session) => {
+    _currentUser = session?.user ? await buildUser(session.user) : null;
+    notify();
+  });
+
+  return _currentUser !== null;
 }
 
 export async function login(email, password) {
-  const user = MOCK_USERS.find(
-    u => u.email.toLowerCase() === email.toLowerCase() && u.password === password
-  );
-  if (!user) throw new Error('E-mail ou senha incorretos.');
-  const { password: _, ...safeUser } = user;
-  _currentUser = safeUser;
-  sessionStorage.setItem(SESSION_KEY, JSON.stringify(safeUser));
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error) throw new Error('E-mail ou senha incorretos.');
+  _currentUser = await buildUser(data.user);
   notify();
-  return safeUser;
+  return _currentUser;
 }
 
-export function logout() {
+export async function logout() {
+  await supabase.auth.signOut();
   _currentUser = null;
-  sessionStorage.removeItem(SESSION_KEY);
-  notify();
-}
-
-export function loginAs(userId) {
-  const user = MOCK_USERS.find(u => u.id === userId);
-  if (!user) return;
-  const { password: _, ...safeUser } = user;
-  _currentUser = safeUser;
-  sessionStorage.setItem(SESSION_KEY, JSON.stringify(safeUser));
   notify();
 }
