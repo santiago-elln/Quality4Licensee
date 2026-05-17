@@ -17,6 +17,7 @@ let _supervisors = [];
 let _employees   = [];
 let _filters     = { supId: '', collabId: '', dateFrom: '', dateTo: '' };
 let _actionPlans = {};
+let _dataLoaded  = false;
 
 /* ── Role helpers ─────────────────────────── */
 function isAnalista() {
@@ -74,6 +75,9 @@ async function fetchData() {
     supabase.from('profiles').select('id, name, department_id').eq('role', 'supervisor').order('name'),
     supabase.from('employees').select('id, name, supervisor_id').eq('active', true).order('name'),
   ]);
+  if (deptRes.error) console.error('[consulta] departments:', deptRes.error);
+  if (supRes.error)  console.error('[consulta] supervisors:', supRes.error);
+  if (empRes.error)  console.error('[consulta] employees:', empRes.error);
   _departments = deptRes.data ?? [];
   _supervisors = supRes.data ?? [];
   _employees   = empRes.data ?? [];
@@ -88,6 +92,20 @@ export function render() {
     const lastDay = new Date(y, now.getMonth() + 1, 0).getDate();
     _filters.dateFrom = `${y}-${m}-01`;
     _filters.dateTo   = `${y}-${m}-${lastDay}`;
+  }
+
+  if (!_dataLoaded) {
+    return `
+      <div class="page-enter">
+        <div class="page-header">
+          <div class="page-title">Consulta por Associado</div>
+          <div class="page-subtitle">Análise detalhada de desempenho individual por período</div>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:center;height:300px;gap:12px;color:var(--text-secondary)">
+          <div class="boot-spinner" style="width:20px;height:20px;border-width:2px"></div>
+          Carregando dados…
+        </div>
+      </div>`;
   }
 
   const analista = isAnalista();
@@ -500,6 +518,24 @@ export async function init() {
     _filters.supId = _currentUser?.id ?? '';
   }
 
-  await fetchData();
+  try {
+    await fetchData();
+  } catch (err) {
+    console.error('[consulta] fetchData error:', err);
+    const main = document.getElementById('main-content');
+    if (main) {
+      main.innerHTML = `
+        <div class="page-enter" style="padding:var(--space-8)">
+          <div class="empty-state">
+            <div class="empty-state__icon">⚠</div>
+            <div class="empty-state__title">Erro ao carregar dados</div>
+            <div class="empty-state__desc">${err?.message ?? 'Tente recarregar a página.'}</div>
+          </div>
+        </div>`;
+    }
+    return;
+  }
+
+  _dataLoaded = true;
   reloadPage();
 }
