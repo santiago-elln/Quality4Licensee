@@ -4,6 +4,7 @@
 import { login } from '../auth.js';
 import { navigate } from '../router.js';
 import { toast } from '../components/toast.js';
+import { supabase } from '../supabase.js';
 
 export function render() {
   return `
@@ -97,6 +98,96 @@ export function init() {
     } finally {
       btn.disabled    = false;
       btn.textContent = 'Entrar';
+    }
+  });
+}
+
+/* ── Password reset / first-access ───────── */
+export function renderReset() {
+  return `
+    <div class="auth-page">
+      <div class="auth-brand">
+        <img src="assets/images/logo-dark.png" alt="iGreen" class="auth-brand__logo">
+        <div class="auth-brand__title">iGreen Performance</div>
+        <div class="auth-brand__subtitle">Monitorias de Qualidade</div>
+        <p class="auth-brand__tagline">
+          Registro, análise e evolução contínua do desempenho dos seus times de atendimento.
+        </p>
+      </div>
+
+      <div class="auth-form-panel">
+        <div class="auth-form-wrap">
+          <div class="auth-form-header">
+            <h1 class="auth-form-header__title">Defina sua senha</h1>
+            <p class="auth-form-header__subtitle">Crie uma senha segura para acessar sua conta</p>
+          </div>
+
+          <form class="auth-form" id="reset-form" novalidate>
+            <div id="reset-error" class="auth-error hidden">
+              <span>⚠️</span>
+              <span id="reset-error-msg"></span>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="new-password">Nova senha</label>
+              <input class="form-input" type="password" id="new-password"
+                     placeholder="Mínimo 8 caracteres" autocomplete="new-password" required>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="confirm-password">Confirmar senha</label>
+              <input class="form-input" type="password" id="confirm-password"
+                     placeholder="Repita a senha" autocomplete="new-password" required>
+            </div>
+
+            <button type="submit" class="btn btn--primary btn--lg btn--block" id="btn-reset">
+              Salvar senha
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>`;
+}
+
+export async function initReset() {
+  const form     = document.getElementById('reset-form');
+  const errorEl  = document.getElementById('reset-error');
+  const errorMsg = document.getElementById('reset-error-msg');
+
+  form?.addEventListener('submit', async e => {
+    e.preventDefault();
+    const newPass = document.getElementById('new-password').value;
+    const confirm = document.getElementById('confirm-password').value;
+    const btn     = document.getElementById('btn-reset');
+
+    errorEl.classList.add('hidden');
+
+    if (newPass.length < 8) {
+      errorEl.classList.remove('hidden');
+      errorMsg.textContent = 'A senha deve ter pelo menos 8 caracteres.';
+      return;
+    }
+    if (newPass !== confirm) {
+      errorEl.classList.remove('hidden');
+      errorMsg.textContent = 'As senhas não coincidem.';
+      return;
+    }
+
+    btn.disabled    = true;
+    btn.textContent = 'Salvando…';
+
+    try {
+      const { error } = await supabase.auth.updateUser({ password: newPass });
+      if (error) throw error;
+
+      btn.textContent = 'Senha salva! Redirecionando…';
+      await supabase.auth.signOut();
+      window.location.replace(window.location.pathname);
+    } catch (err) {
+      errorEl.classList.remove('hidden');
+      errorMsg.textContent = err.message ?? 'Erro ao definir senha. Tente novamente.';
+      btn.disabled    = false;
+      btn.textContent = 'Salvar senha';
     }
   });
 }
