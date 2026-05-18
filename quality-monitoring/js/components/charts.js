@@ -122,7 +122,7 @@ export function renderCombinedChart(canvasId, labels, barData, lineData, barLabe
 
 /* ── Radar Chart ──────────────────────────── */
 export function renderRadarChart(canvasId, labels, datasets) {
-  const colors = ['rgba(74,186,61,0.4)', 'rgba(59,130,246,0.3)', 'rgba(245,158,11,0.3)'];
+  const colors  = ['rgba(74,186,61,0.65)', 'rgba(59,130,246,0.55)', 'rgba(245,158,11,0.55)'];
   const borders = ['#4aba3d', '#3b82f6', '#f59e0b'];
 
   return create(canvasId, {
@@ -142,6 +142,7 @@ export function renderRadarChart(canvasId, labels, datasets) {
     options: {
       responsive: true,
       maintainAspectRatio: true,
+      layout: { padding: { top: 8, bottom: 8, left: 40, right: 40 } },
       plugins: {
         legend: {
           display: datasets.length > 1,
@@ -157,12 +158,13 @@ export function renderRadarChart(canvasId, labels, datasets) {
         r: {
           min: 0, max: 100,
           ticks: { display: false },
-          grid: { color: 'rgba(0,0,0,0.07)' },
+          grid: { color: 'rgba(0,0,0,0.12)' },
           pointLabels: {
             font: { size: 10 },
             color: '#6b7280',
+            padding: 6,
           },
-          angleLines: { color: 'rgba(0,0,0,0.07)' },
+          angleLines: { color: 'rgba(0,0,0,0.12)' },
         },
       },
     },
@@ -302,6 +304,155 @@ export function renderCountChart(canvasId, labels, datasets) {
         },
       },
     },
+  });
+}
+
+/* ── History Bar Chart (compact, per-bar color) ── */
+export function renderHistoryChart(canvasId, labels, data, colors) {
+  const labelsPlugin = {
+    id: 'historyLabels',
+    afterDatasetsDraw(chart) {
+      const { ctx } = chart;
+      chart.data.datasets.forEach((dataset, i) => {
+        chart.getDatasetMeta(i).data.forEach((bar, j) => {
+          const value = dataset.data[j];
+          if (value == null) return;
+          const label = `${value}%`;
+          ctx.save();
+          ctx.font = 'bold 10px Inter, "Segoe UI", sans-serif';
+          ctx.fillStyle = '#374151';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'bottom';
+          ctx.fillText(label, bar.x, bar.y - 2);
+          ctx.restore();
+        });
+      });
+    },
+  };
+
+  return create(canvasId, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        data,
+        backgroundColor: colors,
+        borderRadius: 3,
+        borderSkipped: false,
+        maxBarThickness: 64,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      layout: { padding: { top: 16, bottom: 0 } },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: 'rgba(255,255,255,0.95)',
+          titleColor: '#111827',
+          bodyColor: '#374151',
+          borderColor: '#e5e7eb',
+          borderWidth: 1,
+          callbacks: {
+            title: ctx => ctx[0].label,
+            label: ctx => ` ${ctx.parsed.y}%`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { display: false },
+          border: { display: false },
+        },
+        y: {
+          min: 0, max: 100,
+          grid: { display: false },
+          ticks: { display: false },
+          border: { display: false },
+        },
+      },
+    },
+    plugins: [labelsPlugin],
+  });
+}
+
+/* ── History Bar Chart — full (profile page) ── */
+export function renderHistoryChartFull(canvasId, labels, data, colors) {
+  const labelsPlugin = {
+    id: 'historyLabelsFull',
+    afterDatasetsDraw(chart) {
+      const { ctx } = chart;
+      chart.data.datasets.forEach((dataset, i) => {
+        chart.getDatasetMeta(i).data.forEach((bar, j) => {
+          const value = dataset.data[j];
+          if (value == null) return;
+          ctx.save();
+          ctx.font = 'bold 11px Inter, "Segoe UI", sans-serif';
+          ctx.fillStyle = '#374151';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'bottom';
+          ctx.fillText(`${value}%`, bar.x, bar.y - 4);
+          ctx.restore();
+        });
+      });
+    },
+  };
+
+  return create(canvasId, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        data,
+        backgroundColor: colors,
+        borderRadius: 4,
+        borderSkipped: false,
+        maxBarThickness: 48,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      layout: { padding: { top: 24, bottom: 0 } },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: 'rgba(255,255,255,0.95)',
+          titleColor: '#111827',
+          bodyColor: '#374151',
+          borderColor: '#e5e7eb',
+          borderWidth: 1,
+          callbacks: {
+            label: ctx => ` ${ctx.parsed.y}%`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          border: { display: false },
+          ticks: {
+            font: { size: 11 },
+            color: '#9ca3af',
+            maxRotation: 0,
+          },
+        },
+        y: {
+          min: 0, max: 100,
+          grid: { color: 'rgba(0,0,0,0.06)' },
+          border: { display: false, dash: [4, 4] },
+          ticks: {
+            font: { size: 10 },
+            color: '#9ca3af',
+            callback: v => v + '%',
+            stepSize: 25,
+          },
+        },
+      },
+    },
+    plugins: [labelsPlugin],
   });
 }
 

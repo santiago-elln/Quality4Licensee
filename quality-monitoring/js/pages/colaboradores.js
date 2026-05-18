@@ -52,10 +52,6 @@ export function render() {
                 <div class="collab-metric__lbl">Aproveit.</div>
               </div>
               <div class="collab-metric">
-                <div class="collab-metric__val">${stats.count ? stats.ptsLost : '—'}</div>
-                <div class="collab-metric__lbl">Pts perdidos</div>
-              </div>
-              <div class="collab-metric">
                 <div class="collab-metric__val">${stats.count ? stats.zeroed : '—'}</div>
                 <div class="collab-metric__lbl">Zeradas</div>
               </div>

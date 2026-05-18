@@ -3,21 +3,22 @@
    ============================================================ */
 import { getCurrentUser } from '../auth.js';
 import { supabase } from '../supabase.js';
-import { EVAL_CATEGORIES, TOTAL_MAX_PTS } from '../data/config.js';
 import {
-  formatDate, formatHHMMSS, resultBand, scoreColor, getInitials,
+  formatDate, resultBand, scoreColor, scoreColorHex, getInitials,
 } from '../utils/formatters.js';
-import { ACCESS_LEVELS } from '../utils/access.js';
-import { renderRadarChart, destroyAll } from '../components/charts.js';
+import { renderRadarChart, renderHistoryChart, destroyAll } from '../components/charts.js';
 
 /* ── Module state ─────────────────────────── */
-let _currentUser = null;
-let _departments = [];
-let _supervisors = [];
-let _employees   = [];
-let _filters     = { supId: '', collabId: '', dateFrom: '', dateTo: '' };
-let _actionPlans = {};
-let _dataLoaded  = false;
+let _currentUser  = null;
+let _departments  = [];
+let _supervisors  = [];
+let _employees    = [];
+let _evalCriteria = [];
+let _topicMap     = {};   // {topicId: {eval_criteria_id, points}}
+let _monStats     = {};   // {employeeId: computed stats}
+let _filters      = { supId: '', collabId: '', dateFrom: '', dateTo: '' };
+let _actionPlans  = {};
+let _dataLoaded   = false;
 
 /* ── Role helpers ─────────────────────────── */
 function isAnalista() {
@@ -28,23 +29,6 @@ function myDept() {
   return _departments.find(d => d.id === _currentUser?.departmentId);
 }
 
-/* ── Pure helpers ─────────────────────────── */
-function getMonitoriaStats(mons) {
-  if (!mons.length) return { count: 0, avgPct: 0, ptsLost: 0, zeroed: 0, dist: {} };
-  const count   = mons.length;
-  const avgPct  = Math.round(mons.reduce((s, m) => s + m.pct, 0) / count);
-  const ptsLost = Math.round(mons.reduce((s, m) => s + (TOTAL_MAX_PTS - m.score), 0) / count * 10) / 10;
-  const zeroed  = mons.filter(m => m.pct === 0).length;
-  const dist    = { excellent: 0, good: 0, regular: 0, critical: 0, zero: 0 };
-  mons.forEach(m => {
-    if (m.pct >= 95)      dist.excellent++;
-    else if (m.pct >= 70) dist.good++;
-    else if (m.pct >= 50) dist.regular++;
-    else if (m.pct > 0)   dist.critical++;
-    else                  dist.zero++;
-  });
-  return { count, avgPct, ptsLost, zeroed, dist };
-}
 
 function buildCollabOpts(supId, selectedId) {
   const list = supId ? _employees.filter(e => e.supervisor_id === supId) : _employees;
@@ -68,19 +52,136 @@ function applyCardVisibility() {
   if (countEl) countEl.textContent = visible;
 }
 
+/* ── Interval helpers ─────────────────────── */
+function intervalToSecs(str) {
+  if (!str) return 0;
+  const parts = str.split(':');
+  return (+parts[0]) * 3600 + (+parts[1] || 0) * 60 + (+parts[2] || 0);
+}
+function secsToHHMMSS(secs) {
+  if (!secs) return '—';
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = Math.floor(secs % 60);
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+}
+
+/* ── Compute per-employee stats from monitoring rows ── */
+function computeMonStats(monitorings) {
+  const stats = {};
+  for (const emp of _employees) {
+    stats[emp.id] = {
+      count: 0, zeroed: 0, avgPct: 0, ptsLost: 0,
+      scCount: 0, avgTma: '—', avgTmpr: '—', avgTmer: '—', avgCsat: 0,
+      radarPcts: {},   // {criteriaId: pct}
+      history:   [],   // [{date, pct}] sorted asc
+      lastDate:  null,
+    };
+  }
+
+  for (const mon of monitorings) {
+    const s = stats[mon.employee_id];
+    if (!s) continue;
+
+    s.count++;
+    if (mon.zeroed) s.zeroed++;
+
+    let earnedPts = 0;
+    let totalMax  = 0;
+    const earnedByCriteria = {};
+    const maxByCriteria    = {};
+
+    for (const ta of (mon.topic_approval ?? [])) {
+      const topic = _topicMap[ta.topic_id];
+      if (!topic) continue;
+      const cid = topic.eval_criteria_id;
+      earnedByCriteria[cid] = (earnedByCriteria[cid] ?? 0);
+      maxByCriteria[cid]    = (maxByCriteria[cid]    ?? 0) + topic.points;
+      totalMax += topic.points;
+      if (ta.obtained) { earnedByCriteria[cid] += topic.points; earnedPts += topic.points; }
+    }
+
+    const pct = totalMax > 0 ? Math.round(earnedPts / totalMax * 100) : 0;
+    s._pctSum     = (s._pctSum     ?? 0) + pct;
+    s._ptsLostSum = (s._ptsLostSum ?? 0) + (totalMax - earnedPts);
+    s.history.push({ date: mon.date, pct });
+    if (!s.lastDate || mon.date > s.lastDate) s.lastDate = mon.date;
+
+    for (const cid of Object.keys(maxByCriteria)) {
+      if (!s._radarSum) s._radarSum = {};
+      s._radarSum[cid] = s._radarSum[cid] ?? { e: 0, m: 0 };
+      s._radarSum[cid].e += earnedByCriteria[cid] ?? 0;
+      s._radarSum[cid].m += maxByCriteria[cid];
+    }
+
+    for (const sc of (mon.service_chat ?? [])) {
+      s.scCount++;
+      s._tmaSum  = (s._tmaSum  ?? 0) + intervalToSecs(sc.service_time);
+      s._tmprSum = (s._tmprSum ?? 0) + intervalToSecs(sc.first_response_time);
+      s._tmerSum = (s._tmerSum ?? 0) + intervalToSecs(sc.max_response_time);
+      if (sc.csat) { s._csatSum = (s._csatSum ?? 0) + sc.csat; s._csatN = (s._csatN ?? 0) + 1; }
+    }
+  }
+
+  for (const s of Object.values(stats)) {
+    if (s.count) {
+      s.avgPct  = Math.round(s._pctSum / s.count);
+      s.ptsLost = Math.round((s._ptsLostSum / s.count) * 10) / 10;
+    }
+    if (s.scCount) {
+      s.avgTma  = secsToHHMMSS(Math.round(s._tmaSum  / s.scCount));
+      s.avgTmpr = secsToHHMMSS(Math.round(s._tmprSum / s.scCount));
+      s.avgTmer = secsToHHMMSS(Math.round(s._tmerSum / s.scCount));
+    }
+    s.avgCsat = s._csatN ? Math.round(s._csatSum / s._csatN * 10) / 10 : 0;
+
+    for (const [cid, { e, m }] of Object.entries(s._radarSum ?? {})) {
+      s.radarPcts[cid] = m > 0 ? Math.round(e / m * 100) : 0;
+    }
+    s.history.sort((a, b) => a.date.localeCompare(b.date));
+
+    delete s._pctSum; delete s._ptsLostSum; delete s._tmaSum;
+    delete s._tmprSum; delete s._tmerSum; delete s._csatSum;
+    delete s._csatN; delete s._radarSum;
+  }
+
+  return stats;
+}
+
 /* ── Data fetch ───────────────────────────── */
 async function fetchData() {
-  const [deptRes, supRes, empRes] = await Promise.all([
+  const [deptRes, supRes, empRes, ecRes, topicRes] = await Promise.all([
     supabase.from('departments').select('id, name').order('name'),
     supabase.from('profiles').select('id, name, department_id').eq('role', 'supervisor').order('name'),
     supabase.from('employees').select('id, name, supervisor_id').eq('active', true).order('name'),
+    supabase.from('eval_criteria').select('id, name').eq('active', true),
+    supabase.from('topic').select('id, eval_criteria_id, points').eq('active', true),
   ]);
-  if (deptRes.error) console.error('[consulta] departments:', deptRes.error);
-  if (supRes.error)  console.error('[consulta] supervisors:', supRes.error);
-  if (empRes.error)  console.error('[consulta] employees:', empRes.error);
-  _departments = deptRes.data ?? [];
-  _supervisors = supRes.data ?? [];
-  _employees   = empRes.data ?? [];
+  if (deptRes.error)  console.error('[consulta] departments:', deptRes.error);
+  if (supRes.error)   console.error('[consulta] supervisors:', supRes.error);
+  if (empRes.error)   console.error('[consulta] employees:', empRes.error);
+  if (ecRes.error)    console.error('[consulta] eval_criteria:', ecRes.error);
+  if (topicRes.error) console.error('[consulta] topic:', topicRes.error);
+  _departments  = deptRes.data  ?? [];
+  _supervisors  = supRes.data   ?? [];
+  _employees    = empRes.data   ?? [];
+  _evalCriteria = ecRes.data    ?? [];
+  _topicMap     = Object.fromEntries((topicRes.data ?? []).map(t => [t.id, t]));
+}
+
+async function fetchMonitoringData() {
+  if (!_filters.dateFrom || !_filters.dateTo) return;
+  const { data, error } = await supabase
+    .from('monitoring')
+    .select(`
+      id, employee_id, date, zeroed,
+      topic_approval(topic_id, obtained),
+      service_chat(service_time, first_response_time, max_response_time, csat)
+    `)
+    .gte('date', _filters.dateFrom)
+    .lte('date', _filters.dateTo);
+  if (error) { console.error('[consulta] monitoring:', error); return; }
+  _monStats = computeMonStats(data ?? []);
 }
 
 /* ── render() ─────────────────────────────── */
@@ -222,21 +323,24 @@ export function render() {
 
 /* ── Card render ─────────────────────────── */
 function renderCard(collab) {
-  const mons  = [];
-  const stats = getMonitoriaStats(mons);
-  const sup   = _supervisors.find(s => s.id === collab.supervisor_id);
-  const plan  = _actionPlans[collab.id] ?? [];
-  const band  = resultBand(0);
+  const s    = _monStats[collab.id] ?? { count: 0, zeroed: 0, avgPct: 0, ptsLost: 0, scCount: 0, avgTma: '—', avgTmpr: '—', avgTmer: '—', avgCsat: 0, history: [], lastDate: null };
+  const sup  = _supervisors.find(sv => sv.id === collab.supervisor_id);
+  const plan = _actionPlans[collab.id] ?? [];
+  const band = resultBand(s.avgPct);
 
-  const catBarsHtml = EVAL_CATEGORIES.map(cat => `
-    <div class="cc-cat-bar-row">
-      <span class="cc-cat-bar-row__name">${cat.name.split(' ')[0]}</span>
-      <div class="cc-cat-bar-track">
-        <div class="cc-cat-bar-fill" style="width:0%;background:${scoreColor(0)}"></div>
-      </div>
-      <span class="cc-cat-bar-row__val">—</span>
-    </div>
-  `).join('');
+  const scoreValHtml = s.count
+    ? `<div class="cc-card__score-val" style="color:${scoreColor(s.avgPct)}">${s.avgPct}%</div>`
+    : `<div class="cc-card__score-val" style="color:var(--text-tertiary)">—</div>`;
+
+  const lastMonHtml = s.lastDate
+    ? `Última: ${formatDate(s.lastDate)}`
+    : 'Sem monitorias no período';
+
+  const historyHtml = s.history.length
+    ? `<canvas id="history-cc-${collab.id}" height="80"></canvas>`
+    : `<div style="font-size:10px;color:var(--text-tertiary);padding:6px 0">Sem histórico</div>`;
+
+  const csatDisplay = s.avgCsat ? `${s.avgCsat} ★` : '—';
 
   const planItems = plan.map((item, i) => `
     <div class="cc-action-item">
@@ -254,15 +358,15 @@ function renderCard(collab) {
       <div class="cc-card__header">
         <div class="cc-card__avatar">${getInitials(collab.name)}</div>
         <div class="cc-card__info">
-          <div class="cc-card__name">${collab.name}</div>
-          <div class="cc-card__last-mon">Sem monitorias no período</div>
+          <div class="cc-card__name"><a href="#perfil?id=${collab.id}">${collab.name}</a></div>
+          <div class="cc-card__last-mon">${lastMonHtml}</div>
           <div class="cc-card__badges">
             <span class="cc-badge">${sup?.name?.split(' ')[0] ?? '—'}</span>
           </div>
         </div>
         <div class="cc-card__score">
-          <div class="cc-card__score-val" style="color:var(--text-tertiary)">—</div>
-          <div class="cc-card__score-label">0 mon.</div>
+          ${scoreValHtml}
+          <div class="cc-card__score-label">${s.count} mon.</div>
           <span class="badge badge--${band.cls}" style="margin-top:4px;font-size:9px">${band.label}</span>
         </div>
       </div>
@@ -271,54 +375,31 @@ function renderCard(collab) {
         <div class="cc-metrics">
           <div class="cc-metric-row">
             <span class="cc-metric-row__label">Qtd. Atendimentos</span>
-            <span class="cc-metric-row__val">0</span>
+            <span class="cc-metric-row__val">${s.scCount || '—'}</span>
           </div>
           <div class="cc-metric-row">
             <span class="cc-metric-row__label">TMA</span>
-            <span class="cc-metric-row__val">—</span>
+            <span class="cc-metric-row__val">${s.avgTma}</span>
           </div>
           <div class="cc-metric-row">
             <span class="cc-metric-row__label">TMEr</span>
-            <span class="cc-metric-row__val">—</span>
+            <span class="cc-metric-row__val">${s.avgTmer}</span>
           </div>
           <div class="cc-metric-row">
             <span class="cc-metric-row__label">TMPr</span>
-            <span class="cc-metric-row__val">—</span>
+            <span class="cc-metric-row__val">${s.avgTmpr}</span>
           </div>
           <div class="cc-metric-row">
-            <span class="cc-metric-row__label">CSAT</span>
-            <span class="cc-metric-row__val">—</span>
+            <span class="cc-metric-row__label">CSAT médio</span>
+            <span class="cc-metric-row__val">${csatDisplay}</span>
           </div>
           <div class="cc-metric-row">
-            <span class="cc-metric-row__label">Pts perdidos/mon</span>
-            <span class="cc-metric-row__val">—</span>
+            <span class="cc-metric-row__label">Monitorias zeradas</span>
+            <span class="cc-metric-row__val ${s.zeroed ? 'cc-metric-row__val--red' : ''}">${s.count ? s.zeroed : '—'}</span>
           </div>
-          <div class="cc-cat-bars">${catBarsHtml}</div>
         </div>
         <div class="cc-radar-wrap">
-          <canvas id="radar-cc-${collab.id}" width="180" height="180"></canvas>
-        </div>
-      </div>
-
-      <div class="cc-history">
-        <div class="cc-history__label">Histórico de Resultados</div>
-        <div class="cc-history-bar">
-          <div style="font-size:10px;color:rgba(255,255,255,.3);padding:6px">Sem histórico</div>
-        </div>
-      </div>
-
-      <div class="cc-insights">
-        <div class="cc-insight-col cc-insight-col--error">
-          <div class="cc-insight-col__title cc-insight-col__title--error">⚠ Erros frequentes</div>
-          <div class="cc-insight-item" style="opacity:.35">Sem dados</div>
-        </div>
-        <div class="cc-insight-col cc-insight-col--good">
-          <div class="cc-insight-col__title cc-insight-col__title--good">✔ Tem acertado em</div>
-          <div class="cc-insight-item" style="opacity:.35">Sem dados</div>
-        </div>
-        <div class="cc-insight-col cc-insight-col--opp">
-          <div class="cc-insight-col__title cc-insight-col__title--opp">📘 Oportunidades</div>
-          <div class="cc-insight-item" style="opacity:.35">Sem dados</div>
+          <canvas id="radar-cc-${collab.id}" width="240" height="240"></canvas>
         </div>
       </div>
 
@@ -329,36 +410,64 @@ function renderCard(collab) {
         </button>
         <div class="cc-action-plan__body">
           <div class="cc-action-items" id="ap-items-${collab.id}">
-            ${planItems || `<div style="font-size:var(--text-xs);color:rgba(255,255,255,.3);padding:var(--space-2) 0">Nenhuma ação cadastrada</div>`}
+            ${planItems || `<div style="font-size:var(--text-xs);color:var(--text-tertiary);padding:var(--space-2) 0">Nenhuma ação cadastrada</div>`}
           </div>
           <div class="cc-action-add">
             <input class="form-input ap-input" id="ap-input-${collab.id}"
                    placeholder="Nova ação de melhoria…" data-collab="${collab.id}">
             <input class="form-input" type="date" id="ap-date-${collab.id}"
-                   style="background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.12);color:#fff;font-size:var(--text-xs);height:28px;padding:0 8px">
+                   style="font-size:var(--text-xs);height:28px;padding:0 8px">
             <button class="btn btn--primary ap-add-btn" data-collab="${collab.id}">+</button>
-          </div>
-          <div style="margin-top:var(--space-3);display:flex;justify-content:flex-end">
-            <button class="btn btn--ghost btn--sm" style="color:rgba(255,255,255,.4);font-size:var(--text-xs)"
-                    onclick="window.location.hash='#perfil?id=${collab.id}'">
-              Ver perfil completo →
-            </button>
           </div>
         </div>
       </div>
 
-    </div>
-  `;
+      <div class="cc-history">
+        <div class="cc-history__label">Histórico de Resultados</div>
+        <div class="cc-history-bar">${historyHtml}</div>
+      </div>
+    </div>`;
+  //     <div class="cc-insights">
+  //       <div class="cc-insight-col cc-insight-col--error">
+  //         <div class="cc-insight-col__title cc-insight-col__title--error">⚠ Erros frequentes</div>
+  //         <div class="cc-insight-item" style="opacity:.35">Sem dados</div>
+  //       </div>
+  //       <div class="cc-insight-col cc-insight-col--good">
+  //         <div class="cc-insight-col__title cc-insight-col__title--good">✔ Tem acertado em</div>
+  //         <div class="cc-insight-item" style="opacity:.35">Sem dados</div>
+  //       </div>
+  //       <div class="cc-insight-col cc-insight-col--opp">
+  //         <div class="cc-insight-col__title cc-insight-col__title--opp">📘 Oportunidades</div>
+  //         <div class="cc-insight-item" style="opacity:.35">Sem dados</div>
+  //       </div>
+  //     </div>
+
+  //   </div>
+  // `;
 }
 
 /* ── Charts ───────────────────────────────── */
 function initCharts() {
+  const radarLabels = _evalCriteria.map(ec => ec.name.split(' ')[0]);
+
   _employees.forEach(collab => {
+    const s = _monStats[collab.id];
+
     renderRadarChart(
       `radar-cc-${collab.id}`,
-      EVAL_CATEGORIES.map(c => c.name.split(' ').slice(0, 2).join(' ')),
-      [{ label: collab.name.split(' ')[0], data: EVAL_CATEGORIES.map(() => 0) }]
+      radarLabels,
+      [{ label: collab.name.split(' ')[0], data: _evalCriteria.map(ec => s?.radarPcts[ec.id] ?? 0) }]
     );
+
+    if (s?.history.length) {
+      const last5 = s.history.slice(-5);
+      renderHistoryChart(
+        `history-cc-${collab.id}`,
+        last5.map(h => formatDate(h.date)),
+        last5.map(h => h.pct),
+        last5.map(h => scoreColorHex(h.pct))
+      );
+    }
   });
 }
 
@@ -409,7 +518,7 @@ function savePlan(collabId) {
           <button class="cc-action-item__del ap-del" data-collab="${collabId}" data-idx="${i}">🗑</button>
         </div>
       `).join('')
-    : `<div style="font-size:var(--text-xs);color:rgba(255,255,255,.3);padding:var(--space-2) 0">Nenhuma ação cadastrada</div>`;
+    : `<div style="font-size:var(--text-xs);color:var(--text-tertiary);padding:var(--space-2) 0">Nenhuma ação cadastrada</div>`;
 
   container.querySelectorAll('.ap-check').forEach(bindCheckEvent);
   container.querySelectorAll('.ap-del').forEach(bindDelEvent);
@@ -443,13 +552,17 @@ function bindDelEvent(btn) {
 function bindEvents() {
   initCharts();
 
-  document.getElementById('f-date-from')?.addEventListener('change', e => {
+  document.getElementById('f-date-from')?.addEventListener('change', async e => {
     _filters.dateFrom = e.target.value;
     enforceDateRange();
+    await fetchMonitoringData();
+    reloadPage();
   });
-  document.getElementById('f-date-to')?.addEventListener('change', e => {
+  document.getElementById('f-date-to')?.addEventListener('change', async e => {
     _filters.dateTo = e.target.value;
     enforceDateRange();
+    await fetchMonitoringData();
+    reloadPage();
   });
 
   /* Supervisor change → update collab select + apply visibility */
@@ -519,9 +632,10 @@ export async function init() {
   }
 
   try {
-    await fetchData();
+    if (!_employees.length) await fetchData();
+    await fetchMonitoringData();
   } catch (err) {
-    console.error('[consulta] fetchData error:', err);
+    console.error('[consulta] init error:', err);
     const main = document.getElementById('main-content');
     if (main) {
       main.innerHTML = `

@@ -9,10 +9,9 @@ import { supabase }       from '../supabase.js';
 import { formatHHMMSS, parseHHMMSS, resultBand, scoreColor } from '../utils/formatters.js';
 
 /* ── Module state ─────────────────────────── */
-let _observations     = [];   // {typeCode, typeId, criteriaId, criteriaName, errorTypeId, errorTypeName, proto, text}
-let _serviceChats     = [];   // {protocol, startedAt, tmpr, tmer, tma, csat}
-let _totalEarned      = 0;
-let _selectedCollabId = null;
+let _observations          = [];   // {typeCode, typeId, criteriaId, criteriaName, errorTypeId, errorTypeName, proto, text}
+let _serviceChats          = [];   // {protocol, startedAt, tmpr, tmer, tma, csat}
+let _totalEarned           = 0;
 let _pendingDeleteProtocol = null;
 
 /* Fetched from DB on init */
@@ -21,6 +20,8 @@ let _obsTypeMap      = {};   // {G: uuid, O: uuid, A: uuid, E: uuid}
 let _evalCriteria    = [];   // [{id, name}]
 let _analyticalTypes = [];   // [{id, name}]
 let _errorTypes      = [];   // [{id, name, critical}]
+let _employees       = [];   // [{id, name}]
+let _refDataLoaded   = false;
 
 /* ── Helpers ──────────────────────────────── */
 function normalizeTime(val) {
@@ -678,42 +679,46 @@ function closeScDeleteModal() {
 }
 
 export async function init() {
+  /* Reset apenas dados preenchidos pelo usuário */
   _observations          = [];
   _serviceChats          = [];
   _pendingDeleteProtocol = null;
-  _selectedCollabId      = null;
   recalcScores();
   renderObsChat();
   renderServiceChatList();
 
-  /* ── Fetch all DB data in parallel ─────── */
-  const [empRes, topicRes, obsTypeRes, evalCrRes, analTypeRes, errTypeRes] = await Promise.all([
-    supabase.from('employees').select('id, name').eq('active', true).order('name'),
-    supabase.from('topic').select('id, item, eval_criteria_id').eq('active', true),
-    supabase.from('observation_type').select('id, code'),
-    supabase.from('eval_criteria').select('id, name').eq('active', true).order('name'),
-    supabase.from('analytical_note_type').select('id, name').eq('active', true),
-    supabase.from('error_type').select('id, name, critical').order('name'),
-  ]);
+  /* ── Fetch dados de referência apenas na primeira visita ── */
+  if (!_refDataLoaded) {
+    const [empRes, topicRes, obsTypeRes, evalCrRes, analTypeRes, errTypeRes] = await Promise.all([
+      supabase.from('employees').select('id, name').eq('active', true).order('name'),
+      supabase.from('topic').select('id, item, eval_criteria_id').eq('active', true),
+      supabase.from('observation_type').select('id, code'),
+      supabase.from('eval_criteria').select('id, name').eq('active', true).order('name'),
+      supabase.from('analytical_note_type').select('id, name').eq('active', true),
+      supabase.from('error_type').select('id, name, critical').order('name'),
+    ]);
 
-  _topics          = topicRes.data         ?? [];
-  _evalCriteria    = evalCrRes.data        ?? [];
-  _analyticalTypes = analTypeRes.data      ?? [];
-  _errorTypes      = errTypeRes.data       ?? [];
+    _employees       = empRes.data        ?? [];
+    _topics          = topicRes.data      ?? [];
+    _evalCriteria    = evalCrRes.data     ?? [];
+    _analyticalTypes = analTypeRes.data   ?? [];
+    _errorTypes      = errTypeRes.data    ?? [];
 
-  /* Map obs types: form key → DB uuid */
-  const codeToKey = { default: 'G', improvable_by: 'O', excelled_by: 'A', failed_by: 'E' };
-  _obsTypeMap = {};
-  for (const row of (obsTypeRes.data ?? [])) {
-    const key = codeToKey[row.code];
-    if (key) _obsTypeMap[key] = row.id;
+    const codeToKey = { default: 'G', improvable_by: 'O', excelled_by: 'A', failed_by: 'E' };
+    _obsTypeMap = {};
+    for (const row of (obsTypeRes.data ?? [])) {
+      const key = codeToKey[row.code];
+      if (key) _obsTypeMap[key] = row.id;
+    }
+
+    _refDataLoaded = true;
   }
 
   /* ── Populate selects ───────────────────── */
   const collabSel = document.getElementById('collab-select');
-  if (collabSel && empRes.data?.length) {
+  if (collabSel && _employees.length) {
     collabSel.innerHTML = `<option value="">— selecione —</option>` +
-      empRes.data.map(e => `<option value="${e.id}">${e.name}</option>`).join('');
+      _employees.map(e => `<option value="${e.id}">${e.name}</option>`).join('');
   }
 
   const criteriaSel = document.getElementById('obs-criteria');
@@ -904,8 +909,7 @@ export async function init() {
   document.getElementById('timer-msg2')?.addEventListener('input', calcDelta);
 
   /* ── Collaborator → avatar ──────────────── */
-  document.getElementById('collab-select')?.addEventListener('change', e => {
-    _selectedCollabId = e.target.value || null;
+  document.getElementById('collab-select')?.addEventListener('change', async e => {
     const av  = document.getElementById('collab-avatar');
     const sel = e.target.options[e.target.selectedIndex];
     if (av) {
@@ -913,6 +917,22 @@ export async function init() {
         ? sel.text.trim().split(' ').slice(0, 2).map(w => w[0]).join('').toUpperCase()
         : '?';
     }
+
+    const numInput = document.getElementById('monitoring-number');
+    if (!numInput) return;
+
+    const collabId = e.target.value;
+    if (!collabId) { numInput.value = 1; return; }
+
+    const { data } = await supabase
+      .from('monitoring')
+      .select('number')
+      .eq('employee_id', collabId)
+      .order('number', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    numInput.value = data ? data.number + 1 : 1;
   });
 
   /* ── Eval checkboxes ────────────────────── */

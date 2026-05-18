@@ -2,108 +2,138 @@
    PERFIL — Perfil individual do colaborador
    ============================================================ */
 import { getCurrentUser } from '../auth.js';
-import { getRouteParams, navigate } from '../router.js';
+import { getRouteParams } from '../router.js';
+import { supabase } from '../supabase.js';
 import {
-  MOCK_USERS, EVAL_CATEGORIES, TOTAL_MAX_PTS, OBSERVATIONS,
-  getMonitorias, getMonitoriaStats, getTeam,
-} from '../data/mock.js';
-import {
-  formatDate, formatHHMMSS, resultBand, scoreColor, getInitials, monthOptions,
+  formatDate, resultBand, scoreColor, scoreColorHex, getInitials,
 } from '../utils/formatters.js';
-import { canViewMetric, METRICS_CONFIG } from '../utils/access.js';
-import { renderRadarChart, renderCombinedChart, destroyAll } from '../components/charts.js';
-import { getCurrentPeriod } from '../components/header.js';
+import { renderRadarChart, renderHistoryChartFull, destroyAll } from '../components/charts.js';
 
-export function render() {
-  const user    = getCurrentUser();
-  const { id }  = getRouteParams();
-  const subject = MOCK_USERS.find(u => u.id === id) ?? user;
-  const period  = getCurrentPeriod() ?? monthOptions(1)[0].key;
+/* ── Module state ─────────────────────────── */
+let _employee    = null;   // {id, name, supervisor_id}
+let _supervisor  = null;   // {id, name}
+let _monitorings = [];     // [{id, date, zeroed, pct, radarPcts, avgCsat}]
+let _obsLog      = [];     // [{typeCode, typeLabel, criteriaName, content, protocol, monDate}]
+let _evalCriteria = [];    // [{id, name}]  — cached across navigations
+let _topicMap    = {};     // {topicId: {eval_criteria_id, points}} — cached
+let _loadedEmpId = null;   // cache key
 
-  if (!subject) return `<div class="empty-state"><div class="empty-state__title">Colaborador não encontrado</div></div>`;
+/* ── Obs type code → display ──────────────── */
+const OBS_TYPE = {
+  default:        { code: 'G', label: 'Geral' },
+  improvable_by:  { code: 'O', label: 'Oportunidade' },
+  excelled_by:    { code: 'A', label: 'Acerto' },
+  failed_by:      { code: 'E', label: 'Erro' },
+};
 
-  const team   = subject.teamId ? getTeam(subject.teamId) : null;
-  const mons   = getMonitorias({ colaboradorId: subject.id });
-  const perMon = getMonitorias({ colaboradorId: subject.id, month: period });
-  const stats  = getMonitoriaStats(mons);
-  const obs    = OBSERVATIONS.filter(o => o.colaboradorId === subject.id);
+/* ── Compute scored monitorings from raw rows ── */
+function computeMonData(rawMons) {
+  return rawMons.map(mon => {
+    let earned = 0, total = 0;
+    const earnedByC = {}, maxByC = {};
 
-  const lastMon = mons[0];
-  const initials = getInitials(subject.name);
+    for (const ta of (mon.topic_approval ?? [])) {
+      const t = _topicMap[ta.topic_id];
+      if (!t) continue;
+      const cid = t.eval_criteria_id;
+      maxByC[cid]    = (maxByC[cid]    ?? 0) + t.points;
+      total          += t.points;
+      if (ta.obtained) {
+        earnedByC[cid] = (earnedByC[cid] ?? 0) + t.points;
+        earned         += t.points;
+      }
+    }
 
-  /* Category avg */
-  const catScores = EVAL_CATEGORIES.map(cat => {
-    const catTotal = cat.totalPts;
-    const earned = mons.length
-      ? mons.reduce((s, m) => {
-          const catEarned = cat.items.reduce((cs, item) =>
-            cs + (m.checkedItems?.[item.id] ? item.pts : 0), 0);
-          return s + catEarned;
-        }, 0) / mons.length
+    const pct = total > 0 ? Math.round(earned / total * 100) : 0;
+    const radarPcts = {};
+    for (const [cid, m] of Object.entries(maxByC)) {
+      radarPcts[cid] = m > 0 ? Math.round((earnedByC[cid] ?? 0) / m * 100) : 0;
+    }
+
+    const csats = (mon.service_chat ?? []).filter(sc => sc.csat).map(sc => sc.csat);
+    const avgCsat = csats.length
+      ? Math.round(csats.reduce((a, b) => a + b, 0) / csats.length * 10) / 10
       : 0;
-    return { name: cat.name, pct: Math.round((earned / catTotal) * 100) };
+
+    return { id: mon.id, date: mon.date, zeroed: mon.zeroed, pct, radarPcts, avgCsat };
+  });
+}
+
+/* ── render() ─────────────────────────────── */
+export function render() {
+  if (!_employee) {
+    return `
+      <div class="profile-page page-enter"
+           style="display:flex;align-items:center;justify-content:center;height:300px;gap:12px;color:var(--text-secondary)">
+        <div class="boot-spinner" style="width:20px;height:20px;border-width:2px"></div>
+        Carregando perfil…
+      </div>`;
+  }
+
+  const count    = _monitorings.length;
+  const avgPct   = count ? Math.round(_monitorings.reduce((s, m) => s + m.pct, 0) / count) : 0;
+  const zeroed   = _monitorings.filter(m => m.zeroed).length;
+  const lastDate = _monitorings.length ? _monitorings[_monitorings.length - 1].date : null;
+
+  const csatVals  = _monitorings.filter(m => m.avgCsat).map(m => m.avgCsat);
+  const avgCsat   = csatVals.length
+    ? Math.round(csatVals.reduce((a, b) => a + b, 0) / csatVals.length * 10) / 10
+    : null;
+
+  /* Category breakdown (avg per eval_criteria across all monitorings) */
+  const catBreakdown = _evalCriteria.map(ec => {
+    const vals = _monitorings.map(m => m.radarPcts[ec.id] ?? 0);
+    const avg  = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
+    return { name: ec.name, pct: avg };
   });
 
-  /* History segments (last 20) */
-  const histSegs = mons.slice(0, 20).reverse().map(m => {
-    const b = resultBand(m.pct);
-    return `<div class="result-history-seg result-history-seg--${b.cls}" title="${formatDate(m.date)}: ${m.pct}%"></div>`;
-  }).join('');
-
-  /* Insights */
-  const errorObs  = obs.filter(o => o.type === 'E');
-  const strengthObs = obs.filter(o => o.type === 'A');
-  const oppObs    = obs.filter(o => o.type === 'O');
-
-  const obsLog = obs.slice(0, 15).map(o => `
-    <div class="obs-log-item obs-log-item--${o.type}">
-      <div class="obs-log-item__badge obs-log-item__badge--${o.type}">${o.type}</div>
-      <div class="obs-log-item__body">
-        ${o.criteria ? `<div class="obs-log-item__criteria">${o.criteria}</div>` : ''}
-        <div class="obs-log-item__text">${o.text}</div>
-        <div class="obs-log-item__meta">${formatDate(o.date)} · Prot. ${o.attendanceId}</div>
-      </div>
-    </div>
-  `).join('') || `<div class="empty-state" style="padding:var(--space-6)"><div class="empty-state__title">Sem observações</div></div>`;
-
-  const locked = (key) => !canViewMetric(user, subject, key)
-    ? `<span class="metric-locked"><span class="lock-icon">🔒</span> nível insuficiente</span>`
-    : null;
+  /* Obs log HTML */
+  const obsLogHtml = _obsLog.length
+    ? _obsLog.map(o => `
+        <div class="obs-log-item obs-log-item--${o.code}">
+          <div class="obs-log-item__badge obs-log-item__badge--${o.code}">${o.label}</div>
+          <div class="obs-log-item__body">
+            ${o.criteriaName ? `<div class="obs-log-item__criteria">${o.criteriaName}</div>` : ''}
+            <div class="obs-log-item__text">${o.content}</div>
+            <div class="obs-log-item__meta">
+              ${o.monDate ? formatDate(o.monDate) : ''}
+              ${o.protocol ? ` · Prot. ${o.protocol}` : ''}
+            </div>
+          </div>
+        </div>`).join('')
+    : `<div class="empty-state" style="padding:var(--space-6)">
+         <div class="empty-state__title">Sem observações</div>
+       </div>`;
 
   return `
     <div class="profile-page page-enter">
       <!-- Hero -->
       <div class="profile-hero">
         <div class="profile-hero__top">
-          <div class="profile-hero__avatar">${initials}</div>
+          <div class="profile-hero__avatar">${getInitials(_employee.name)}</div>
           <div class="profile-hero__info">
-            <div class="profile-hero__name">${subject.name}</div>
-            <div class="profile-hero__meta">${subject.title ?? subject.role} · ${team?.name ?? '—'}</div>
+            <div class="profile-hero__name">${_employee.name}</div>
+            <div class="profile-hero__meta">${_supervisor?.name ?? '—'}</div>
             <div class="profile-hero__badges">
-              <span class="role-badge role-badge--${subject.role}">${subject.role}</span>
-              ${lastMon ? `<span class="badge badge--neutral">Última monitoria: ${formatDate(lastMon.date)}</span>` : ''}
+              ${lastDate ? `<span class="badge badge--neutral">Última monitoria: ${formatDate(lastDate)}</span>` : ''}
             </div>
           </div>
         </div>
         <div class="profile-hero__stats">
           <div class="profile-stat">
-            <div class="profile-stat__val">${mons.length}</div>
+            <div class="profile-stat__val">${count}</div>
             <div class="profile-stat__lbl">Monitorias</div>
           </div>
           <div class="profile-stat">
-            <div class="profile-stat__val" style="color:${scoreColor(stats.avgPct??0)}">${stats.count ? stats.avgPct + '%' : '—'}</div>
+            <div class="profile-stat__val" style="color:${scoreColor(avgPct)}">${count ? avgPct + '%' : '—'}</div>
             <div class="profile-stat__lbl">Aproveit. médio</div>
           </div>
           <div class="profile-stat">
-            <div class="profile-stat__val">${locked('pts_perdidos') ?? stats.ptsLost}</div>
-            <div class="profile-stat__lbl">Pts perdidos/mon</div>
-          </div>
-          <div class="profile-stat">
-            <div class="profile-stat__val">${locked('csat') ?? (perMon.length ? Math.round(perMon.reduce((s,m) => s+m.csat,0)/perMon.length*10)/10 : '—')}</div>
+            <div class="profile-stat__val">${avgCsat ? avgCsat + ' ★' : '—'}</div>
             <div class="profile-stat__lbl">CSAT médio</div>
           </div>
           <div class="profile-stat">
-            <div class="profile-stat__val" style="color:${stats.zeroed>0?'var(--color-danger)':'inherit'}">${stats.zeroed}</div>
+            <div class="profile-stat__val" style="color:${zeroed > 0 ? 'var(--color-danger)' : 'inherit'}">${zeroed}</div>
             <div class="profile-stat__lbl">Zeradas</div>
           </div>
         </div>
@@ -115,11 +145,11 @@ export function render() {
         <div class="radar-panel panel">
           <div class="panel__header"><div class="panel__title">Radar de Categorias</div></div>
           <div class="panel__body">
-            <div class="radar-chart-wrapper" style="max-width:240px">
-              <canvas id="chart-radar"></canvas>
+            <div class="radar-chart-wrapper" style="max-width:260px">
+              <canvas id="chart-radar" width="260" height="260"></canvas>
             </div>
             <div class="category-breakdown">
-              ${catScores.map(c => `
+              ${catBreakdown.map(c => `
                 <div>
                   <div class="cat-row">
                     <div class="cat-row__name">${c.name.split(' ')[0]}</div>
@@ -128,8 +158,7 @@ export function render() {
                   <div class="cat-row__bar-wrap">
                     <div class="cat-row__bar-fill" style="width:${c.pct}%;background:${scoreColor(c.pct)}"></div>
                   </div>
-                </div>
-              `).join('')}
+                </div>`).join('')}
             </div>
           </div>
         </div>
@@ -138,42 +167,8 @@ export function render() {
         <div class="history-panel panel">
           <div class="panel__header"><div class="panel__title">Histórico de Resultados</div></div>
           <div class="panel__body">
-            ${mons.length ? `<div class="result-history-bar">${histSegs}</div>` : ''}
             <div class="chart-container chart-h-250">
-              <canvas id="chart-history"></canvas>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Insights -->
-      <div class="panel insights-section">
-        <div class="panel__header"><div class="panel__title">Insights</div></div>
-        <div class="panel__body">
-          <div class="insights-grid">
-            <div class="insights-col">
-              <div class="insights-col__title insights-col__title--error">⚠️ Erros mais frequentes</div>
-              <div class="insights-col__list">
-                ${errorObs.length ? errorObs.slice(0,3).map(o => `
-                  <div class="insight-tag insight-tag--error">${o.text}</div>
-                `).join('') : `<span style="font-size:var(--text-sm);color:var(--text-tertiary)">Nenhum</span>`}
-              </div>
-            </div>
-            <div class="insights-col">
-              <div class="insights-col__title insights-col__title--strength">💚 Tem acertado em</div>
-              <div class="insights-col__list">
-                ${strengthObs.length ? strengthObs.slice(0,3).map(o => `
-                  <div class="insight-tag insight-tag--strength">${o.criteria ?? o.text}</div>
-                `).join('') : `<span style="font-size:var(--text-sm);color:var(--text-tertiary)">Sem dados</span>`}
-              </div>
-            </div>
-            <div class="insights-col">
-              <div class="insights-col__title insights-col__title--opportunity">📘 Possui oportunidades em</div>
-              <div class="insights-col__list">
-                ${oppObs.length ? oppObs.slice(0,3).map(o => `
-                  <div class="insight-tag insight-tag--opportunity">${o.criteria ?? o.text}</div>
-                `).join('') : `<span style="font-size:var(--text-sm);color:var(--text-tertiary)">Sem dados</span>`}
-              </div>
+              <canvas id="chart-history" height="250"></canvas>
             </div>
           </div>
         </div>
@@ -183,48 +178,136 @@ export function render() {
       <div class="panel">
         <div class="panel__header">
           <div class="panel__title">Observações Qualitativas</div>
-          <span class="badge badge--neutral">${obs.length}</span>
+          <span class="badge badge--neutral">${_obsLog.length}</span>
         </div>
         <div class="panel__body panel__body--compact">
-          <div class="obs-log">${obsLog}</div>
+          <div class="obs-log">${obsLogHtml}</div>
         </div>
       </div>
-    </div>
-  `;
+    </div>`;
 }
 
-export function init() {
-  const { id } = getRouteParams();
-  const subject = MOCK_USERS.find(u => u.id === id);
-  if (!subject) return;
-
-  const mons = getMonitorias({ colaboradorId: subject.id });
-  const catScores = EVAL_CATEGORIES.map(cat => {
-    const earned = mons.length
-      ? mons.reduce((s, m) => {
-          return s + cat.items.reduce((cs, item) =>
-            cs + (m.checkedItems?.[item.id] ? item.pts : 0), 0);
-        }, 0) / mons.length
-      : 0;
-    return Math.round((earned / cat.totalPts) * 100);
+/* ── Charts ───────────────────────────────── */
+function initCharts() {
+  const radarLabels = _evalCriteria.map(ec => ec.name.split(' ')[0]);
+  const radarData   = _evalCriteria.map(ec => {
+    const vals = _monitorings.map(m => m.radarPcts[ec.id] ?? 0);
+    return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
   });
 
-  renderRadarChart('chart-radar',
-    EVAL_CATEGORIES.map(c => c.name.split(' ').slice(0, 2).join(' ')),
-    [{ label: subject.name.split(' ')[0], data: catScores }]
+  renderRadarChart(
+    'chart-radar',
+    radarLabels,
+    [{ label: _employee.name.split(' ')[0], data: radarData }]
   );
 
-  /* History combined chart */
-  const months = monthOptions(6).reverse();
-  const labels = months.map(m => m.label.split(' ')[0]);
-  const barData = months.map(m => {
-    const ms = getMonitorias({ colaboradorId: subject.id, month: m.key });
-    return ms.length ? Math.round(ms.reduce((s, x) => s + x.pct, 0) / ms.length) : null;
-  });
-  const lineData = months.map(m => {
-    const ms = getMonitorias({ colaboradorId: subject.id, month: m.key });
-    return ms.length ? Math.round(ms.reduce((s, x) => s + (100 - x.pct), 0) / ms.length * 10) / 10 : null;
-  });
+  if (_monitorings.length) {
+    renderHistoryChartFull(
+      'chart-history',
+      _monitorings.map(m => formatDate(m.date)),
+      _monitorings.map(m => m.pct),
+      _monitorings.map(m => scoreColorHex(m.pct))
+    );
+  }
+}
 
-  renderCombinedChart('chart-history', labels, barData, lineData, 'Aproveit. %', 'Pts perdidos');
+/* ── Page reload ──────────────────────────── */
+function reloadPage() {
+  destroyAll();
+  const main = document.getElementById('main-content');
+  if (!main) return;
+  main.innerHTML = render();
+  initCharts();
+}
+
+/* ── init ─────────────────────────────────── */
+export async function init() {
+  const { id: empId } = getRouteParams();
+  if (!empId) return;
+
+  if (_loadedEmpId === empId) { reloadPage(); return; }
+
+  /* Reset para novo employee */
+  _employee = null;
+  _supervisor = null;
+  _monitorings = [];
+  _obsLog = [];
+
+  /* Static ref data (cached across navigations) */
+  if (!_evalCriteria.length) {
+    const [ecRes, topicRes] = await Promise.all([
+      supabase.from('eval_criteria').select('id, name').eq('active', true),
+      supabase.from('topic').select('id, eval_criteria_id, points').eq('active', true),
+    ]);
+    _evalCriteria = ecRes.data ?? [];
+    _topicMap     = Object.fromEntries((topicRes.data ?? []).map(t => [t.id, t]));
+  }
+
+  /* Employee + monitorings in parallel */
+  const [empRes, monsRes] = await Promise.all([
+    supabase.from('employees').select('id, name, supervisor_id').eq('id', empId).single(),
+    supabase.from('monitoring')
+      .select(`
+        id, date, zeroed,
+        topic_approval(topic_id, obtained),
+        service_chat(csat, protocol)
+      `)
+      .eq('employee_id', empId)
+      .order('date', { ascending: true }),
+  ]);
+
+  if (empRes.error || !empRes.data) {
+    const main = document.getElementById('main-content');
+    if (main) main.innerHTML = `
+      <div class="page-enter">
+        <div class="empty-state">
+          <div class="empty-state__title">Colaborador não encontrado</div>
+        </div>
+      </div>`;
+    return;
+  }
+
+  _employee    = empRes.data;
+  const rawMons = monsRes.data ?? [];
+  _monitorings = computeMonData(rawMons);
+
+  /* Supervisor name */
+  if (_employee.supervisor_id) {
+    const { data: sup } = await supabase
+      .from('profiles').select('id, name').eq('id', _employee.supervisor_id).single();
+    _supervisor = sup ?? null;
+  }
+
+  /* Observations */
+  const monIds = rawMons.map(m => m.id);
+  if (monIds.length) {
+    const monDateMap = Object.fromEntries(rawMons.map(m => [m.id, m.date]));
+
+    const { data: obsData } = await supabase
+      .from('monitoring_observation')
+      .select(`
+        id, content, monitoring_id,
+        observation_type(code),
+        eval_criteria(name),
+        service_chat(protocol)
+      `)
+      .in('monitoring_id', monIds)
+      .order('id', { ascending: false })
+      .limit(30);
+
+    _obsLog = (obsData ?? []).map(o => {
+      const typeInfo = OBS_TYPE[o.observation_type?.code] ?? OBS_TYPE.default;
+      return {
+        code:         typeInfo.code,
+        label:        typeInfo.label,
+        criteriaName: o.eval_criteria?.name ?? null,
+        content:      o.content ?? '',
+        protocol:     o.service_chat?.protocol ?? null,
+        monDate:      monDateMap[o.monitoring_id] ?? null,
+      };
+    });
+  }
+
+  _loadedEmpId = empId;
+  reloadPage();
 }

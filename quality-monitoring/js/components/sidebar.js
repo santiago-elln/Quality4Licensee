@@ -53,8 +53,8 @@ export function bindSidebar() {
   document.querySelectorAll('.sidebar-nav__item[data-route]').forEach(btn => {
     btn.addEventListener('click', () => navigate(btn.dataset.route));
   });
-  document.getElementById('btn-logout')?.addEventListener('click', () => {
-    logout();
+  document.getElementById('btn-logout')?.addEventListener('click', async () => {
+    await logout();
     navigate('login');
   });
 }

@@ -105,8 +105,7 @@ async function bootstrap() {
 
   onAuthChange(user => {
     if (!user && getCurrentRoute() !== 'login') {
-      app.innerHTML = LoginPage.render();
-      LoginPage.init?.();
+      navigate('login');
     }
   });
 
