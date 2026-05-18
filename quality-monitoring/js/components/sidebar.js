@@ -26,11 +26,12 @@ export function renderSidebar() {
   const myTeam = `
     <div class="sidebar-nav__section">
       <div class="sidebar-nav__label">Minha Equipe</div>
-      ${item('dashboard',  '📊', 'Painel',       'dashboard')}
-      ${item('comparacao', '📈', 'Comparativo',  'comparacao')}
+      ${item('nova-monitoria', '✍🏼', 'Nova Monitoria',           'nova-monitoria')}
+      ${item('consulta', '🔍', 'Consulta',           'consulta')}
     </div>`;
 
-  const dados  = '';
+  const dados = '';
+
   const config = '';
 
   return `
@@ -52,8 +53,8 @@ export function bindSidebar() {
   document.querySelectorAll('.sidebar-nav__item[data-route]').forEach(btn => {
     btn.addEventListener('click', () => navigate(btn.dataset.route));
   });
-  document.getElementById('btn-logout')?.addEventListener('click', () => {
-    logout();
+  document.getElementById('btn-logout')?.addEventListener('click', async () => {
+    await logout();
     navigate('login');
   });
 }

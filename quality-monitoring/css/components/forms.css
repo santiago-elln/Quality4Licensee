@@ -120,6 +120,7 @@
 .csat-group {
   display: flex;
   gap: var(--space-2);
+  justify-content: center;
 }
 .csat-option {
   position: relative;
@@ -138,13 +139,49 @@
   transition: all var(--transition-fast);
   color: var(--text-secondary);
 }
-.csat-option input:checked + .csat-label {
+.csat-option--1 .csat-label,
+.csat-option--2 .csat-label {
+  background: rgba(239,68,68,0.06);
+  border-color: rgba(239,68,68,0.3);
+}
+.csat-option--1 .csat-label:hover,
+.csat-option--2 .csat-label:hover {
+  border-color: #ef4444;
+  color: #dc2626;
+}
+.csat-option--1 input:checked + .csat-label,
+.csat-option--2 input:checked + .csat-label {
+  border-color: #ef4444;
+  background: rgba(239,68,68,0.15);
+  color: #dc2626;
+}
+.csat-option--3 .csat-label {
+  background: rgba(217,119,6,0.06);
+  border-color: rgba(217,119,6,0.3);
+}
+.csat-option--3 .csat-label:hover {
+  border-color: #d97706;
+  color: #b45309;
+}
+.csat-option--3 input:checked + .csat-label {
+  border-color: #d97706;
+  background: rgba(217,119,6,0.15);
+  color: #b45309;
+}
+.csat-option--4 .csat-label,
+.csat-option--5 .csat-label {
+  background: rgba(74,186,61,0.06);
+  border-color: rgba(74,186,61,0.3);
+}
+.csat-option--4 .csat-label:hover,
+.csat-option--5 .csat-label:hover {
   border-color: var(--brand-green);
-  background: var(--brand-green-muted);
   color: var(--brand-green-dark);
 }
-.csat-label:hover {
+.csat-option--4 input:checked + .csat-label,
+.csat-option--5 input:checked + .csat-label {
   border-color: var(--brand-green);
+  background: var(--brand-green-muted);
   color: var(--brand-green-dark);
 }
 

@@ -229,6 +229,7 @@
   text-decoration: none;
   position: relative;
   user-select: none;
+  width: 100%;
 }
 .sidebar-nav__item:hover {
   background: var(--bg-surface-3);
@@ -309,7 +310,7 @@
 
 /* ── Page transitions ─────────────────────────── */
 .page-enter {
-  animation: pageEnter 0.2s ease forwards;
+  animation: pageEnter 0.2s ease;
 }
 @keyframes pageEnter {
   from { opacity: 0; transform: translateY(6px); }

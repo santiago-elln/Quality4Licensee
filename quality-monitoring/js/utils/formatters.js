@@ -102,3 +102,12 @@ export function scoreColor(pct) {
   if (pct >  0)  return 'var(--result-critical)';
   return 'var(--result-zero)';
 }
+
+/* Hex equivalents for Canvas/Chart.js (CSS vars não funcionam em canvas) */
+export function scoreColorHex(pct) {
+  if (pct >= 95) return '#10b981';
+  if (pct >= 70) return '#3b82f6';
+  if (pct >= 50) return '#f59e0b';
+  if (pct >  0)  return '#ef4444';
+  return '#6b7280';
+}

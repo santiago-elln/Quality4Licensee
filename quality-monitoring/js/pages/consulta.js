@@ -2,88 +2,248 @@
    CONSULTA POR ASSOCIADO — Painel de análise por colaborador
    ============================================================ */
 import { getCurrentUser } from '../auth.js';
-import { getRouteParams, navigate } from '../router.js';
+import { supabase } from '../supabase.js';
 import {
-  MOCK_USERS, TEAMS, DEPARTMENTS, EVAL_CATEGORIES, OBSERVATIONS,
-  getMonitorias, getMonitoriaStats, getTeam,
-} from '../data/mock.js';
-import {
-  formatDate, formatHHMMSS, resultBand, scoreColor,
-  getInitials, monthOptions,
+  formatDate, resultBand, scoreColor, scoreColorHex, getInitials,
 } from '../utils/formatters.js';
-import { canViewMetric, ACCESS_LEVELS } from '../utils/access.js';
-import { renderRadarChart, destroyAll } from '../components/charts.js';
+import { renderRadarChart, renderHistoryChart, destroyAll } from '../components/charts.js';
 
-/* ── Active filter state ──────────────────── */
-let _filters = {
-  deptId:    'dept-1',
-  gestorId:  '',
-  supId:     '',
-  collabId:  '',
-  dateFrom:  '',
-  dateTo:    '',
-};
-let _actionPlans = {};   /* collabId → [{ text, done, deadline }] */
+/* ── Module state ─────────────────────────── */
+let _currentUser  = null;
+let _departments  = [];
+let _supervisors  = [];
+let _employees    = [];
+let _evalCriteria = [];
+let _topicMap     = {};   // {topicId: {eval_criteria_id, points}}
+let _monStats     = {};   // {employeeId: computed stats}
+let _filters      = { supId: '', collabId: '', dateFrom: '', dateTo: '' };
+let _actionPlans  = {};
+let _dataLoaded   = false;
 
+/* ── Role helpers ─────────────────────────── */
+function isAnalista() {
+  return _currentUser?.role === 'analista' || (_currentUser?.accessLevel ?? 0) >= 4;
+}
+
+function myDept() {
+  return _departments.find(d => d.id === _currentUser?.departmentId);
+}
+
+
+function buildCollabOpts(supId, selectedId) {
+  const list = supId ? _employees.filter(e => e.supervisor_id === supId) : _employees;
+  return `<option value="">Todos</option>` +
+    list.map(c =>
+      `<option value="${c.id}" ${c.id === selectedId ? 'selected' : ''}>${c.name}</option>`
+    ).join('');
+}
+
+/* ── Card visibility (no re-render) ─────── */
+function applyCardVisibility() {
+  const { supId, collabId } = _filters;
+  let visible = 0;
+  document.querySelectorAll('.cc-card').forEach(card => {
+    const show = (!supId || card.dataset.supId === supId) &&
+                 (!collabId || card.dataset.collab === collabId);
+    card.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  const countEl = document.getElementById('summary-collab-count');
+  if (countEl) countEl.textContent = visible;
+}
+
+/* ── Interval helpers ─────────────────────── */
+function intervalToSecs(str) {
+  if (!str) return 0;
+  const parts = str.split(':');
+  return (+parts[0]) * 3600 + (+parts[1] || 0) * 60 + (+parts[2] || 0);
+}
+function secsToHHMMSS(secs) {
+  if (!secs) return '—';
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = Math.floor(secs % 60);
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+}
+
+/* ── Compute per-employee stats from monitoring rows ── */
+function computeMonStats(monitorings) {
+  const stats = {};
+  for (const emp of _employees) {
+    stats[emp.id] = {
+      count: 0, zeroed: 0, avgPct: 0, ptsLost: 0,
+      scCount: 0, avgTma: '—', avgTmpr: '—', avgTmer: '—', avgCsat: 0,
+      radarPcts: {},   // {criteriaId: pct}
+      history:   [],   // [{date, pct}] sorted asc
+      lastDate:  null,
+    };
+  }
+
+  for (const mon of monitorings) {
+    const s = stats[mon.employee_id];
+    if (!s) continue;
+
+    s.count++;
+    if (mon.zeroed) s.zeroed++;
+
+    let earnedPts = 0;
+    let totalMax  = 0;
+    const earnedByCriteria = {};
+    const maxByCriteria    = {};
+
+    for (const ta of (mon.topic_approval ?? [])) {
+      const topic = _topicMap[ta.topic_id];
+      if (!topic) continue;
+      const cid = topic.eval_criteria_id;
+      earnedByCriteria[cid] = (earnedByCriteria[cid] ?? 0);
+      maxByCriteria[cid]    = (maxByCriteria[cid]    ?? 0) + topic.points;
+      totalMax += topic.points;
+      if (ta.obtained) { earnedByCriteria[cid] += topic.points; earnedPts += topic.points; }
+    }
+
+    const pct = totalMax > 0 ? Math.round(earnedPts / totalMax * 100) : 0;
+    s._pctSum     = (s._pctSum     ?? 0) + pct;
+    s._ptsLostSum = (s._ptsLostSum ?? 0) + (totalMax - earnedPts);
+    s.history.push({ date: mon.date, pct });
+    if (!s.lastDate || mon.date > s.lastDate) s.lastDate = mon.date;
+
+    for (const cid of Object.keys(maxByCriteria)) {
+      if (!s._radarSum) s._radarSum = {};
+      s._radarSum[cid] = s._radarSum[cid] ?? { e: 0, m: 0 };
+      s._radarSum[cid].e += earnedByCriteria[cid] ?? 0;
+      s._radarSum[cid].m += maxByCriteria[cid];
+    }
+
+    for (const sc of (mon.service_chat ?? [])) {
+      s.scCount++;
+      s._tmaSum  = (s._tmaSum  ?? 0) + intervalToSecs(sc.service_time);
+      s._tmprSum = (s._tmprSum ?? 0) + intervalToSecs(sc.first_response_time);
+      s._tmerSum = (s._tmerSum ?? 0) + intervalToSecs(sc.max_response_time);
+      if (sc.csat) { s._csatSum = (s._csatSum ?? 0) + sc.csat; s._csatN = (s._csatN ?? 0) + 1; }
+    }
+  }
+
+  for (const s of Object.values(stats)) {
+    if (s.count) {
+      s.avgPct  = Math.round(s._pctSum / s.count);
+      s.ptsLost = Math.round((s._ptsLostSum / s.count) * 10) / 10;
+    }
+    if (s.scCount) {
+      s.avgTma  = secsToHHMMSS(Math.round(s._tmaSum  / s.scCount));
+      s.avgTmpr = secsToHHMMSS(Math.round(s._tmprSum / s.scCount));
+      s.avgTmer = secsToHHMMSS(Math.round(s._tmerSum / s.scCount));
+    }
+    s.avgCsat = s._csatN ? Math.round(s._csatSum / s._csatN * 10) / 10 : 0;
+
+    for (const [cid, { e, m }] of Object.entries(s._radarSum ?? {})) {
+      s.radarPcts[cid] = m > 0 ? Math.round(e / m * 100) : 0;
+    }
+    s.history.sort((a, b) => a.date.localeCompare(b.date));
+
+    delete s._pctSum; delete s._ptsLostSum; delete s._tmaSum;
+    delete s._tmprSum; delete s._tmerSum; delete s._csatSum;
+    delete s._csatN; delete s._radarSum;
+  }
+
+  return stats;
+}
+
+/* ── Data fetch ───────────────────────────── */
+async function fetchData() {
+  const [deptRes, supRes, empRes, ecRes, topicRes] = await Promise.all([
+    supabase.from('departments').select('id, name').order('name'),
+    supabase.from('profiles').select('id, name, department_id').eq('role', 'supervisor').order('name'),
+    supabase.from('employees').select('id, name, supervisor_id').eq('active', true).order('name'),
+    supabase.from('eval_criteria').select('id, name').eq('active', true),
+    supabase.from('topic').select('id, eval_criteria_id, points').eq('active', true),
+  ]);
+  if (deptRes.error)  console.error('[consulta] departments:', deptRes.error);
+  if (supRes.error)   console.error('[consulta] supervisors:', supRes.error);
+  if (empRes.error)   console.error('[consulta] employees:', empRes.error);
+  if (ecRes.error)    console.error('[consulta] eval_criteria:', ecRes.error);
+  if (topicRes.error) console.error('[consulta] topic:', topicRes.error);
+  _departments  = deptRes.data  ?? [];
+  _supervisors  = supRes.data   ?? [];
+  _employees    = empRes.data   ?? [];
+  _evalCriteria = ecRes.data    ?? [];
+  _topicMap     = Object.fromEntries((topicRes.data ?? []).map(t => [t.id, t]));
+}
+
+async function fetchMonitoringData() {
+  if (!_filters.dateFrom || !_filters.dateTo) return;
+  const { data, error } = await supabase
+    .from('monitoring')
+    .select(`
+      id, employee_id, date, zeroed,
+      topic_approval(topic_id, obtained),
+      service_chat(service_time, first_response_time, max_response_time, csat)
+    `)
+    .gte('date', _filters.dateFrom)
+    .lte('date', _filters.dateTo);
+  if (error) { console.error('[consulta] monitoring:', error); return; }
+  _monStats = computeMonStats(data ?? []);
+}
+
+/* ── render() ─────────────────────────────── */
 export function render() {
-  const user   = getCurrentUser();
-  const params = getRouteParams();
-
-  /* Pre-apply teamId if coming from dashboard supervisor row */
-  if (params.teamId && !_filters.supId) {
-    const team = getTeam(params.teamId);
-    if (team) _filters.supId = team.supervisorId;
-  }
-
-  /* Default date range: current month */
   if (!_filters.dateFrom) {
-    const now = new Date();
-    _filters.dateFrom = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-01`;
-    const lastDay = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
-    _filters.dateTo = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${lastDay}`;
+    const now     = new Date();
+    const y       = now.getFullYear();
+    const m       = String(now.getMonth() + 1).padStart(2, '0');
+    const lastDay = new Date(y, now.getMonth() + 1, 0).getDate();
+    _filters.dateFrom = `${y}-${m}-01`;
+    _filters.dateTo   = `${y}-${m}-${lastDay}`;
   }
 
-  const depts  = DEPARTMENTS;
-  const gestores = MOCK_USERS.filter(u =>
-    u.deptId === _filters.deptId && u.accessLevel >= ACCESS_LEVELS.GESTOR
-  );
-  const supervisores = MOCK_USERS.filter(u =>
-    u.deptId === _filters.deptId && u.role === 'supervisor' &&
-    (!_filters.gestorId || true)
-  );
-  const collabsAll = MOCK_USERS.filter(u =>
-    u.role === 'colaborador' && u.deptId === _filters.deptId &&
-    (!_filters.supId || u.teamId === TEAMS.find(t => t.supervisorId === _filters.supId)?.id) &&
-    (!_filters.collabId || u.id === _filters.collabId)
-  );
+  if (!_dataLoaded) {
+    return `
+      <div class="page-enter">
+        <div class="page-header">
+          <div class="page-title">Consulta por Associado</div>
+          <div class="page-subtitle">Análise detalhada de desempenho individual por período</div>
+        </div>
+        <div style="display:flex;align-items:center;justify-content:center;height:300px;gap:12px;color:var(--text-secondary)">
+          <div class="boot-spinner" style="width:20px;height:20px;border-width:2px"></div>
+          Carregando dados…
+        </div>
+      </div>`;
+  }
 
-  /* Access-scoped filter */
-  const viewer = user;
-  const visibleCollabs = collabsAll.filter(c => {
-    if (viewer.accessLevel >= ACCESS_LEVELS.ANALISTA) return c.deptId === viewer.deptId;
-    if (viewer.accessLevel === ACCESS_LEVELS.SUPERVISOR) return c.teamId === viewer.teamId;
-    return c.id === viewer.id;
-  });
-
-  /* Get monitorias within date range */
-  const collabIds = new Set(visibleCollabs.map(c => c.id));
-  const rangeMonitorias = getMonitorias({ deptId: _filters.deptId }).filter(m => {
-    if (!collabIds.has(m.colaboradorId)) return false;
-    if (_filters.dateFrom && m.date < _filters.dateFrom) return false;
-    if (_filters.dateTo   && m.date > _filters.dateTo)   return false;
-    return true;
-  });
-
-  /* Summary stats */
-  const totalMons = rangeMonitorias.length;
-  const avgPct = totalMons
-    ? Math.round(rangeMonitorias.reduce((s,m) => s+m.pct,0) / totalMons) : 0;
-  const zeroed = rangeMonitorias.filter(m => m.pct === 0).length;
+  const analista = isAnalista();
+  const dept     = myDept();
   const daysDiff = _filters.dateFrom && _filters.dateTo
     ? Math.round((new Date(_filters.dateTo) - new Date(_filters.dateFrom)) / 86400000) + 1
     : 0;
 
-  const cards = visibleCollabs.map(c => renderCard(c, rangeMonitorias, viewer)).join('');
+  /* Department: info display (same visual as form-group) */
+  const deptInfoHtml = `
+    <div class="form-group" style="margin-bottom:0">
+      <label class="form-label">Departamento</label>
+      <div class="form-input" style="opacity:.75;cursor:default;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        ${dept?.name ?? '—'}
+      </div>
+    </div>`;
+
+  /* Supervisor: select for analyst, readonly for supervisor */
+  const supFilterHtml = analista
+    ? `<div class="form-group" style="margin-bottom:0">
+         <label class="form-label">Supervisor</label>
+         <select class="form-select" id="f-sup">
+           <option value="">Todos</option>
+           ${_supervisors.map(s =>
+             `<option value="${s.id}" ${s.id === _filters.supId ? 'selected' : ''}>${s.name}</option>`
+           ).join('')}
+         </select>
+       </div>`
+    : `<div class="form-group" style="margin-bottom:0">
+         <label class="form-label">Supervisor</label>
+         <div class="form-input" style="opacity:.75;cursor:default">
+           ${_currentUser?.name ?? '—'}
+         </div>
+       </div>`;
+
+  /* Render ALL employees as cards; applyCardVisibility hides/shows */
+  const cards = _employees.map(c => renderCard(c)).join('');
 
   return `
     <div class="page-enter">
@@ -96,34 +256,14 @@ export function render() {
       <!-- Filters -->
       <div class="consulta-filters">
         <div class="consulta-filters__grid">
-          <div class="form-group" style="margin-bottom:0">
-            <label class="form-label">Departamento</label>
-            <select class="form-select" id="f-dept">
-              ${depts.map(d => `<option value="${d.id}" ${d.id===_filters.deptId?'selected':''}>${d.name}</option>`).join('')}
-            </select>
-          </div>
-          <div class="form-group" style="margin-bottom:0">
-            <label class="form-label">Gestor / Coordenador</label>
-            <select class="form-select" id="f-gestor">
-              <option value="">Todos</option>
-              ${gestores.map(g => `<option value="${g.id}" ${g.id===_filters.gestorId?'selected':''}>${g.name}</option>`).join('')}
-            </select>
-          </div>
-          <div class="form-group" style="margin-bottom:0">
-            <label class="form-label">Supervisor</label>
-            <select class="form-select" id="f-sup">
-              <option value="">Todos</option>
-              ${supervisores.map(s => `<option value="${s.id}" ${s.id===_filters.supId?'selected':''}>${s.name}</option>`).join('')}
-            </select>
-          </div>
+          ${deptInfoHtml}
+          ${supFilterHtml}
           <div class="form-group" style="margin-bottom:0">
             <label class="form-label">Colaborador</label>
             <select class="form-select" id="f-collab">
-              <option value="">Todos</option>
-              ${visibleCollabs.map(c => `<option value="${c.id}" ${c.id===_filters.collabId?'selected':''}>${c.name}</option>`).join('')}
+              ${buildCollabOpts(_filters.supId, _filters.collabId)}
             </select>
           </div>
-          <button class="btn btn--primary" id="btn-apply-filters">Aplicar</button>
         </div>
 
         <div class="consulta-filters__date-row">
@@ -148,18 +288,17 @@ export function render() {
       <!-- Summary bar -->
       <div class="consulta-summary-bar">
         <div class="consulta-summary-bar__stat">
-          <span>👥 Colaboradores:</span><strong>${visibleCollabs.length}</strong>
+          <span>👥 Colaboradores:</span><strong id="summary-collab-count">${_employees.length}</strong>
         </div>
         <div class="consulta-summary-bar__stat">
-          <span>📋 Monitorias no período:</span><strong>${totalMons}</strong>
+          <span>📋 Monitorias no período:</span><strong>0</strong>
         </div>
         <div class="consulta-summary-bar__stat">
           <span>📊 Aproveit. médio:</span>
-          <strong style="color:${scoreColor(avgPct)}">${totalMons ? avgPct + '%' : '—'}</strong>
+          <strong style="color:var(--text-tertiary)">—</strong>
         </div>
         <div class="consulta-summary-bar__stat">
-          <span>⚠ Zeradas:</span>
-          <strong style="color:${zeroed > 0 ? 'var(--color-danger)' : 'inherit'}">${zeroed}</strong>
+          <span>⚠ Zeradas:</span><strong>0</strong>
         </div>
         <div style="margin-left:auto">
           <span style="font-size:var(--text-xs);color:var(--text-tertiary)">
@@ -183,82 +322,26 @@ export function render() {
 }
 
 /* ── Card render ─────────────────────────── */
-function renderCard(collab, allMons, viewer) {
-  const mons   = allMons.filter(m => m.colaboradorId === collab.id);
-  const stats  = getMonitoriaStats(mons);
-  const team   = collab.teamId ? getTeam(collab.teamId) : null;
-  const sup    = MOCK_USERS.find(u => u.id === team?.supervisorId);
-  const obs    = OBSERVATIONS.filter(o => o.colaboradorId === collab.id);
-  const plan   = _actionPlans[collab.id] ?? [];
+function renderCard(collab) {
+  const s    = _monStats[collab.id] ?? { count: 0, zeroed: 0, avgPct: 0, ptsLost: 0, scCount: 0, avgTma: '—', avgTmpr: '—', avgTmer: '—', avgCsat: 0, history: [], lastDate: null };
+  const sup  = _supervisors.find(sv => sv.id === collab.supervisor_id);
+  const plan = _actionPlans[collab.id] ?? [];
+  const band = resultBand(s.avgPct);
 
-  const lastMon = mons[0];
-  const band    = resultBand(stats.avgPct ?? 0);
-  const color   = scoreColor(stats.avgPct ?? 0);
+  const scoreValHtml = s.count
+    ? `<div class="cc-card__score-val" style="color:${scoreColor(s.avgPct)}">${s.avgPct}%</div>`
+    : `<div class="cc-card__score-val" style="color:var(--text-tertiary)">—</div>`;
 
-  /* Last monitoring date description */
-  const lastMonDesc = lastMon
-    ? `Última monitoria: ${formatDate(lastMon.date)} · ${band.label}`
+  const lastMonHtml = s.lastDate
+    ? `Última: ${formatDate(s.lastDate)}`
     : 'Sem monitorias no período';
 
-  /* Time metrics from last monitoring */
-  const tma  = lastMon ? formatHHMMSS(lastMon.tma)  : '—';
-  const tmer = lastMon ? formatHHMMSS(lastMon.tmer) : '—';
-  const tmpr = lastMon ? formatHHMMSS(lastMon.tmpr) : '—';
-  const csatAvg = mons.length
-    ? (mons.reduce((s,m) => s + (m.csat ?? 0), 0) / mons.length).toFixed(1)
-    : '—';
-  const csatPct = mons.length
-    ? Math.round((mons.reduce((s,m) => s + (m.csat ?? 0), 0) / mons.length) / 5 * 100) + '%'
-    : '—';
+  const historyHtml = s.history.length
+    ? `<canvas id="history-cc-${collab.id}" height="80"></canvas>`
+    : `<div style="font-size:10px;color:var(--text-tertiary);padding:6px 0">Sem histórico</div>`;
 
-  /* Category scores */
-  const catScores = EVAL_CATEGORIES.map(cat => {
-    const earned = mons.length
-      ? mons.reduce((s, m) => s + cat.items.reduce((cs, item) =>
-          cs + (m.checkedItems?.[item.id] ? item.pts : 0), 0), 0) / mons.length
-      : 0;
-    const pct = Math.round((earned / cat.totalPts) * 100);
-    return { name: cat.name, short: cat.name.split(' ')[0], pct };
-  });
+  const csatDisplay = s.avgCsat ? `${s.avgCsat} ★` : '—';
 
-  /* Insights from observations */
-  const errorObs    = obs.filter(o => o.type === 'E').slice(0, 3);
-  const strengthObs = obs.filter(o => o.type === 'A').slice(0, 3);
-  const oppObs      = obs.filter(o => o.type === 'O').slice(0, 3);
-
-  /* Weakest / strongest category */
-  const sorted = [...catScores].sort((a,b) => a.pct - b.pct);
-  const weakCats = sorted.slice(0, 2);
-  const strongCats = [...catScores].sort((a,b) => b.pct - a.pct).slice(0, 2);
-
-  /* History segments */
-  const histSegs = mons.slice(0, 16).reverse().map(m => {
-    const b = resultBand(m.pct);
-    return `<div class="cc-history-seg" title="${formatDate(m.date)}: ${m.pct}%"
-         style="background:${scoreColor(m.pct)}"></div>`;
-  }).join('') || '<div style="font-size:10px;color:rgba(255,255,255,.3);padding:6px">Sem histórico</div>';
-
-  /* Recent obs */
-  const recentObsHtml = obs.slice(0, 2).map(o => `
-    <div class="cc-obs-item">
-      <span class="obs-type-tag obs-type-tag--${o.type}">${o.type}</span>
-      <span class="cc-obs-item__proto">#${o.attendanceId}</span>
-      <span>${o.text}</span>
-    </div>
-  `).join('');
-
-  /* Category mini bars */
-  const catBarsHtml = catScores.map(c => `
-    <div class="cc-cat-bar-row">
-      <span class="cc-cat-bar-row__name">${c.short}</span>
-      <div class="cc-cat-bar-track">
-        <div class="cc-cat-bar-fill" style="width:${c.pct}%;background:${scoreColor(c.pct)}"></div>
-      </div>
-      <span class="cc-cat-bar-row__val">${c.pct}%</span>
-    </div>
-  `).join('');
-
-  /* Action plan */
   const planItems = plan.map((item, i) => `
     <div class="cc-action-item">
       <input type="checkbox" class="cc-action-item__check ap-check"
@@ -269,116 +352,57 @@ function renderCard(collab, allMons, viewer) {
     </div>
   `).join('');
 
-  /* Trend vs previous */
-  const allMonsCollab = getMonitorias({ colaboradorId: collab.id });
-  const prevMons = allMonsCollab.filter(m => !mons.includes(m)).slice(0, mons.length || 3);
-  const prevStats = getMonitoriaStats(prevMons);
-  const trendDelta = stats.count && prevStats.count
-    ? stats.avgPct - prevStats.avgPct : null;
-  const trendHtml = trendDelta !== null
-    ? `<span style="font-size:10px;font-weight:700;color:${trendDelta >= 0 ? 'var(--brand-green-bright)' : '#ff6b6b'}">
-         ${trendDelta >= 0 ? '↑' : '↓'} ${Math.abs(trendDelta)}% vs. ant.
-       </span>`
-    : '';
-
   return `
-    <div class="cc-card" data-collab="${collab.id}">
+    <div class="cc-card" data-collab="${collab.id}" data-sup-id="${collab.supervisor_id ?? ''}">
 
-      <!-- Header -->
       <div class="cc-card__header">
         <div class="cc-card__avatar">${getInitials(collab.name)}</div>
         <div class="cc-card__info">
-          <div class="cc-card__name">${collab.name}</div>
-          <div class="cc-card__last-mon">${lastMonDesc}</div>
+          <div class="cc-card__name"><a href="#perfil?id=${collab.id}">${collab.name}</a></div>
+          <div class="cc-card__last-mon">${lastMonHtml}</div>
           <div class="cc-card__badges">
-            <span class="cc-badge">${team?.name ?? '—'}</span>
             <span class="cc-badge">${sup?.name?.split(' ')[0] ?? '—'}</span>
-            ${trendHtml}
           </div>
         </div>
         <div class="cc-card__score">
-          <div class="cc-card__score-val" style="color:${color}">
-            ${stats.count ? stats.avgPct + '%' : '—'}
-          </div>
-          <div class="cc-card__score-label">${mons.length} mon.</div>
+          ${scoreValHtml}
+          <div class="cc-card__score-label">${s.count} mon.</div>
           <span class="badge badge--${band.cls}" style="margin-top:4px;font-size:9px">${band.label}</span>
         </div>
       </div>
 
-      <!-- Body: metrics + radar -->
       <div class="cc-card__body">
         <div class="cc-metrics">
           <div class="cc-metric-row">
             <span class="cc-metric-row__label">Qtd. Atendimentos</span>
-            <span class="cc-metric-row__val">${mons.length}</span>
+            <span class="cc-metric-row__val">${s.scCount || '—'}</span>
           </div>
           <div class="cc-metric-row">
             <span class="cc-metric-row__label">TMA</span>
-            <span class="cc-metric-row__val">${tma}</span>
+            <span class="cc-metric-row__val">${s.avgTma}</span>
           </div>
           <div class="cc-metric-row">
             <span class="cc-metric-row__label">TMEr</span>
-            <span class="cc-metric-row__val">${tmer}</span>
+            <span class="cc-metric-row__val">${s.avgTmer}</span>
           </div>
           <div class="cc-metric-row">
             <span class="cc-metric-row__label">TMPr</span>
-            <span class="cc-metric-row__val">${tmpr}</span>
+            <span class="cc-metric-row__val">${s.avgTmpr}</span>
           </div>
           <div class="cc-metric-row">
-            <span class="cc-metric-row__label">CSAT</span>
-            <span class="cc-metric-row__val cc-metric-row__val--green">${csatPct} (${csatAvg}/5)</span>
+            <span class="cc-metric-row__label">CSAT médio</span>
+            <span class="cc-metric-row__val">${csatDisplay}</span>
           </div>
           <div class="cc-metric-row">
-            <span class="cc-metric-row__label">Pts perdidos/mon</span>
-            <span class="cc-metric-row__val cc-metric-row__val--${stats.ptsLost > 20 ? 'red' : stats.ptsLost > 10 ? 'yellow' : ''}">${stats.count ? stats.ptsLost : '—'}</span>
+            <span class="cc-metric-row__label">Monitorias zeradas</span>
+            <span class="cc-metric-row__val ${s.zeroed ? 'cc-metric-row__val--red' : ''}">${s.count ? s.zeroed : '—'}</span>
           </div>
-          <div class="cc-cat-bars">${catBarsHtml}</div>
         </div>
         <div class="cc-radar-wrap">
-          <canvas id="radar-cc-${collab.id}" width="180" height="180"></canvas>
+          <canvas id="radar-cc-${collab.id}" width="240" height="240"></canvas>
         </div>
       </div>
 
-      <!-- History bar -->
-      <div class="cc-history">
-        <div class="cc-history__label">Histórico de Resultados</div>
-        <div class="cc-history-bar">${histSegs}</div>
-      </div>
-
-      <!-- Insights three columns -->
-      <div class="cc-insights">
-        <div class="cc-insight-col cc-insight-col--error">
-          <div class="cc-insight-col__title cc-insight-col__title--error">⚠ Erros frequentes</div>
-          ${errorObs.length
-            ? errorObs.map(o => `<div class="cc-insight-item">${o.criteria ?? o.text}</div>`).join('')
-            : weakCats.map(c => `<div class="cc-insight-item">${c.name} (${c.pct}%)</div>`).join('')
-          }
-        </div>
-        <div class="cc-insight-col cc-insight-col--good">
-          <div class="cc-insight-col__title cc-insight-col__title--good">✔ Tem acertado em</div>
-          ${strengthObs.length
-            ? strengthObs.map(o => `<div class="cc-insight-item">${o.criteria ?? o.text}</div>`).join('')
-            : strongCats.map(c => `<div class="cc-insight-item">${c.name} (${c.pct}%)</div>`).join('')
-          }
-        </div>
-        <div class="cc-insight-col cc-insight-col--opp">
-          <div class="cc-insight-col__title cc-insight-col__title--opp">📘 Oportunidades</div>
-          ${oppObs.length
-            ? oppObs.map(o => `<div class="cc-insight-item">${o.criteria ?? o.text}</div>`).join('')
-            : weakCats.map(c => `<div class="cc-insight-item">Reforçar ${c.name}</div>`).join('')
-          }
-        </div>
-      </div>
-
-      <!-- Observations -->
-      ${recentObsHtml ? `
-        <div class="cc-obs">
-          <div class="cc-obs__label">Observações recentes</div>
-          ${recentObsHtml}
-        </div>
-      ` : ''}
-
-      <!-- Action Plan -->
       <div class="cc-action-plan" id="ap-${collab.id}">
         <button class="cc-action-plan__toggle ap-toggle" data-collab="${collab.id}">
           <span>📋 Plano de Ação ${plan.length ? `(${plan.filter(i=>!i.done).length} pendentes)` : ''}</span>
@@ -386,55 +410,75 @@ function renderCard(collab, allMons, viewer) {
         </button>
         <div class="cc-action-plan__body">
           <div class="cc-action-items" id="ap-items-${collab.id}">
-            ${planItems || `<div style="font-size:var(--text-xs);color:rgba(255,255,255,.3);padding:var(--space-2) 0">Nenhuma ação cadastrada</div>`}
+            ${planItems || `<div style="font-size:var(--text-xs);color:var(--text-tertiary);padding:var(--space-2) 0">Nenhuma ação cadastrada</div>`}
           </div>
           <div class="cc-action-add">
             <input class="form-input ap-input" id="ap-input-${collab.id}"
                    placeholder="Nova ação de melhoria…" data-collab="${collab.id}">
             <input class="form-input" type="date" id="ap-date-${collab.id}"
-                   style="background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.12);color:#fff;font-size:var(--text-xs);height:28px;padding:0 8px">
+                   style="font-size:var(--text-xs);height:28px;padding:0 8px">
             <button class="btn btn--primary ap-add-btn" data-collab="${collab.id}">+</button>
-          </div>
-          <div style="margin-top:var(--space-3);display:flex;justify-content:flex-end">
-            <button class="btn btn--ghost btn--sm" style="color:rgba(255,255,255,.4);font-size:var(--text-xs)"
-                    data-collab="${collab.id}" onclick="window.location.hash='#perfil?id=${collab.id}'">
-              Ver perfil completo →
-            </button>
           </div>
         </div>
       </div>
 
-    </div>
-  `;
+      <div class="cc-history">
+        <div class="cc-history__label">Histórico de Resultados</div>
+        <div class="cc-history-bar">${historyHtml}</div>
+      </div>
+    </div>`;
+  //     <div class="cc-insights">
+  //       <div class="cc-insight-col cc-insight-col--error">
+  //         <div class="cc-insight-col__title cc-insight-col__title--error">⚠ Erros frequentes</div>
+  //         <div class="cc-insight-item" style="opacity:.35">Sem dados</div>
+  //       </div>
+  //       <div class="cc-insight-col cc-insight-col--good">
+  //         <div class="cc-insight-col__title cc-insight-col__title--good">✔ Tem acertado em</div>
+  //         <div class="cc-insight-item" style="opacity:.35">Sem dados</div>
+  //       </div>
+  //       <div class="cc-insight-col cc-insight-col--opp">
+  //         <div class="cc-insight-col__title cc-insight-col__title--opp">📘 Oportunidades</div>
+  //         <div class="cc-insight-item" style="opacity:.35">Sem dados</div>
+  //       </div>
+  //     </div>
+
+  //   </div>
+  // `;
 }
 
-/* ── Charts initialization ─────────────────── */
-function initCharts(visibleCollabs, allMons) {
-  visibleCollabs.forEach(collab => {
-    const mons = allMons.filter(m => m.colaboradorId === collab.id);
-    const catPcts = EVAL_CATEGORIES.map(cat => {
-      const earned = mons.length
-        ? mons.reduce((s, m) => s + cat.items.reduce((cs, item) =>
-            cs + (m.checkedItems?.[item.id] ? item.pts : 0), 0), 0) / mons.length
-        : 0;
-      return Math.round((earned / cat.totalPts) * 100);
-    });
+/* ── Charts ───────────────────────────────── */
+function initCharts() {
+  const radarLabels = _evalCriteria.map(ec => ec.name.split(' ')[0]);
+
+  _employees.forEach(collab => {
+    const s = _monStats[collab.id];
 
     renderRadarChart(
       `radar-cc-${collab.id}`,
-      EVAL_CATEGORIES.map(c => c.name.split(' ').slice(0, 2).join(' ')),
-      [{ label: collab.name.split(' ')[0], data: catPcts }]
+      radarLabels,
+      [{ label: collab.name.split(' ')[0], data: _evalCriteria.map(ec => s?.radarPcts[ec.id] ?? 0) }]
     );
+
+    if (s?.history.length) {
+      const last5 = s.history.slice(-5);
+      renderHistoryChart(
+        `history-cc-${collab.id}`,
+        last5.map(h => formatDate(h.date)),
+        last5.map(h => h.pct),
+        last5.map(h => scoreColorHex(h.pct))
+      );
+    }
   });
 }
 
-/* ── Page reload helper ────────────────────── */
+/* ── Page reload (uses cached data) ──────── */
 function reloadPage() {
   destroyAll();
   const main = document.getElementById('main-content');
   if (!main) return;
   main.innerHTML = render();
-  init();
+  bindEvents();
+  applyCardVisibility();
 }
 
 /* ── Date range validation ─────────────────── */
@@ -459,9 +503,9 @@ function enforceDateRange() {
   }
 }
 
-/* ── Plan persistence in memory ────────────── */
+/* ── Action plan helpers ─────────────────── */
 function savePlan(collabId) {
-  const items = _actionPlans[collabId] ?? [];
+  const items     = _actionPlans[collabId] ?? [];
   const container = document.getElementById(`ap-items-${collabId}`);
   if (!container) return;
   container.innerHTML = items.length
@@ -474,13 +518,11 @@ function savePlan(collabId) {
           <button class="cc-action-item__del ap-del" data-collab="${collabId}" data-idx="${i}">🗑</button>
         </div>
       `).join('')
-    : `<div style="font-size:var(--text-xs);color:rgba(255,255,255,.3);padding:var(--space-2) 0">Nenhuma ação cadastrada</div>`;
+    : `<div style="font-size:var(--text-xs);color:var(--text-tertiary);padding:var(--space-2) 0">Nenhuma ação cadastrada</div>`;
 
-  /* Rebind events after re-render */
-  container.querySelectorAll('.ap-check').forEach(chk => bindCheckEvent(chk));
-  container.querySelectorAll('.ap-del').forEach(btn => bindDelEvent(btn));
+  container.querySelectorAll('.ap-check').forEach(bindCheckEvent);
+  container.querySelectorAll('.ap-del').forEach(bindDelEvent);
 
-  /* Update toggle label */
   const toggle = document.querySelector(`.ap-toggle[data-collab="${collabId}"] span:first-child`);
   if (toggle) {
     const pending = items.filter(i => !i.done).length;
@@ -497,6 +539,7 @@ function bindCheckEvent(chk) {
     }
   });
 }
+
 function bindDelEvent(btn) {
   btn.addEventListener('click', () => {
     const { collab, idx } = btn.dataset;
@@ -505,67 +548,55 @@ function bindDelEvent(btn) {
   });
 }
 
-export function init() {
-  const user    = getCurrentUser();
-  const params  = getRouteParams();
-  if (params.teamId) {
-    const team = getTeam(params.teamId);
-    if (team) _filters.supId = team.supervisorId;
-  }
+/* ── Event binding ─────────────────────────── */
+function bindEvents() {
+  initCharts();
 
-  /* Build visible collabs + mons matching current filters */
-  const visibleCollabs = MOCK_USERS.filter(u => {
-    if (u.role !== 'colaborador') return false;
-    if (u.deptId !== _filters.deptId) return false;
-    if (_filters.supId) {
-      const supTeam = TEAMS.find(t => t.supervisorId === _filters.supId);
-      if (supTeam && u.teamId !== supTeam.id) return false;
-    }
-    if (_filters.collabId && u.id !== _filters.collabId) return false;
-    if (user.accessLevel >= ACCESS_LEVELS.ANALISTA) return u.deptId === user.deptId;
-    if (user.accessLevel === ACCESS_LEVELS.SUPERVISOR) return u.teamId === user.teamId;
-    return u.id === user.id;
+  document.getElementById('f-date-from')?.addEventListener('change', async e => {
+    _filters.dateFrom = e.target.value;
+    enforceDateRange();
+    await fetchMonitoringData();
+    reloadPage();
   });
-
-  const allMons = getMonitorias({ deptId: _filters.deptId }).filter(m => {
-    if (!visibleCollabs.some(c => c.id === m.colaboradorId)) return false;
-    if (_filters.dateFrom && m.date < _filters.dateFrom) return false;
-    if (_filters.dateTo   && m.date > _filters.dateTo)   return false;
-    return true;
-  });
-
-  /* Init radar charts */
-  initCharts(visibleCollabs, allMons);
-
-  /* Date range enforcement */
-  document.getElementById('f-date-from')?.addEventListener('change', enforceDateRange);
-  document.getElementById('f-date-to')?.addEventListener('change',   enforceDateRange);
-
-  /* Apply filters button */
-  document.getElementById('btn-apply-filters')?.addEventListener('click', () => {
-    _filters.deptId   = document.getElementById('f-dept')?.value    ?? _filters.deptId;
-    _filters.gestorId = document.getElementById('f-gestor')?.value  ?? '';
-    _filters.supId    = document.getElementById('f-sup')?.value     ?? '';
-    _filters.collabId = document.getElementById('f-collab')?.value  ?? '';
-    _filters.dateFrom = document.getElementById('f-date-from')?.value ?? _filters.dateFrom;
-    _filters.dateTo   = document.getElementById('f-date-to')?.value   ?? _filters.dateTo;
+  document.getElementById('f-date-to')?.addEventListener('change', async e => {
+    _filters.dateTo = e.target.value;
+    enforceDateRange();
+    await fetchMonitoringData();
     reloadPage();
   });
 
-  /* Clear filters */
+  /* Supervisor change → update collab select + apply visibility */
+  document.getElementById('f-sup')?.addEventListener('change', e => {
+    _filters.supId    = e.target.value;
+    _filters.collabId = '';
+    const colSel = document.getElementById('f-collab');
+    if (colSel) colSel.innerHTML = buildCollabOpts(_filters.supId, '');
+    applyCardVisibility();
+  });
+
+  /* Collaborator change → apply visibility immediately */
+  document.getElementById('f-collab')?.addEventListener('change', e => {
+    _filters.collabId = e.target.value;
+    applyCardVisibility();
+  });
+
+  /* Clear all filters */
   document.getElementById('btn-clear-filters')?.addEventListener('click', () => {
-    _filters = { deptId: 'dept-1', gestorId: '', supId: '', collabId: '', dateFrom: '', dateTo: '' };
+    _filters = {
+      supId:    isAnalista() ? '' : (_currentUser?.id ?? ''),
+      collabId: '',
+      dateFrom: '',
+      dateTo:   '',
+    };
     reloadPage();
   });
 
-  /* Action plan toggles */
   document.querySelectorAll('.ap-toggle').forEach(btn => {
     btn.addEventListener('click', () => {
       document.getElementById(`ap-${btn.dataset.collab}`)?.classList.toggle('open');
     });
   });
 
-  /* Action plan add */
   document.querySelectorAll('.ap-add-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const collabId = btn.dataset.collab;
@@ -575,36 +606,50 @@ export function init() {
       if (!text) return;
       if (!_actionPlans[collabId]) _actionPlans[collabId] = [];
       _actionPlans[collabId].push({ text, done: false, deadline: dateEl?.value ?? '' });
-      if (input) input.value = '';
+      if (input)  input.value  = '';
       if (dateEl) dateEl.value = '';
       savePlan(collabId);
     });
   });
 
-  /* Allow Enter key on plan inputs */
   document.querySelectorAll('.ap-input').forEach(inp => {
     inp.addEventListener('keydown', e => {
-      if (e.key === 'Enter') {
+      if (e.key === 'Enter')
         document.querySelector(`.ap-add-btn[data-collab="${inp.dataset.collab}"]`)?.click();
-      }
     });
   });
 
-  /* Bind existing plan item events */
   document.querySelectorAll('.ap-check').forEach(bindCheckEvent);
   document.querySelectorAll('.ap-del').forEach(bindDelEvent);
+}
 
-  /* Filter supervisor cascade */
-  document.getElementById('f-sup')?.addEventListener('change', () => {
-    const supId  = document.getElementById('f-sup')?.value ?? '';
-    const collabSel = document.getElementById('f-collab');
-    if (!collabSel) return;
-    const supTeam = TEAMS.find(t => t.supervisorId === supId);
-    const members = MOCK_USERS.filter(u =>
-      u.role === 'colaborador' &&
-      (!supId || u.teamId === supTeam?.id)
-    );
-    collabSel.innerHTML = `<option value="">Todos</option>` +
-      members.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
-  });
+/* ── init ─────────────────────────────────── */
+export async function init() {
+  _currentUser = getCurrentUser();
+
+  if (!isAnalista()) {
+    _filters.supId = _currentUser?.id ?? '';
+  }
+
+  try {
+    if (!_employees.length) await fetchData();
+    await fetchMonitoringData();
+  } catch (err) {
+    console.error('[consulta] init error:', err);
+    const main = document.getElementById('main-content');
+    if (main) {
+      main.innerHTML = `
+        <div class="page-enter" style="padding:var(--space-8)">
+          <div class="empty-state">
+            <div class="empty-state__icon">⚠</div>
+            <div class="empty-state__title">Erro ao carregar dados</div>
+            <div class="empty-state__desc">${err?.message ?? 'Tente recarregar a página.'}</div>
+          </div>
+        </div>`;
+    }
+    return;
+  }
+
+  _dataLoaded = true;
+  reloadPage();
 }

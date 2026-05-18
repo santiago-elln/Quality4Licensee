@@ -58,7 +58,7 @@ function registerRoutes() {
   setDefaultRoute('login');
 
   registerRoute('login', async () => {
-    if (isAuthenticated()) { navigate('dashboard'); return; }
+    if (isAuthenticated()) { navigate('nova-monitoria'); return; }
     app.innerHTML = LoginPage.render();
     LoginPage.init?.();
   });
@@ -101,12 +101,11 @@ function setupPeriodRefresh() {
 
 /* ── Bootstrap ──────────────────────────────── */
 async function bootstrap() {
-  restoreSession();
+  await restoreSession();
 
   onAuthChange(user => {
     if (!user && getCurrentRoute() !== 'login') {
-      app.innerHTML = LoginPage.render();
-      LoginPage.init?.();
+      navigate('login');
     }
   });
 

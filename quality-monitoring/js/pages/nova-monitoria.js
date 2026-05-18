@@ -2,29 +2,222 @@
    NOVA MONITORIA — Formulário dois colunas + sidebar chat
    ============================================================ */
 import { getCurrentUser } from '../auth.js';
-import { navigate } from '../router.js';
-import { toast } from '../components/toast.js';
-import {
-  getCollabsForViewer, EVAL_CATEGORIES, ANALYTICAL_CRITERIA,
-  TOTAL_MAX_PTS, MONITORIAS, getMonitorias, getMonitoriaStats,
-  OBSERVATIONS,
-} from '../data/mock.js';
-import {
-  formatHHMMSS, parseHHMMSS, resultBand, scoreColor, formatDate,
-} from '../utils/formatters.js';
+import { navigate }       from '../router.js';
+import { toast }          from '../components/toast.js';
+import { EVAL_CATEGORIES, ANALYTICAL_CRITERIA, TOTAL_MAX_PTS } from '../data/config.js';
+import { supabase }       from '../supabase.js';
+import { formatHHMMSS, parseHHMMSS, resultBand, scoreColor } from '../utils/formatters.js';
 
-let _observations = [];
-let _totalEarned  = 0;
-let _selectedCollabId = null;
+/* ── Module state ─────────────────────────── */
+let _observations          = [];   // {typeCode, typeId, criteriaId, criteriaName, errorTypeId, errorTypeName, proto, text}
+let _serviceChats          = [];   // {protocol, startedAt, tmpr, tmer, tma, csat}
+let _totalEarned           = 0;
+let _pendingDeleteProtocol = null;
+
+/* Fetched from DB on init */
+let _topics          = [];   // [{id, item}]
+let _obsTypeMap      = {};   // {G: uuid, O: uuid, A: uuid, E: uuid}
+let _evalCriteria    = [];   // [{id, name}]
+let _analyticalTypes = [];   // [{id, name}]
+let _errorTypes      = [];   // [{id, name, critical}]
+let _employees       = [];   // [{id, name}]
+let _refDataLoaded   = false;
+
+/* ── Helpers ──────────────────────────────── */
+function normalizeTime(val) {
+  if (!val || !val.trim()) return null;
+  const parts = val.trim().split(':');
+  if (parts.length === 2) return `${parts[0].padStart(2, '0')}:${parts[1].padStart(2, '0')}:00`;
+  if (parts.length === 3) return parts.map(p => p.padStart(2, '0')).join(':');
+  return null;
+}
+
+function computeMonitoringWeek(dateStr) {
+  const d     = new Date(dateStr);
+  const day   = d.getDate();
+  const year  = d.getFullYear();
+  const month = d.getMonth();
+
+  if (day >= 26) {
+    const next = new Date(year, month + 1, 1);
+    return {
+      weekNumber:     1,
+      referenceMonth: `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}-01`,
+    };
+  }
+
+  const refMonth = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+  const dow1     = new Date(year, month, 1).getDay();
+  const firstSun = dow1 === 0 ? 1 : 1 + (7 - dow1);
+  const w2End    = Math.min(firstSun, 25);
+
+  if (day <= w2End) return { weekNumber: 2, referenceMonth: refMonth };
+
+  let start  = w2End + 1;
+  let weekNo = 3;
+  while (start <= 25) {
+    const end = Math.min(start + 6, 25);
+    if (day <= end) return { weekNumber: weekNo, referenceMonth: refMonth };
+    start = end + 1;
+    weekNo++;
+  }
+  return { weekNumber: weekNo, referenceMonth: refMonth };
+}
+
+/* ── Validation ───────────────────────────── */
+function validateRequiredFields() {
+  const collabId = document.getElementById('collab-select')?.value;
+  if (!collabId) { toast.warning('Atenção', 'Selecione um colaborador.'); return false; }
+
+  const monNum = Number(document.getElementById('monitoring-number')?.value);
+  if (!monNum || monNum < 1) { toast.warning('Atenção', 'Informe um número de monitoria válido.'); return false; }
+
+  if (!_serviceChats.length) {
+    toast.warning('Atenção', 'Adicione pelo menos um atendimento.');
+    return false;
+  }
+
+  for (const c of ANALYTICAL_CRITERIA) {
+    const checked = document.getElementById(`an-${c.id}`)?.checked;
+    if (!checked) {
+      const just = document.getElementById(`an-just-${c.id}`)?.value.trim();
+      if (!just) {
+        toast.warning('Atenção', `Justificativa obrigatória: "${c.name}"`);
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+/* ── DB save ──────────────────────────────── */
+async function persistMonitoring({ isZeroed = false, resetData = null } = {}) {
+  const user = getCurrentUser();
+  if (!user?.id) throw new Error('Sessão expirada. Faça login novamente.');
+
+  const collabId = document.getElementById('collab-select')?.value;
+  const monNum   = Number(document.getElementById('monitoring-number')?.value);
+
+  const { data: emp } = await supabase
+    .from('employees').select('sector_id').eq('id', collabId).single();
+  const sectorId = emp?.sector_id ?? null;
+
+  /* Use first service_chat's date for week calculation */
+  const firstSC = _serviceChats[0];
+  const { weekNumber, referenceMonth } = computeMonitoringWeek(firstSC.startedAt);
+  const today = new Date().toISOString().split('T')[0];
+
+  /* 1 — monitoring */
+  const { data: mon, error: monErr } = await supabase
+    .from('monitoring')
+    .insert({ number: monNum, employee_id: collabId, author_id: user.id,
+              date: today, reference_month: referenceMonth, week_number: weekNumber })
+    .select('id').single();
+  if (monErr) throw monErr;
+  const monId = mon.id;
+
+  /* 2 — service_chats (one per attendance) */
+  const scIdByProtocol = {};
+  let firstScId = null;
+  for (const sc of _serviceChats) {
+    const started = sc.startedAt.length === 16 ? `${sc.startedAt}:00` : sc.startedAt;
+    const { data: scRow, error: scErr } = await supabase
+      .from('service_chat')
+      .insert({ protocol: sc.protocol, employee_id: collabId, support_type: sectorId,
+                started_at: started, service_time: sc.tma,
+                first_response_time: sc.tmpr, max_response_time: sc.tmer, csat: sc.csat,
+                monitoring_id: monId })
+      .select('id').single();
+    if (scErr) {
+      await supabase.from('monitoring').delete().eq('id', monId);
+      if (scErr.code === '23505') throw new Error(`Protocolo duplicado: ${sc.protocol}`);
+      throw scErr;
+    }
+    scIdByProtocol[sc.protocol] = scRow.id;
+    if (!firstScId) firstScId = scRow.id;
+  }
+  const scId = firstScId;
+
+  /* 3 — topic_approval (batch) */
+  const approvals = EVAL_CATEGORIES.flatMap(cat =>
+    cat.items.map(item => {
+      const obtained = isZeroed ? false : (document.getElementById(`chk-${item.id}`)?.checked ?? false);
+      const dbTopic  = _topics.find(t => t.item === item.name);
+      return dbTopic ? { monitoring_id: monId, topic_id: dbTopic.id, obtained } : null;
+    }).filter(Boolean)
+  );
+  if (approvals.length) {
+    const { error } = await supabase.from('topic_approval').insert(approvals);
+    if (error) throw error;
+  }
+
+  /* 4 — analytical_note (batch) */
+  const notes = ANALYTICAL_CRITERIA.map(c => {
+    const obtained      = document.getElementById(`an-${c.id}`)?.checked ?? true;
+    const justification = document.getElementById(`an-just-${c.id}`)?.value.trim() || null;
+    const dbType        = _analyticalTypes.find(t => t.name === c.name);
+    return dbType ? { monitoring_id: monId, analytical_note_type_id: dbType.id, obtained, justification } : null;
+  }).filter(Boolean);
+  if (notes.length) {
+    const { error } = await supabase.from('analytical_note').insert(notes);
+    if (error) throw error;
+  }
+
+  /* 5 — observations */
+  for (const obs of _observations) {
+    const obsSCId = scIdByProtocol[obs.proto] ?? scId;
+    let errorId = null;
+    if (obs.typeCode === 'E' && obs.errorTypeId) {
+      const { data: err, error: errErr } = await supabase
+        .from('error').insert({ error_type_id: obs.errorTypeId }).select('id').single();
+      if (errErr) throw errErr;
+      errorId = err.id;
+    }
+    const { error } = await supabase.from('monitoring_observation').insert({
+      monitoring_id:       monId,
+      service_chat_id:     obsSCId,
+      observation_type_id: obs.typeId,
+      eval_criteria_id:    obs.criteriaId || null,
+      error_id:            errorId,
+      author_id:           user.id,
+      content:             obs.text,
+    });
+    if (error) throw error;
+  }
+
+  /* 6 — critical observation for zeroing */
+  if (isZeroed && resetData) {
+    const { data: critErr, error: critErrErr } = await supabase
+      .from('error').insert({ error_type_id: resetData.errorTypeId }).select('id').single();
+    if (critErrErr) throw critErrErr;
+
+    let content = resetData.justification;
+    if (resetData.datetime) content = `[Horário: ${resetData.datetime}] ${content}`;
+    const zeroScId = (resetData.protocol && scIdByProtocol[resetData.protocol]) ? scIdByProtocol[resetData.protocol] : scId;
+
+    const { error } = await supabase.from('monitoring_observation').insert({
+      monitoring_id:       monId,
+      service_chat_id:     zeroScId,
+      observation_type_id: _obsTypeMap['E'],
+      eval_criteria_id:    null,
+      error_id:            critErr.id,
+      author_id:           user.id,
+      content,
+    });
+    if (error) throw error;
+  }
+
+  return monId;
+}
+
+/* ── render() ─────────────────────────────── */
+const MONTH_NAMES = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
 
 export function render() {
-  const user   = getCurrentUser();
-  const collabs = getCollabsForViewer(user).filter(c => c.role === 'colaborador');
-  const monNum  = MONITORIAS.length + 1;
-
-  const collabOpts = collabs.map(c =>
-    `<option value="${c.id}">${c.name}</option>`
-  ).join('');
+  const { weekNumber, referenceMonth } = computeMonitoringWeek(new Date());
+  const refDate   = new Date(`${referenceMonth}T12:00:00`);
+  const weekLabel = `Sem. ${weekNumber} · ${MONTH_NAMES[refDate.getMonth()]}`;
 
   const categorySections = EVAL_CATEGORIES.map(cat => renderCategory(cat)).join('');
 
@@ -40,39 +233,31 @@ export function render() {
     </div>
   `).join('');
 
-  const criteriaOpts = [
-    ...EVAL_CATEGORIES.map(c => c.name),
-    ...ANALYTICAL_CRITERIA.map(c => c.name),
-  ].map(n => `<option value="${n}">${n}</option>`).join('');
-
   return `
     <div class="monitoring-page page-enter">
-      <!-- Page header -->
       <div class="monitoring-header">
-        <button class="monitoring-header__back" id="btn-back">← Voltar</button>
         <div class="monitoring-header__title-wrap">
           <div class="monitoring-header__title">Monitoria de Qualidade</div>
           <div class="monitoring-header__subtitle">Registro de atendimento</div>
         </div>
       </div>
 
-      <!-- Two-column layout -->
       <div class="monitoring-layout">
 
-        <!-- ══ LEFT COLUMN: main form ══ -->
+        <!-- ══ LEFT COLUMN ══ -->
         <div class="monitoring-main">
 
-          <!-- Timer calculator -->
+          <!-- Timer Δt -->
           <div class="timer-calc">
             <div><div class="timer-calc__label">Cálculo Δt entre tempos</div></div>
             <div class="timer-calc__fields">
               <div class="timer-field">
                 <label class="timer-field__label">msg1</label>
-                <input class="timer-field__input" id="timer-msg1" placeholder="00:00:00" value="00:00:00">
+                <input class="timer-field__input" id="timer-msg1" type="time" step="1">
               </div>
               <div class="timer-field">
                 <label class="timer-field__label">msg2</label>
-                <input class="timer-field__input" id="timer-msg2" placeholder="00:00:00" value="00:00:00">
+                <input class="timer-field__input" id="timer-msg2" type="time" step="1">
               </div>
               <div class="timer-field">
                 <label class="timer-delta">Δt <span class="timer-delta__val" id="timer-delta">00:00:00</span></label>
@@ -87,12 +272,12 @@ export function render() {
               <label class="collab-selector__label">Colaborador</label>
               <select class="form-select collab-selector__select" id="collab-select">
                 <option value="">— selecione —</option>
-                ${collabOpts}
               </select>
             </div>
             <div class="monitoring-number-section">
               <label class="form-label">Monitoria Nº</label>
-              <div class="monitoring-number-val">${monNum}</div>
+              <input class="monitoring-number-input" type="number" id="monitoring-number" value="1" min="1">
+              <div class="monitoring-week-indicator">${weekLabel}</div>
             </div>
           </div>
 
@@ -102,38 +287,70 @@ export function render() {
               <span class="attendance-section__icon">🔧</span>
               <span class="attendance-section__title">Dados do Atendimento</span>
             </div>
-            <div class="attendance-grid">
+
+            <!-- Add-form -->
+            <div class="attendance-grid" id="sc-form">
               <div class="attendance-field">
-                <div class="attendance-field__label">ID / Protocolo</div>
+                <div class="attendance-field__label">ID / Protocolo <span class="required">*</span></div>
                 <input class="attendance-field__input" id="att-id" placeholder="ex: 123456">
               </div>
               <div class="attendance-field">
-                <div class="attendance-field__label">Data e hora do início</div>
-                <input class="attendance-field__input" id="att-date" type="datetime-local">
+                <div class="attendance-field__label">Data e hora do início <span class="required">*</span></div>
+                <div class="time-input-wrap">
+                  <input class="attendance-field__input" id="att-date" type="datetime-local">
+                  <button type="button" class="time-input-wrap__btn" tabindex="-1" data-for="att-date">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                  </button>
+                </div>
               </div>
               <div class="attendance-field">
                 <div class="attendance-field__label">Tempo de primeira resposta</div>
-                <input class="attendance-field__input" id="att-tmpr" placeholder="00:00:00">
+                <div class="time-input-wrap">
+                  <input class="attendance-field__input" id="att-tmpr" type="time" step="1">
+                  <button type="button" class="time-input-wrap__btn" tabindex="-1" data-for="att-tmpr">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                  </button>
+                </div>
               </div>
               <div class="attendance-field">
-                <div class="attendance-field__label">Tempo máx. espera entre respostas</div>
-                <input class="attendance-field__input" id="att-tmer" placeholder="00:00:00">
+                <div class="attendance-field__label">Tempo máx. entre respostas</div>
+                <div class="time-input-wrap">
+                  <input class="attendance-field__input" id="att-tmer" type="time" step="1">
+                  <button type="button" class="time-input-wrap__btn" tabindex="-1" data-for="att-tmer">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                  </button>
+                </div>
               </div>
               <div class="attendance-field">
-                <div class="attendance-field__label">Tempo de atendimento</div>
-                <input class="attendance-field__input" id="att-tma" placeholder="00:00:00">
+                <div class="attendance-field__label">Tempo de atendimento <span class="required">*</span></div>
+                <div class="time-input-wrap">
+                  <input class="attendance-field__input" id="att-tma" type="time" step="1">
+                  <button type="button" class="time-input-wrap__btn" tabindex="-1" data-for="att-tma">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                  </button>
+                </div>
               </div>
               <div class="attendance-field">
                 <div class="attendance-field__label">Avaliação CSAT</div>
                 <div class="csat-group">
                   ${[1,2,3,4,5].map(v =>
-                    `<label class="csat-option">
+                    `<label class="csat-option csat-option--${v}">
                       <input type="radio" name="csat" value="${v}" ${v===5?'checked':''}>
                       <span class="csat-label">${v}</span>
                     </label>`
                   ).join('')}
                 </div>
               </div>
+            </div>
+
+            <!-- Add button -->
+            <div style="display:flex;justify-content:flex-end;padding:var(--space-3) var(--space-5);border-top:1px solid var(--border-light)">
+              <button class="btn btn--primary btn--sm" id="btn-add-sc">+ Adicionar Atendimento</button>
+            </div>
+
+            <!-- Bubbles list -->
+            <div class="sc-bubbles" id="sc-list">
+              <span class="sc-empty-label">Nenhum atendimento adicionado</span>
             </div>
           </div>
 
@@ -178,57 +395,42 @@ export function render() {
             ${analyticalRows}
           </div>
 
-          <!-- Watermark + submit -->
-          <div class="form-logo-mark">
-            <img src="assets/images/logo-light.png" alt="iGreen">
-          </div>
-
-          <div style="display:flex;justify-content:flex-end;gap:var(--space-3);margin-top:var(--space-4)">
-            <button class="btn btn--secondary btn--lg" id="btn-cancel-form">Cancelar</button>
-            <button class="btn btn--primary btn--lg" id="btn-save-monitoring">
-              💾 Salvar Monitoria
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:var(--space-3);margin-top:var(--space-4)">
+            <button class="btn btn--danger btn--lg btn--ghost" id="btn-reset-monitoring">
+              ⚠️ Zerar Monitoria
             </button>
+            <div style="display:flex;gap:var(--space-3)">
+              <button class="btn btn--secondary btn--lg" id="btn-cancel-form">Cancelar</button>
+              <button class="btn btn--primary btn--lg" id="btn-save-monitoring">
+                💾 Salvar Monitoria
+              </button>
+            </div>
           </div>
         </div>
 
-        <!-- ══ RIGHT COLUMN: sidebar ══ -->
+        <!-- ══ RIGHT COLUMN ══ -->
         <div class="monitoring-sidebar">
-
-          <!-- AI Summary -->
-          <div class="ai-summary-panel" id="ai-summary-panel">
-            <div class="ai-summary-panel__header" id="ai-summary-toggle">
-              <span class="ai-summary-panel__title">✨ Resumo IA — Histórico do Colaborador</span>
-              <span class="ai-summary-panel__toggle">▾</span>
-            </div>
-            <div class="ai-summary-panel__body" id="ai-summary-body">
-              <div class="ai-summary-placeholder" id="ai-summary-placeholder">
-                <div class="ai-summary-placeholder__icon">🤖</div>
-                <div>Selecione um colaborador para ver o resumo das monitorias anteriores</div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Observations Chat Sidebar -->
           <div class="obs-sidebar-panel">
             <div class="obs-sidebar-panel__header">
               <span class="obs-sidebar-panel__title">💬 Observações</span>
               <span class="badge badge--dark" id="obs-count-badge">0</span>
             </div>
 
-            <!-- Add observation form -->
             <div class="obs-add-form" id="obs-add-form">
               <div class="obs-add-form__row">
                 <div class="form-group" style="margin-bottom:0">
-                  <label class="form-label">Protocolo</label>
-                  <input class="form-input" id="obs-proto" placeholder="ID do atendimento">
+                  <label class="form-label">Protocolo <span class="required">*</span></label>
+                  <select class="form-select" id="obs-proto">
+                    <option value="">— selecione —</option>
+                  </select>
                 </div>
                 <div class="form-group" style="margin-bottom:0">
                   <label class="form-label">Tipo <span class="required">*</span></label>
                   <select class="form-select" id="obs-type">
-                    <option value="G">Genérico (G)</option>
-                    <option value="O">Operador (O)</option>
-                    <option value="A">Analítico (A)</option>
-                    <option value="E">Erro (E)</option>
+                    <option value="G">Genérico</option>
+                    <option value="O">Oportunidade</option>
+                    <option value="A">Acerto</option>
+                    <option value="E">Erro</option>
                   </select>
                 </div>
               </div>
@@ -236,18 +438,12 @@ export function render() {
                 <label class="form-label">Critério (opcional)</label>
                 <select class="form-select" id="obs-criteria">
                   <option value="">— nenhum —</option>
-                  ${criteriaOpts}
                 </select>
               </div>
               <div class="form-group obs-error-field" id="obs-error-field" style="margin-bottom:0">
                 <label class="form-label" style="color:var(--color-danger)">Tipo do Erro</label>
                 <select class="form-select" id="obs-error-type">
                   <option value="">— selecione —</option>
-                  <option value="Violação de norma legal">Violação de norma legal</option>
-                  <option value="Falha em procedimento interno">Falha em procedimento interno</option>
-                  <option value="Informação incorreta">Informação incorreta</option>
-                  <option value="Conduta inadequada">Conduta inadequada</option>
-                  <option value="Outro">Outro</option>
                 </select>
               </div>
               <div class="form-group" style="margin-bottom:0">
@@ -259,11 +455,66 @@ export function render() {
               </button>
             </div>
 
-            <!-- Bubbles -->
             <div class="obs-chat-scrollable" id="obs-chat"></div>
           </div>
-        </div><!-- /sidebar -->
-      </div><!-- /monitoring-layout -->
+        </div>
+
+      </div>
+
+      <!-- Modal: Excluir Atendimento -->
+      <div class="modal-overlay modal-overlay--hidden" id="modal-sc-delete-overlay">
+        <div class="modal" id="modal-sc-delete">
+          <div class="modal__header">
+            <div class="modal__title">Excluir Atendimento</div>
+            <button class="modal__close" id="btn-sc-delete-close">✕</button>
+          </div>
+          <div class="modal__body">
+            <p style="color:var(--text-primary);font-size:var(--text-sm)">
+              Deseja excluir o atendimento <strong id="modal-sc-protocol-label" style="color:var(--brand-green-dark)"></strong> desta monitoria?
+            </p>
+          </div>
+          <div class="modal__footer">
+            <button class="btn btn--secondary" id="btn-sc-delete-cancel">Cancelar</button>
+            <button class="btn btn--danger" id="btn-sc-delete-confirm">Excluir</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Modal: Zerar Monitoria -->
+      <div class="modal-overlay modal-overlay--hidden" id="modal-reset-overlay">
+        <div class="modal" id="modal-reset-monitoring">
+          <div class="modal__header">
+            <div class="modal__title">Zerar Monitoria</div>
+            <button class="modal__close" id="btn-modal-close">✕</button>
+          </div>
+          <div class="modal__body">
+            <div class="form-group">
+              <label class="form-label">Tipo de Erro Crítico <span class="required">*</span></label>
+              <select class="form-select" id="reset-error-type">
+                <option value="">— selecione —</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Protocolo do Atendimento <span class="required">*</span></label>
+              <select class="form-select" id="reset-protocol">
+                <option value="">— selecione —</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Data e Horário da Violação</label>
+              <input class="form-input" id="reset-datetime" type="datetime-local">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Justificativa <span class="required">*</span></label>
+              <textarea class="form-textarea" id="reset-justification" placeholder="Explique o motivo do zeramento..."></textarea>
+            </div>
+          </div>
+          <div class="modal__footer">
+            <button class="btn btn--secondary" id="btn-reset-cancel">Cancelar</button>
+            <button class="btn btn--danger" id="btn-reset-confirm">Confirmar Zeramento</button>
+          </div>
+        </div>
+      </div>
     </div>
   `;
 }
@@ -274,7 +525,8 @@ function renderCategory(cat) {
     <div class="eval-item" id="row-${item.id}">
       <input type="checkbox" class="eval-item__check" data-cat="${cat.id}"
              data-pts="${item.pts}" data-item="${item.id}" id="chk-${item.id}" checked>
-      <label class="eval-item__name" for="chk-${item.id}">${item.name}</label>
+      <label class="eval-item__name eval-item__criterion" for="chk-${item.id}"
+             data-description="${item.description || ''}">${item.name}</label>
       <div class="eval-item__pts">
         <span class="eval-item__pts-val earned" id="pts-${item.id}">${item.pts}</span>
         <span class="eval-item__pts-max">/${item.pts}</span>
@@ -315,13 +567,10 @@ function recalcScores() {
       }
     });
     total += earned;
-    const pct  = Math.round((earned / cat.totalPts) * 100);
-    const prog = document.getElementById(`prog-${cat.id}`);
+    const pct    = Math.round((earned / cat.totalPts) * 100);
+    const prog   = document.getElementById(`prog-${cat.id}`);
     const secPts = document.getElementById(`sec-pts-${cat.id}`);
-    if (prog) {
-      prog.style.width = `${pct}%`;
-      prog.style.background = scoreColor(pct);
-    }
+    if (prog)   { prog.style.width = `${pct}%`; prog.style.background = scoreColor(pct); }
     if (secPts) secPts.textContent = earned;
   });
 
@@ -329,117 +578,14 @@ function recalcScores() {
   const pct  = Math.round((total / TOTAL_MAX_PTS) * 100);
   const band = resultBand(pct);
 
-  const bar = document.getElementById('total-progress-bar');
-  if (bar) {
-    bar.style.width      = `${pct}%`;
-    bar.style.background = scoreColor(pct);
-  }
+  const bar     = document.getElementById('total-progress-bar');
   const totalEl = document.getElementById('score-total');
   const pctEl   = document.getElementById('score-pct');
   const bandEl  = document.getElementById('score-band');
+  if (bar)     { bar.style.width = `${pct}%`; bar.style.background = scoreColor(pct); }
   if (totalEl) totalEl.textContent = total;
   if (pctEl)   pctEl.textContent   = `${pct}%`;
-  if (bandEl) {
-    bandEl.textContent = band.label;
-    bandEl.className   = `badge badge--${band.cls}`;
-  }
-}
-
-/* ── AI Summary panel ─────────────────────── */
-function renderAiSummary(collabId) {
-  const body = document.getElementById('ai-summary-body');
-  if (!body) return;
-
-  const mons  = getMonitorias({ colaboradorId: collabId });
-  if (!mons.length) {
-    body.innerHTML = `
-      <div class="ai-summary-placeholder">
-        <div class="ai-summary-placeholder__icon">📋</div>
-        <div>Nenhuma monitoria anterior encontrada para este colaborador.</div>
-      </div>`;
-    return;
-  }
-
-  const stats = getMonitoriaStats(mons);
-  const last3 = mons.slice(0, 3);
-  const trend = mons.length >= 2
-    ? mons[0].pct - mons[1].pct
-    : null;
-
-  /* Category avgs */
-  const catData = EVAL_CATEGORIES.map(cat => {
-    const earned = mons.length
-      ? mons.reduce((s, m) =>
-          s + cat.items.reduce((cs, item) =>
-            cs + (m.checkedItems?.[item.id] ? item.pts : 0), 0), 0) / mons.length
-      : 0;
-    return { name: cat.name.split(' ')[0], pct: Math.round((earned / cat.totalPts) * 100) };
-  });
-
-  const weakest  = [...catData].sort((a,b) => a.pct - b.pct)[0];
-  const strongest = [...catData].sort((a,b) => b.pct - a.pct)[0];
-
-  const recentObs = OBSERVATIONS.filter(o => o.colaboradorId === collabId).slice(0, 3);
-
-  const trendStr = trend === null ? ''
-    : trend > 0 ? `<span style="color:var(--brand-green)">↑ +${trend}% vs. ant.</span>`
-    : trend < 0 ? `<span style="color:#ff6b6b">↓ ${trend}% vs. ant.</span>`
-    : `<span style="color:rgba(255,255,255,.4)">→ Estável</span>`;
-
-  body.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-3);gap:var(--space-2);flex-wrap:wrap">
-      <span style="font-size:var(--text-xs);color:rgba(255,255,255,.35)">${mons.length} monitorias registradas</span>
-      <span style="font-size:var(--text-xs)">${trendStr}</span>
-    </div>
-
-    <div class="ai-metric-row">
-      <span class="ai-metric-row__label">Aproveit. médio</span>
-      <span class="ai-metric-row__val" style="color:${scoreColor(stats.avgPct)}">${stats.avgPct}%</span>
-    </div>
-    <div class="ai-metric-row">
-      <span class="ai-metric-row__label">Pts perdidos/mon</span>
-      <span class="ai-metric-row__val">${stats.ptsLost}</span>
-    </div>
-    <div class="ai-metric-row">
-      <span class="ai-metric-row__label">Zeradas</span>
-      <span class="ai-metric-row__val" style="color:${stats.zeroed>0?'#ff6b6b':'inherit'}">${stats.zeroed}</span>
-    </div>
-    <div class="ai-metric-row">
-      <span class="ai-metric-row__label">Mais forte</span>
-      <span class="ai-metric-row__val" style="color:var(--brand-green)">${strongest.name} (${strongest.pct}%)</span>
-    </div>
-    <div class="ai-metric-row">
-      <span class="ai-metric-row__label">Mais fraco</span>
-      <span class="ai-metric-row__val" style="color:#ffd166">${weakest.name} (${weakest.pct}%)</span>
-    </div>
-
-    <div style="margin-top:var(--space-3);padding-top:var(--space-3);border-top:1px solid rgba(255,255,255,.08)">
-      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:rgba(255,255,255,.35);margin-bottom:var(--space-2)">Últimas 3 monitorias</div>
-      ${last3.map(m => `
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:var(--text-xs)">
-          <span style="color:rgba(255,255,255,.45)">${formatDate(m.date)}</span>
-          <div style="display:flex;align-items:center;gap:var(--space-2)">
-            <div style="width:50px;height:4px;background:rgba(255,255,255,.1);border-radius:99px;overflow:hidden">
-              <div style="width:${m.pct}%;height:100%;background:${scoreColor(m.pct)};border-radius:99px"></div>
-            </div>
-            <span style="color:${scoreColor(m.pct)};font-weight:700">${m.pct}%</span>
-          </div>
-        </div>
-      `).join('')}
-    </div>
-
-    ${recentObs.length ? `
-      <div style="margin-top:var(--space-3);padding-top:var(--space-3);border-top:1px solid rgba(255,255,255,.08)">
-        <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:rgba(255,255,255,.35);margin-bottom:var(--space-2)">Observações recentes</div>
-        ${recentObs.map(o => `
-          <div style="display:flex;gap:var(--space-2);padding:3px 0;font-size:var(--text-xs);color:rgba(255,255,255,.5)">
-            <span class="obs-type-tag obs-type-tag--${o.type}" style="flex-shrink:0">${o.type}</span>
-            <span style="line-height:var(--leading-snug)">${o.text}</span>
-          </div>
-        `).join('')}
-      </div>
-    ` : ''}
-  `;
+  if (bandEl)  { bandEl.textContent = band.label; bandEl.className = `badge badge--${band.cls}`; }
 }
 
 /* ── Observation chat render ───────────────── */
@@ -459,14 +605,14 @@ function renderObsChat() {
   }
 
   area.innerHTML = _observations.map((o, idx) => `
-    <div class="obs-bubble-compact obs-bubble-compact--${o.type}">
+    <div class="obs-bubble-compact obs-bubble-compact--${o.typeCode}">
       <div class="obs-bubble-compact__header">
-        <span class="obs-type-tag obs-type-tag--${o.type}">${o.type}</span>
-        ${o.criteria ? `<span class="obs-bubble-compact__criteria">${o.criteria}</span>` : ''}
+        <span class="obs-type-tag obs-type-tag--${o.typeCode}">${o.typeCode}</span>
+        ${o.criteriaName ? `<span class="obs-bubble-compact__criteria">${o.criteriaName}</span>` : ''}
         ${o.proto ? `<span class="obs-bubble-compact__proto">#${o.proto}</span>` : ''}
       </div>
       <div class="obs-bubble-compact__text">${o.text}</div>
-      ${o.errorType ? `<div style="font-size:10px;margin-top:3px;color:var(--color-danger);font-weight:600">⚠ ${o.errorType}</div>` : ''}
+      ${o.errorTypeName ? `<div style="font-size:10px;margin-top:3px;color:var(--color-danger);font-weight:600">⚠ ${o.errorTypeName}</div>` : ''}
       <button class="obs-bubble-compact__delete" data-idx="${idx}" title="Remover">✕</button>
     </div>
   `).join('');
@@ -479,17 +625,280 @@ function renderObsChat() {
   });
 }
 
-export function init() {
-  _observations = [];
-  _selectedCollabId = null;
+/* ── init ─────────────────────────────────── */
+/* ── Obs protocol select sync ────────────── */
+function renderObsProtoSelect() {
+  const sel = document.getElementById('obs-proto');
+  if (!sel) return;
+  const current = sel.value;
+  sel.innerHTML = `<option value="">— selecione —</option>` +
+    _serviceChats.map(s => `<option value="${s.protocol}">${s.protocol}</option>`).join('');
+  if (_serviceChats.some(s => s.protocol === current)) sel.value = current;
+}
+
+/* ── Service chat list render ─────────────── */
+function renderServiceChatList() {
+  const container = document.getElementById('sc-list');
+  if (!container) return;
+  renderObsProtoSelect();
+  if (!_serviceChats.length) {
+    container.innerHTML = `<span class="sc-empty-label">Nenhum atendimento adicionado</span>`;
+    return;
+  }
+  container.innerHTML = _serviceChats.map(sc => {
+    const dtStr = sc.startedAt
+      ? new Date(sc.startedAt).toLocaleString('pt-BR', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' })
+      : '';
+    return `
+      <div class="sc-bubble">
+        <span class="sc-bubble__proto">#${sc.protocol}</span>
+        ${dtStr ? `<span class="sc-bubble__date">${dtStr}</span>` : ''}
+        <button class="sc-bubble__del" data-protocol="${sc.protocol}" title="Excluir">✕</button>
+      </div>`;
+  }).join('');
+
+  container.querySelectorAll('.sc-bubble__del').forEach(btn => {
+    btn.addEventListener('click', () => openScDeleteModal(btn.dataset.protocol));
+  });
+}
+
+function openScDeleteModal(protocol) {
+  _pendingDeleteProtocol = protocol;
+  const label = document.getElementById('modal-sc-protocol-label');
+  if (label) label.textContent = `#${protocol}`;
+  document.getElementById('modal-sc-delete-overlay')?.classList.remove('modal-overlay--hidden');
+  const appMain = document.querySelector('.app-main');
+  if (appMain) appMain.style.overflowY = 'hidden';
+}
+
+function closeScDeleteModal() {
+  _pendingDeleteProtocol = null;
+  document.getElementById('modal-sc-delete-overlay')?.classList.add('modal-overlay--hidden');
+  const appMain = document.querySelector('.app-main');
+  if (appMain) appMain.style.overflowY = '';
+}
+
+export async function init() {
+  /* Reset apenas dados preenchidos pelo usuário */
+  _observations          = [];
+  _serviceChats          = [];
+  _pendingDeleteProtocol = null;
   recalcScores();
   renderObsChat();
+  renderServiceChatList();
 
-  /* Back / cancel */
-  document.getElementById('btn-back')?.addEventListener('click', () => history.back());
-  document.getElementById('btn-cancel-form')?.addEventListener('click', () => navigate('dashboard'));
+  /* ── Fetch dados de referência apenas na primeira visita ── */
+  if (!_refDataLoaded) {
+    const [empRes, topicRes, obsTypeRes, evalCrRes, analTypeRes, errTypeRes] = await Promise.all([
+      supabase.from('employees').select('id, name').eq('active', true).order('name'),
+      supabase.from('topic').select('id, item, eval_criteria_id').eq('active', true),
+      supabase.from('observation_type').select('id, code'),
+      supabase.from('eval_criteria').select('id, name').eq('active', true).order('name'),
+      supabase.from('analytical_note_type').select('id, name').eq('active', true),
+      supabase.from('error_type').select('id, name, critical').order('name'),
+    ]);
 
-  /* Timer Δt */
+    _employees       = empRes.data        ?? [];
+    _topics          = topicRes.data      ?? [];
+    _evalCriteria    = evalCrRes.data     ?? [];
+    _analyticalTypes = analTypeRes.data   ?? [];
+    _errorTypes      = errTypeRes.data    ?? [];
+
+    const codeToKey = { default: 'G', improvable_by: 'O', excelled_by: 'A', failed_by: 'E' };
+    _obsTypeMap = {};
+    for (const row of (obsTypeRes.data ?? [])) {
+      const key = codeToKey[row.code];
+      if (key) _obsTypeMap[key] = row.id;
+    }
+
+    _refDataLoaded = true;
+  }
+
+  /* ── Populate selects ───────────────────── */
+  const collabSel = document.getElementById('collab-select');
+  if (collabSel && _employees.length) {
+    collabSel.innerHTML = `<option value="">— selecione —</option>` +
+      _employees.map(e => `<option value="${e.id}">${e.name}</option>`).join('');
+  }
+
+  const criteriaSel = document.getElementById('obs-criteria');
+  if (criteriaSel) {
+    criteriaSel.innerHTML = `<option value="">— nenhum —</option>` +
+      _evalCriteria.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+  }
+
+  const nonCriticalErrors = _errorTypes.filter(e => !e.critical);
+  const criticalErrors    = _errorTypes.filter(e => e.critical);
+
+  const obsErrSel = document.getElementById('obs-error-type');
+  if (obsErrSel) {
+    obsErrSel.innerHTML = `<option value="">— selecione —</option>` +
+      nonCriticalErrors.map(e => `<option value="${e.id}">${e.name}</option>`).join('');
+  }
+
+  const resetErrSel = document.getElementById('reset-error-type');
+  if (resetErrSel) {
+    resetErrSel.innerHTML = `<option value="">— selecione —</option>` +
+      criticalErrors.map(e => `<option value="${e.id}">${e.name}</option>`).join('');
+  }
+
+  /* ── Modal helpers ──────────────────────── */
+  const appMain = document.querySelector('.app-main');
+
+  function openResetModal() {
+    document.getElementById('modal-reset-overlay')?.classList.remove('modal-overlay--hidden');
+    if (appMain) appMain.style.overflowY = 'hidden';
+  }
+  function closeResetModal() {
+    document.getElementById('modal-reset-overlay')?.classList.add('modal-overlay--hidden');
+    if (appMain) appMain.style.overflowY = '';
+    document.getElementById('reset-error-type').value    = '';
+    document.getElementById('reset-protocol').value      = '';
+    document.getElementById('reset-datetime').value      = '';
+    document.getElementById('reset-justification').value = '';
+  }
+
+  document.getElementById('modal-reset-overlay')?.addEventListener('click', closeResetModal);
+  document.getElementById('modal-reset-monitoring')?.addEventListener('click', e => e.stopPropagation());
+  document.getElementById('btn-modal-close')?.addEventListener('click', closeResetModal);
+  document.getElementById('btn-reset-cancel')?.addEventListener('click', closeResetModal);
+
+  /* ── Add service chat ───────────────────── */
+  document.getElementById('btn-add-sc')?.addEventListener('click', () => {
+    const collabId  = document.getElementById('collab-select')?.value;
+    if (!collabId)  { toast.warning('Atenção', 'Selecione um colaborador antes de adicionar atendimentos.'); return; }
+
+    const protocol  = document.getElementById('att-id')?.value.trim();
+    const startedAt = document.getElementById('att-date')?.value;
+    const tma       = document.getElementById('att-tma')?.value;
+
+    if (!protocol)  { toast.warning('Atenção', 'Informe o protocolo do atendimento.'); return; }
+    if (!startedAt) { toast.warning('Atenção', 'Informe a data e hora do atendimento.'); return; }
+    if (!tma)       { toast.warning('Atenção', 'Informe o tempo de atendimento.'); return; }
+
+    if (_serviceChats.some(s => s.protocol === protocol)) {
+      toast.warning('Atenção', `Protocolo ${protocol} já foi adicionado.`);
+      return;
+    }
+
+    const tmpr = document.getElementById('att-tmpr')?.value || null;
+    const tmer = document.getElementById('att-tmer')?.value || null;
+    const csat = Number(document.querySelector('input[name="csat"]:checked')?.value ?? 5);
+
+    _serviceChats.push({ protocol, startedAt, tmpr: normalizeTime(tmpr), tmer: normalizeTime(tmer), tma: normalizeTime(tma), csat });
+    renderServiceChatList();
+
+    /* Reset form fields */
+    document.getElementById('att-id').value   = '';
+    document.getElementById('att-date').value = '';
+    document.getElementById('att-tmpr').value = '';
+    document.getElementById('att-tmer').value = '';
+    document.getElementById('att-tma').value  = '';
+    document.querySelector('input[name="csat"][value="5"]').checked = true;
+    document.getElementById('att-id')?.focus();
+  });
+
+  /* ── Delete service chat modal ──────────── */
+  document.getElementById('modal-sc-delete-overlay')?.addEventListener('click', closeScDeleteModal);
+  document.getElementById('modal-sc-delete')?.addEventListener('click', e => e.stopPropagation());
+  document.getElementById('btn-sc-delete-close')?.addEventListener('click', closeScDeleteModal);
+  document.getElementById('btn-sc-delete-cancel')?.addEventListener('click', closeScDeleteModal);
+  document.getElementById('btn-sc-delete-confirm')?.addEventListener('click', () => {
+    if (_pendingDeleteProtocol) {
+      _serviceChats = _serviceChats.filter(s => s.protocol !== _pendingDeleteProtocol);
+      renderServiceChatList();
+    }
+    closeScDeleteModal();
+  });
+
+  /* ── Zerar Monitoria ────────────────────── */
+  document.getElementById('btn-reset-monitoring')?.addEventListener('click', () => {
+    if (!validateRequiredFields()) return;
+    /* Populate protocol select in reset modal */
+    const resetProtoEl = document.getElementById('reset-protocol');
+    if (resetProtoEl) {
+      resetProtoEl.innerHTML = `<option value="">— selecione —</option>` +
+        _serviceChats.map(s => `<option value="${s.protocol}">#${s.protocol}</option>`).join('');
+    }
+    document.querySelectorAll('.eval-item__check, .analytical-check').forEach(chk => { chk.checked = false; });
+    recalcScores();
+    openResetModal();
+  });
+
+  document.getElementById('btn-reset-confirm')?.addEventListener('click', async () => {
+    const errorTypeId    = document.getElementById('reset-error-type')?.value;
+    const protocol       = document.getElementById('reset-protocol')?.value.trim();
+    const justification  = document.getElementById('reset-justification')?.value.trim();
+    const datetime       = document.getElementById('reset-datetime')?.value;
+
+    if (!errorTypeId)   { toast.warning('Atenção', 'Selecione o tipo de erro crítico.'); return; }
+    if (!protocol)      { toast.warning('Atenção', 'Informe o protocolo do atendimento.'); return; }
+    if (!justification) { toast.warning('Atenção', 'Preencha a justificativa.'); return; }
+
+    const btn = document.getElementById('btn-reset-confirm');
+    btn.disabled = true;
+    btn.textContent = 'Salvando…';
+    try {
+      await persistMonitoring({ isZeroed: true, resetData: { errorTypeId, justification, protocol, datetime } });
+      toast.success('Monitoria zerada', 'Registrada com sucesso.');
+      closeResetModal();
+      setTimeout(() => navigate('consulta'), 1200);
+    } catch (err) {
+      toast.error('Erro', err.message ?? 'Não foi possível salvar.');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Confirmar Zeramento';
+    }
+  });
+
+  /* ── Save Monitoria ─────────────────────── */
+  document.getElementById('btn-cancel-form')?.addEventListener('click', () => navigate('nova-monitoria'));
+
+  document.getElementById('btn-save-monitoring')?.addEventListener('click', async () => {
+    if (!validateRequiredFields()) return;
+
+    const btn = document.getElementById('btn-save-monitoring');
+    btn.disabled = true;
+    btn.textContent = 'Salvando…';
+    try {
+      await persistMonitoring();
+      const pct = Math.round(_totalEarned / TOTAL_MAX_PTS * 100);
+      toast.success('Monitoria salva!',
+        `${_totalEarned}/${TOTAL_MAX_PTS} pts (${pct}%) · ${_observations.length} obs.`);
+      setTimeout(() => navigate('consulta'), 1200);
+    } catch (err) {
+      console.error('[save-monitoring]', err);
+      toast.error('Erro ao salvar', err.message || err.code || JSON.stringify(err));
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '💾 Salvar Monitoria';
+    }
+  });
+
+  /* ── Custom picker buttons ─────────────── */
+  document.querySelectorAll('.time-input-wrap__btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const input = document.getElementById(btn.dataset.for);
+      if (!input) return;
+      try { input.showPicker(); } catch { input.focus(); }
+    });
+  });
+
+  /* ── Time field auto-format (digits → HH:MM:SS) ── */
+  function autoFormatTime(input) {
+    const digits = input.value.replace(/\D/g, '');
+    if (!digits) return;
+    const padded = digits.padStart(6, '0').slice(-6);
+    input.value = `${padded.slice(0, 2)}:${padded.slice(2, 4)}:${padded.slice(4, 6)}`;
+  }
+  ['att-tmpr', 'att-tmer', 'att-tma'].forEach(id => {
+    document.getElementById(id)?.addEventListener('blur', e => autoFormatTime(e.target));
+  });
+
+  /* ── Timer Δt ───────────────────────────── */
+  document.getElementById('timer-msg1').value = '00:00:00';
+  document.getElementById('timer-msg2').value = '00:00:00';
+
   const calcDelta = () => {
     const t1 = parseHHMMSS(document.getElementById('timer-msg1')?.value || '0');
     const t2 = parseHHMMSS(document.getElementById('timer-msg2')?.value || '0');
@@ -499,39 +908,47 @@ export function init() {
   document.getElementById('timer-msg1')?.addEventListener('input', calcDelta);
   document.getElementById('timer-msg2')?.addEventListener('input', calcDelta);
 
-  /* Collaborator select → avatar + AI summary */
-  document.getElementById('collab-select')?.addEventListener('change', e => {
-    _selectedCollabId = e.target.value || null;
-    const av = document.getElementById('collab-avatar');
+  /* ── Collaborator → avatar ──────────────── */
+  document.getElementById('collab-select')?.addEventListener('change', async e => {
+    const av  = document.getElementById('collab-avatar');
+    const sel = e.target.options[e.target.selectedIndex];
     if (av) {
-      const sel = e.target.options[e.target.selectedIndex];
       av.textContent = sel.text
-        ? sel.text.trim().split(' ').slice(0,2).map(w => w[0]).join('').toUpperCase()
+        ? sel.text.trim().split(' ').slice(0, 2).map(w => w[0]).join('').toUpperCase()
         : '?';
     }
-    if (_selectedCollabId) {
-      renderAiSummary(_selectedCollabId);
-    } else {
-      const body = document.getElementById('ai-summary-body');
-      if (body) body.innerHTML = `
-        <div class="ai-summary-placeholder">
-          <div class="ai-summary-placeholder__icon">🤖</div>
-          <div>Selecione um colaborador para ver o resumo das monitorias anteriores</div>
-        </div>`;
-    }
+
+    const numInput = document.getElementById('monitoring-number');
+    if (!numInput) return;
+
+    const collabId = e.target.value;
+    if (!collabId) { numInput.value = 1; return; }
+
+    const { data } = await supabase
+      .from('monitoring')
+      .select('number')
+      .eq('employee_id', collabId)
+      .order('number', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    numInput.value = data ? data.number + 1 : 1;
   });
 
-  /* AI summary collapse */
-  document.getElementById('ai-summary-toggle')?.addEventListener('click', () => {
-    document.getElementById('ai-summary-panel')?.classList.toggle('collapsed');
-  });
-
-  /* Eval checkboxes */
+  /* ── Eval checkboxes ────────────────────── */
   document.querySelectorAll('.eval-item__check').forEach(chk => {
     chk.addEventListener('change', recalcScores);
   });
 
-  /* Section collapse toggle */
+  /* ── Analytical: justification required when unchecked ── */
+  document.querySelectorAll('.analytical-check').forEach(chk => {
+    chk.addEventListener('change', () => {
+      const justEl = document.getElementById(`an-just-${chk.dataset.id}`);
+      if (justEl) justEl.placeholder = chk.checked ? 'Justificativa (opcional)' : 'Justificativa obrigatória…';
+    });
+  });
+
+  /* ── Section collapse ───────────────────── */
   document.querySelectorAll('.eval-section__header').forEach(hdr => {
     hdr.addEventListener('click', e => {
       if (e.target.closest('.eval-item__check, label')) return;
@@ -539,39 +956,43 @@ export function init() {
     });
   });
 
-  /* Obs type change: show/hide error field */
+  /* ── Obs type → show/hide error field ───── */
   document.getElementById('obs-type')?.addEventListener('change', e => {
-    const errField = document.getElementById('obs-error-field');
-    if (errField) errField.classList.toggle('visible', e.target.value === 'E');
+    document.getElementById('obs-error-field')?.classList.toggle('visible', e.target.value === 'E');
   });
 
-  /* Add observation */
+  /* ── Add observation ────────────────────── */
   document.getElementById('btn-obs-save')?.addEventListener('click', () => {
+    const proto = document.getElementById('obs-proto')?.value.trim();
+    if (!proto) { toast.warning('Atenção', 'Informe o protocolo da observação.'); return; }
+
     const text = document.getElementById('obs-text')?.value.trim();
     if (!text) { toast.warning('Atenção', 'Preencha o texto da observação.'); return; }
 
-    const type      = document.getElementById('obs-type')?.value ?? 'G';
-    const criteria  = document.getElementById('obs-criteria')?.value ?? '';
-    const proto     = document.getElementById('obs-proto')?.value.trim() ?? '';
-    const errorType = type === 'E'
-      ? (document.getElementById('obs-error-type')?.value ?? '') : '';
+    const typeCode = document.getElementById('obs-type')?.value ?? 'G';
+    const typeId   = _obsTypeMap[typeCode] ?? null;
 
-    _observations.push({ type, criteria, proto, text, errorType });
+    const criteriaEl   = document.getElementById('obs-criteria');
+    const criteriaId   = criteriaEl?.value ?? '';
+    const criteriaName = criteriaId ? criteriaEl?.options[criteriaEl.selectedIndex]?.text : '';
+
+    let errorTypeId = '', errorTypeName = '';
+    if (typeCode === 'E') {
+      const errEl = document.getElementById('obs-error-type');
+      if (!errEl?.value) { toast.warning('Atenção', 'Selecione o tipo de erro.'); return; }
+      errorTypeId   = errEl.value;
+      errorTypeName = errEl.options[errEl.selectedIndex]?.text ?? '';
+    }
+
+    _observations.push({
+      typeCode, typeId,
+      criteriaId, criteriaName,
+      errorTypeId, errorTypeName,
+      proto,
+      text,
+    });
+
     document.getElementById('obs-text').value = '';
-    document.getElementById('obs-proto').value = '';
     renderObsChat();
-  });
-
-  /* Save monitoring */
-  document.getElementById('btn-save-monitoring')?.addEventListener('click', () => {
-    const collabId = document.getElementById('collab-select')?.value;
-    if (!collabId) { toast.warning('Atenção', 'Selecione um colaborador.'); return; }
-    const attId = document.getElementById('att-id')?.value.trim();
-    if (!attId)   { toast.warning('Atenção', 'Informe o ID/protocolo do atendimento.'); return; }
-
-    const pct = Math.round(_totalEarned / TOTAL_MAX_PTS * 100);
-    toast.success('Monitoria salva!',
-      `${_totalEarned}/${TOTAL_MAX_PTS} pts (${pct}%) · ${_observations.length} observação(ões)`);
-    setTimeout(() => navigate('registros'), 1500);
   });
 }
