@@ -50,6 +50,19 @@
 .data-table td.text-right { text-align: right; }
 .data-table td.muted { color: var(--text-secondary); }
 
+/* Zeroed row */
+.row--zeroed td { opacity: 0.55; }
+
+/* Monitoring detail section label */
+.detail-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--text-tertiary);
+  margin-bottom: var(--space-2);
+}
+
 /* Score cell */
 .score-cell { display: flex; align-items: center; gap: var(--space-2); }
 .score-bar {

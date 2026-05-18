@@ -23,11 +23,14 @@ export function renderSidebar() {
     </button>
   `;
 
+  const isGestor = user.role === 'gestor' || lvl === 3;
+
   const myTeam = `
     <div class="sidebar-nav__section">
       <div class="sidebar-nav__label">Minha Equipe</div>
-      ${item('nova-monitoria', '✍🏼', 'Nova Monitoria',           'nova-monitoria')}
-      ${item('consulta', '🔍', 'Consulta',           'consulta')}
+      ${isGestor ? '' : item('nova-monitoria', '✍🏼', 'Nova Monitoria', 'nova-monitoria')}
+      ${item('consulta', '🔍', 'Consulta', 'consulta')}
+      ${item('registro', '📋', 'Registros', 'registros')}
     </div>`;
 
   const dados = '';

@@ -1,7 +1,7 @@
 /* ============================================================
    APP.JS — Entry point da SPA
    ============================================================ */
-import { restoreSession, isAuthenticated, onAuthChange } from './auth.js';
+import { restoreSession, isAuthenticated, onAuthChange, getCurrentUser } from './auth.js';
 import {
   initRouter, registerRoute, setDefaultRoute,
   protectRoute, navigate, getCurrentRoute,
@@ -22,6 +22,7 @@ import * as AIPage             from './pages/ai-analise.js';
 import * as AdminPage          from './pages/admin.js';
 import * as MetasPage          from './pages/metas.js';
 import * as ComparacaoPage     from './pages/comparacao.js';
+import * as EditarMonitoriaPage from './pages/editar-monitoria.js';
 
 const app = document.getElementById('app');
 
@@ -58,7 +59,11 @@ function registerRoutes() {
   setDefaultRoute('login');
 
   registerRoute('login', async () => {
-    if (isAuthenticated()) { navigate('nova-monitoria'); return; }
+    if (isAuthenticated()) {
+      const u = getCurrentUser();
+      navigate(u?.role === 'gestor' || u?.accessLevel === 3 ? 'consulta' : 'nova-monitoria');
+      return;
+    }
     app.innerHTML = LoginPage.render();
     LoginPage.init?.();
   });
@@ -74,11 +79,16 @@ function registerRoutes() {
     ['admin',          AdminPage],
     ['metas',          MetasPage],
     ['comparacao',     ComparacaoPage],
+    ['editar-monitoria', EditarMonitoriaPage],
   ];
 
   protected_.forEach(([route, page]) => {
     protectRoute(route);
     registerRoute(route, async () => {
+      if (route === 'nova-monitoria') {
+        const u = getCurrentUser();
+        if (u?.role === 'gestor' || u?.accessLevel === 3) { navigate('consulta'); return; }
+      }
       mountShell();
       renderShell();
       await mountPage(page);

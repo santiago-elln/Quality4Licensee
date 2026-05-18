@@ -25,6 +25,14 @@ function isAnalista() {
   return _currentUser?.role === 'analista' || (_currentUser?.accessLevel ?? 0) >= 4;
 }
 
+function isGestor() {
+  return _currentUser?.role === 'gestor' || (_currentUser?.accessLevel ?? 0) === 3;
+}
+
+function canFilterSupervisors() {
+  return isAnalista() || isGestor();
+}
+
 function myDept() {
   return _departments.find(d => d.id === _currentUser?.departmentId);
 }
@@ -209,8 +217,9 @@ export function render() {
       </div>`;
   }
 
-  const analista = isAnalista();
-  const dept     = myDept();
+  const analista    = isAnalista();
+  const canFilterSup = canFilterSupervisors();
+  const dept        = myDept();
   const daysDiff = _filters.dateFrom && _filters.dateTo
     ? Math.round((new Date(_filters.dateTo) - new Date(_filters.dateFrom)) / 86400000) + 1
     : 0;
@@ -224,8 +233,8 @@ export function render() {
       </div>
     </div>`;
 
-  /* Supervisor: select for analyst, readonly for supervisor */
-  const supFilterHtml = analista
+  /* Supervisor: select for analyst/gestor, readonly for supervisor */
+  const supFilterHtml = canFilterSup
     ? `<div class="form-group" style="margin-bottom:0">
          <label class="form-label">Supervisor</label>
          <select class="form-select" id="f-sup">
@@ -627,7 +636,7 @@ function bindEvents() {
 export async function init() {
   _currentUser = getCurrentUser();
 
-  if (!isAnalista()) {
+  if (!canFilterSupervisors()) {
     _filters.supId = _currentUser?.id ?? '';
   }
 
