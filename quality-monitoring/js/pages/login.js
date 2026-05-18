@@ -130,14 +130,24 @@ export function renderReset() {
 
             <div class="form-group">
               <label class="form-label" for="new-password">Nova senha</label>
-              <input class="form-input" type="password" id="new-password"
-                     placeholder="Mínimo 8 caracteres" autocomplete="new-password" required>
+              <div style="position:relative">
+                <input class="form-input" type="password" id="new-password"
+                       placeholder="Mínimo 8 caracteres" autocomplete="new-password"
+                       required style="padding-right:2.5rem">
+                <button type="button" class="pwd-toggle" data-target="new-password"
+                        style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text-tertiary)">👁</button>
+              </div>
             </div>
 
             <div class="form-group">
               <label class="form-label" for="confirm-password">Confirmar senha</label>
-              <input class="form-input" type="password" id="confirm-password"
-                     placeholder="Repita a senha" autocomplete="new-password" required>
+              <div style="position:relative">
+                <input class="form-input" type="password" id="confirm-password"
+                       placeholder="Repita a senha" autocomplete="new-password"
+                       required style="padding-right:2.5rem">
+                <button type="button" class="pwd-toggle" data-target="confirm-password"
+                        style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text-tertiary)">👁</button>
+              </div>
             </div>
 
             <button type="submit" class="btn btn--primary btn--lg btn--block" id="btn-reset">
@@ -153,6 +163,15 @@ export async function initReset() {
   const form     = document.getElementById('reset-form');
   const errorEl  = document.getElementById('reset-error');
   const errorMsg = document.getElementById('reset-error-msg');
+
+  document.querySelectorAll('.pwd-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const input = document.getElementById(btn.dataset.target);
+      if (!input) return;
+      input.type  = input.type === 'password' ? 'text' : 'password';
+      btn.textContent = input.type === 'password' ? '🐵' : '🙈';
+    });
+  });
 
   form?.addEventListener('submit', async e => {
     e.preventDefault();
@@ -181,7 +200,7 @@ export async function initReset() {
       if (error) throw error;
 
       btn.textContent = 'Senha salva! Redirecionando…';
-      await supabase.auth.signOut();
+      // await supabase.auth.signOut();
       window.location.replace(window.location.pathname);
     } catch (err) {
       errorEl.classList.remove('hidden');
