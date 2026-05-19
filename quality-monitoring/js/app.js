@@ -23,6 +23,7 @@ import * as AdminPage          from './pages/admin.js';
 import * as MetasPage          from './pages/metas.js';
 import * as ComparacaoPage     from './pages/comparacao.js';
 import * as EditarMonitoriaPage from './pages/editar-monitoria.js';
+import * as EscalasPage         from './pages/escalas.js';
 
 const app = document.getElementById('app');
 
@@ -80,6 +81,7 @@ function registerRoutes() {
     ['metas',          MetasPage],
     ['comparacao',     ComparacaoPage],
     ['editar-monitoria', EditarMonitoriaPage],
+    ['escalas',          EscalasPage],
   ];
 
   protected_.forEach(([route, page]) => {

@@ -33,7 +33,11 @@ export function renderSidebar() {
       ${item('registros', '📋', 'Registros', 'registros')}
     </div>`;
 
-  const dados = '';
+  const dados = `
+    <div class="sidebar-nav__section">
+      <div class="sidebar-nav__label">Operações</div>
+      ${item('escalas', '📅', 'Escalas de Trabalho', 'escalas')}
+    </div>`;
 
   const config = '';
 
