@@ -21,6 +21,7 @@ let _evalCriteria = [];   // [{id, name}]
 let _refDataLoaded = false;
 let _dataLoaded   = false;
 let _expandedId   = null;
+let _pendingDelete = null;  // {id, number, empName}
 let _filters      = { collabId: '', supId: '', dateFrom: '', dateTo: '', band: '' };
 
 /* ── Role helpers ─────────────────────────── */
@@ -158,9 +159,9 @@ export function render() {
 
       <div class="panel">
         <div class="table-filters">
-          ${canSup ? 
-            `<select class="form-select" id="filter-sup" style="max-width:200px">${supOpts}</select>` : 
-            `div class="form-group" style="margin-bottom:0">
+          ${canSup ?
+            `<select class="form-select" id="filter-sup" style="max-width:200px">${supOpts}</select>` :
+            `<div class="form-group" style="margin-bottom:0">
               <label class="form-label">Supervisor</label>
               <div class="form-input" style="opacity:.75;cursor:default">
               ${getCurrentUser().name ?? '—'}
@@ -203,6 +204,25 @@ export function render() {
         <div class="table-pagination">
           <span class="pagination-info" id="pag-info">${paginationInfo()}</span>
           <div class="pagination-controls" id="pag-controls">${renderPagination()}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Excluir monitoria -->
+    <div id="delete-mon-modal" class="modal-overlay modal-overlay--hidden">
+      <div class="modal" style="max-width:420px">
+        <div class="modal__header">
+          <div class="modal__title">Excluir monitoria?</div>
+        </div>
+        <div class="modal__body">
+          <p id="delete-mon-msg" style="color:var(--text-secondary);font-size:var(--text-sm)"></p>
+        </div>
+        <div class="modal__footer" style="justify-content:flex-end">
+          <button class="btn btn--ghost" id="delete-mon-cancel">Cancelar</button>
+          <button class="btn" id="delete-mon-confirm"
+                  style="background:var(--color-danger);color:#fff;border:none">
+            Confirmar exclusão
+          </button>
         </div>
       </div>
     </div>`;
@@ -282,7 +302,7 @@ async function fetchDetail(monId) {
   return data;
 }
 
-function renderDetail(data) {
+function renderDetail(data, rowData) {
   /* Service chats */
   const scHtml = (data.service_chat ?? []).map(sc => `
     <tr>
@@ -352,7 +372,14 @@ function renderDetail(data) {
       ${isAnalista() ? `
         <div style="display:flex;justify-content:flex-end;gap:var(--space-2);
                     padding:var(--space-3) var(--space-5);border-bottom:1px solid var(--border-light)">
-          <button class="btn btn--ghost btn--sm edit-monitoring-btn" data-mon="${data.id}">✏ Editar</button>
+          <button class="btn btn--sm delete-monitoring-btn"
+                  data-mon="${data.id}"
+                  data-number="${rowData?.number ?? data.number ?? '—'}"
+                  data-emp="${rowData?.empName ?? '—'}"
+                  style="background:var(--color-danger-bg);color:var(--color-danger);border:1px solid var(--color-danger)"
+                  title="Excluir monitoria">
+            🗑
+          </button>
         </div>` : ''}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-5);
                 padding:var(--space-4) var(--space-5)">
@@ -404,14 +431,69 @@ async function toggleDetail(monId, btn) {
     return;
   }
 
-  const cols    = isAnalista() ? 8 : 7;
+  const cols     = isAnalista() ? 8 : 7;
   const detailTr = document.createElement('tr');
-  detailTr.id   = `detail-row-${monId}`;
-  detailTr.innerHTML = `<td colspan="${cols}" style="padding:0">${renderDetail(data)}</td>`;
+  detailTr.id    = `detail-row-${monId}`;
+  const rowData  = _rows.find(r => r.id === monId);
+  detailTr.innerHTML = `<td colspan="${cols}" style="padding:0">${renderDetail(data, rowData)}</td>`;
   row.after(detailTr);
+
+  /* Bind do botão de exclusão criado dinamicamente */
+  detailTr.querySelector('.delete-monitoring-btn')?.addEventListener('click', e => {
+    e.stopPropagation();
+    _pendingDelete = {
+      id:      e.currentTarget.dataset.mon,
+      number:  e.currentTarget.dataset.number,
+      empName: e.currentTarget.dataset.emp,
+    };
+    const msg = document.getElementById('delete-mon-msg');
+    if (msg) msg.innerHTML =
+      `Deseja excluir a monitoria <strong>Nº ${_pendingDelete.number}</strong> de <strong>${_pendingDelete.empName}</strong>?<br>
+       <span style="font-size:var(--text-xs);color:var(--text-tertiary)">Esta ação é irreversível.</span>`;
+    const modal = document.getElementById('delete-mon-modal');
+    modal?.classList.remove('modal-overlay--hidden');
+    const confirmBtn = document.getElementById('delete-mon-confirm');
+    if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = 'Confirmar exclusão'; }
+  });
 
   btn.textContent = 'Fechar';
   btn.disabled    = false;
+}
+
+/* ── Delete monitoring ────────────────────── */
+async function deleteMonitoring(monId) {
+  const confirmBtn = document.getElementById('delete-mon-confirm');
+  if (confirmBtn) { confirmBtn.disabled = true; confirmBtn.textContent = 'Excluindo…'; }
+
+  try {
+    /* Coleta error_ids antes do cascade apagar monitoring_observation */
+    const { data: obsRows } = await supabase
+      .from('monitoring_observation')
+      .select('error_id')
+      .eq('monitoring_id', monId)
+      .not('error_id', 'is', null);
+
+    /* Exclui monitoring — cascade: topic_approval, analytical_note,
+       service_chat → monitoring_observation */
+    const { error } = await supabase.from('monitoring').delete().eq('id', monId);
+    if (error) throw error;
+
+    /* Limpa orphaned errors */
+    const errorIds = (obsRows ?? []).map(r => r.error_id).filter(Boolean);
+    if (errorIds.length) await supabase.from('error').delete().in('id', errorIds);
+
+    /* Remove da lista local e atualiza tabela */
+    _allRows = _allRows.filter(r => r.id !== monId);
+    applyClientFilters();
+    document.getElementById('delete-mon-modal')?.classList.add('modal-overlay--hidden');
+    _pendingDelete = null;
+    _expandedId = null;
+    _page = Math.min(_page, Math.ceil(_rows.length / PAGE_SIZE)) || 1;
+    refreshTable();
+  } catch (err) {
+    console.error('[registros] delete:', err);
+    if (confirmBtn) { confirmBtn.disabled = false; confirmBtn.textContent = 'Confirmar exclusão'; }
+  }
 }
 
 /* ── Event binding ─────────────────────────── */
@@ -427,16 +509,9 @@ function bindTableEvents() {
     });
   });
 
-  document.querySelectorAll('.edit-monitoring-btn').forEach(btn => {
-    btn.addEventListener('click', e => {
-      e.stopPropagation();
-      navigate('editar-monitoria', { id: btn.dataset.mon });
-    });
-  });
-
   document.querySelectorAll('tr[data-emp]').forEach(row => {
     row.addEventListener('click', e => {
-      if (e.target.closest('.detail-btn')) return;
+      if (e.target.closest('.detail-btn, .delete-monitoring-btn')) return;
       if (row.dataset.emp) navigate('perfil', { id: row.dataset.emp });
     });
   });
@@ -473,6 +548,15 @@ function bindFilters() {
     _page = 1;
     refreshTable();
   });
+
+  /* Modal de exclusão — vinculado uma vez, persiste entre refreshes */
+  document.getElementById('delete-mon-cancel')?.addEventListener('click', () => {
+    document.getElementById('delete-mon-modal')?.classList.add('modal-overlay--hidden');
+    _pendingDelete = null;
+  });
+  document.getElementById('delete-mon-confirm')?.addEventListener('click', () => {
+    if (_pendingDelete) deleteMonitoring(_pendingDelete.id);
+  });
 }
 
 /* ── init ─────────────────────────────────── */
@@ -490,11 +574,13 @@ export async function init() {
     _filters.dateTo   = `${y}-${m}-${lastDay}`;
   }
 
+  const main = document.getElementById('main-content');
+  if (main) main.innerHTML = render(); // mostra spinner imediatamente
+
   await fetchRefData();
   await fetchMonitorings();
   _dataLoaded = true;
 
-  const main = document.getElementById('main-content');
   if (!main) return;
   main.innerHTML = render();
   bindFilters();

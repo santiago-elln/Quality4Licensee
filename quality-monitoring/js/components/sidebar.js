@@ -30,7 +30,7 @@ export function renderSidebar() {
       <div class="sidebar-nav__label">Minha Equipe</div>
       ${isGestor ? '' : item('nova-monitoria', '✍🏼', 'Nova Monitoria', 'nova-monitoria')}
       ${item('consulta', '🔍', 'Consulta', 'consulta')}
-      ${item('registro', '📋', 'Registros', 'registros')}
+      ${item('registros', '📋', 'Registros', 'registros')}
     </div>`;
 
   const dados = '';

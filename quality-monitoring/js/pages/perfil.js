@@ -91,7 +91,7 @@ export function render() {
   const obsLogHtml = _obsLog.length
     ? _obsLog.map(o => `
         <div class="obs-log-item obs-log-item--${o.code}">
-          <div class="obs-log-item__badge obs-log-item__badge--${o.code}">${o.label}</div>
+          <div class="obs-log-item__badge obs-log-item__badge--${o.code}">${o.code}</div>
           <div class="obs-log-item__body">
             ${o.criteriaName ? `<div class="obs-log-item__criteria">${o.criteriaName}</div>` : ''}
             <div class="obs-log-item__text">${o.content}</div>

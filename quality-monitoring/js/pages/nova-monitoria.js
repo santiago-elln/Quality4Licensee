@@ -23,6 +23,124 @@ let _errorTypes      = [];   // [{id, name, critical}]
 let _employees       = [];   // [{id, name}]
 let _refDataLoaded   = false;
 
+/* ── Draft (localStorage) ─────────────────── */
+const DRAFT_KEY = 'nova-monitoria-draft';
+
+function saveDraft() {
+  const topics = {};
+  document.querySelectorAll('.eval-item__check').forEach(chk => {
+    if (chk.dataset.item) topics[chk.dataset.item] = chk.checked;
+  });
+
+  const analytical = {};
+  document.querySelectorAll('.analytical-check').forEach(chk => {
+    const just = document.getElementById(`an-just-${chk.dataset.id}`)?.value ?? '';
+    analytical[chk.dataset.id] = { checked: chk.checked, justification: just };
+  });
+
+  const collabId        = document.getElementById('collab-select')?.value ?? '';
+  const monitoringNumber = document.getElementById('monitoring-number')?.value ?? '';
+
+  try {
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({
+      serviceChats: _serviceChats,
+      observations: _observations,
+      topics,
+      analytical,
+      collabId,
+      monitoringNumber,
+    }));
+  } catch {}
+}
+
+function loadDraft() {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+function clearDraft() {
+  localStorage.removeItem(DRAFT_KEY);
+}
+
+function restoreDraftCheckboxes(draft) {
+  if (!draft) return;
+
+  /* Colaborador e nº da monitoria */
+  if (draft.collabId) {
+    const sel = document.getElementById('collab-select');
+    if (sel) {
+      sel.value = draft.collabId;
+      const av  = document.getElementById('collab-avatar');
+      if (av) {
+        const text = sel.options[sel.selectedIndex]?.text ?? '';
+        av.textContent = text
+          ? text.trim().split(' ').slice(0, 2).map(w => w[0]).join('').toUpperCase()
+          : '?';
+      }
+    }
+  }
+  if (draft.monitoringNumber) {
+    const num = document.getElementById('monitoring-number');
+    if (num) num.value = draft.monitoringNumber;
+  }
+
+  if (draft.topics) {
+    Object.entries(draft.topics).forEach(([itemId, checked]) => {
+      const chk = document.querySelector(`.eval-item__check[data-item="${itemId}"]`);
+      if (chk) chk.checked = checked;
+    });
+  }
+  recalcScores();
+
+  if (draft.analytical) {
+    Object.entries(draft.analytical).forEach(([id, { checked, justification }]) => {
+      const chk  = document.querySelector(`.analytical-check[data-id="${id}"]`);
+      const just = document.getElementById(`an-just-${id}`);
+      if (chk)  chk.checked = checked;
+      if (just) {
+        just.value       = justification ?? '';
+        just.placeholder = checked ? 'Justificativa (opcional)' : 'Justificativa obrigatória…';
+        if (just.value) autoResize(just);
+      }
+    });
+  }
+}
+
+function resetForm() {
+  clearDraft();
+  _serviceChats          = [];
+  _observations          = [];
+  _pendingDeleteProtocol = null;
+
+  const colSel = document.getElementById('collab-select');
+  if (colSel) colSel.value = '';
+  const av = document.getElementById('collab-avatar');
+  if (av) av.textContent = '?';
+  const num = document.getElementById('monitoring-number');
+  if (num) num.value = 1;
+
+  document.querySelectorAll('.eval-item__check').forEach(chk => { chk.checked = true; });
+  recalcScores();
+
+  document.querySelectorAll('.analytical-check').forEach(chk => {
+    chk.checked = true;
+    const just = document.getElementById(`an-just-${chk.dataset.id}`);
+    if (just) { just.value = ''; just.placeholder = 'Justificativa (opcional)'; }
+  });
+
+  renderServiceChatList();
+  renderObsChat();
+}
+
+/* ── Auto-resize textarea ─────────────────── */
+function autoResize(el) {
+  if (!el.value) { console.log(el.value); el.style.height = '35px'; return; }
+  el.style.height = 'auto';
+  el.style.height = el.scrollHeight + 'px';
+}
+
 /* ── Helpers ──────────────────────────────── */
 function normalizeTime(val) {
   if (!val || !val.trim()) return null;
@@ -226,10 +344,9 @@ export function render() {
       <div class="analytical-item__name">${c.name}</div>
       <div class="analytical-item__check-wrap">
         <input type="checkbox" class="eval-item__check analytical-check"
-               id="an-${c.id}" data-id="${c.id}" checked>
+          id="an-${c.id}" data-id="${c.id}" checked>
       </div>
-      <input class="analytical-item__justification" type="text"
-             id="an-just-${c.id}" placeholder="Justificativa (opcional)">
+      <textarea class="analytical-item__justification" id="an-just-${c.id}" placeholder="Justificativa (opcional)"></textarea>
     </div>
   `).join('');
 
@@ -448,7 +565,8 @@ export function render() {
               </div>
               <div class="form-group" style="margin-bottom:0">
                 <label class="form-label">Observação <span class="required">*</span></label>
-                <input class="form-input" id="obs-text" placeholder="Descreva a observação…">
+                <textarea class="form-input" id="obs-text" placeholder="Descreva a observação…"
+                          rows="1" style="resize:none;overflow:hidden;line-height:1.5;font-family:var(--font-sans)"></textarea>
               </div>
               <button class="btn btn--primary btn--sm btn--block" id="btn-obs-save" style="margin-top:2px">
                 + Adicionar Observação
@@ -620,6 +738,7 @@ function renderObsChat() {
   area.querySelectorAll('.obs-bubble-compact__delete').forEach(btn => {
     btn.addEventListener('click', () => {
       _observations.splice(Number(btn.dataset.idx), 1);
+      saveDraft();
       renderObsChat();
     });
   });
@@ -679,10 +798,14 @@ function closeScDeleteModal() {
 }
 
 export async function init() {
-  /* Reset apenas dados preenchidos pelo usuário */
-  _observations          = [];
-  _serviceChats          = [];
+  /* Reset dados do usuário */
   _pendingDeleteProtocol = null;
+
+  /* Restaura rascunho salvo ou começa limpo */
+  const _draft = loadDraft();
+  _serviceChats = _draft?.serviceChats ?? [];
+  _observations = _draft?.observations ?? [];
+
   recalcScores();
   renderObsChat();
   renderServiceChatList();
@@ -787,6 +910,7 @@ export async function init() {
 
     _serviceChats.push({ protocol, startedAt, tmpr: normalizeTime(tmpr), tmer: normalizeTime(tmer), tma: normalizeTime(tma), csat });
     renderServiceChatList();
+    saveDraft();
 
     /* Reset form fields */
     document.getElementById('att-id').value   = '';
@@ -807,6 +931,7 @@ export async function init() {
     if (_pendingDeleteProtocol) {
       _serviceChats = _serviceChats.filter(s => s.protocol !== _pendingDeleteProtocol);
       renderServiceChatList();
+      saveDraft();
     }
     closeScDeleteModal();
   });
@@ -840,6 +965,7 @@ export async function init() {
     btn.textContent = 'Salvando…';
     try {
       await persistMonitoring({ isZeroed: true, resetData: { errorTypeId, justification, protocol, datetime } });
+      clearDraft();
       toast.success('Monitoria zerada', 'Registrada com sucesso.');
       closeResetModal();
       setTimeout(() => navigate('consulta'), 1200);
@@ -852,7 +978,7 @@ export async function init() {
   });
 
   /* ── Save Monitoria ─────────────────────── */
-  document.getElementById('btn-cancel-form')?.addEventListener('click', () => navigate('nova-monitoria'));
+  document.getElementById('btn-cancel-form')?.addEventListener('click', resetForm);
 
   document.getElementById('btn-save-monitoring')?.addEventListener('click', async () => {
     if (!validateRequiredFields()) return;
@@ -862,6 +988,7 @@ export async function init() {
     btn.textContent = 'Salvando…';
     try {
       await persistMonitoring();
+      clearDraft();
       const pct = Math.round(_totalEarned / TOTAL_MAX_PTS * 100);
       toast.success('Monitoria salva!',
         `${_totalEarned}/${TOTAL_MAX_PTS} pts (${pct}%) · ${_observations.length} obs.`);
@@ -933,11 +1060,14 @@ export async function init() {
       .maybeSingle();
 
     numInput.value = data ? data.number + 1 : 1;
+    saveDraft();
   });
+
+  document.getElementById('monitoring-number')?.addEventListener('change', saveDraft);
 
   /* ── Eval checkboxes ────────────────────── */
   document.querySelectorAll('.eval-item__check').forEach(chk => {
-    chk.addEventListener('change', recalcScores);
+    chk.addEventListener('change', () => { recalcScores(); saveDraft(); });
   });
 
   /* ── Analytical: justification required when unchecked ── */
@@ -945,8 +1075,20 @@ export async function init() {
     chk.addEventListener('change', () => {
       const justEl = document.getElementById(`an-just-${chk.dataset.id}`);
       if (justEl) justEl.placeholder = chk.checked ? 'Justificativa (opcional)' : 'Justificativa obrigatória…';
+      saveDraft();
     });
   });
+
+  /* ── Analytical justifications — auto-resize + salvar ── */
+  ANALYTICAL_CRITERIA.forEach(c => {
+    const el = document.getElementById(`an-just-${c.id}`);
+    if (!el) return;
+    el.addEventListener('input', () => { autoResize(el); saveDraft(); });
+  });
+
+  /* ── obs-text — auto-resize ── */
+  const obsTextEl = document.getElementById('obs-text');
+  if (obsTextEl) obsTextEl.addEventListener('input', () => autoResize(obsTextEl));
 
   /* ── Section collapse ───────────────────── */
   document.querySelectorAll('.eval-section__header').forEach(hdr => {
@@ -992,7 +1134,12 @@ export async function init() {
       text,
     });
 
-    document.getElementById('obs-text').value = '';
+    const _obsEl = document.getElementById('obs-text');
+    if (_obsEl) { _obsEl.value = ''; _obsEl.style.height = 'auto'; }
+    saveDraft();
     renderObsChat();
   });
+
+  /* ── Restaurar checkboxes do rascunho ─────── */
+  restoreDraftCheckboxes(_draft);
 }

@@ -640,6 +640,11 @@ export async function init() {
     _filters.supId = _currentUser?.id ?? '';
   }
 
+  /* Garante spinner imediato em qualquer visita (incluindo revisitas com dados obsoletos) */
+  _dataLoaded = false;
+  const _initMain = document.getElementById('main-content');
+  if (_initMain) _initMain.innerHTML = render();
+
   try {
     if (!_employees.length) await fetchData();
     await fetchMonitoringData();
