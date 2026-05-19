@@ -251,8 +251,16 @@ export function render() {
          </div>
        </div>`;
 
-  /* Render ALL employees as cards; applyCardVisibility hides/shows */
-  const cards = _employees.map(c => renderCard(c)).join('');
+  /* Render ALL employees as cards sorted by most recent monitoring date */
+  const sorted = [..._employees].sort((a, b) => {
+    const da = _monStats[a.id]?.lastDate ?? '';
+    const db = _monStats[b.id]?.lastDate ?? '';
+    if (!da && !db) return 0;
+    if (!da) return 1;
+    if (!db) return -1;
+    return db.localeCompare(da);
+  });
+  const cards = sorted.map(c => renderCard(c)).join('');
 
   return `
     <div class="page-enter">
