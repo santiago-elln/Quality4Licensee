@@ -4,6 +4,7 @@
 import { getCurrentUser } from '../auth.js';
 import { getRouteParams } from '../router.js';
 import { supabase } from '../supabase.js';
+import { can, P } from '../utils/permissions.js';
 import {
   formatDate, resultBand, scoreColor, scoreColorHex, getInitials,
 } from '../utils/formatters.js';
@@ -211,6 +212,24 @@ function initCharts() {
   }
 }
 
+/* ── Access control ───────────────────────── */
+function isAllowed(user, empId, employee) {
+  if (can(user, P.GLOBAL_VIEW_DEPT)) return true;
+  return empId === user.employeeId || employee?.supervisor_id === user.id;
+}
+
+function renderDenied() {
+  const main = document.getElementById('main-content');
+  if (main) main.innerHTML = `
+    <div class="page-enter">
+      <div class="empty-state">
+        <div class="empty-state__icon">🔒</div>
+        <div class="empty-state__title">Acesso não autorizado</div>
+        <div class="empty-state__desc">Você não tem permissão para visualizar este perfil.</div>
+      </div>
+    </div>`;
+}
+
 /* ── Page reload ──────────────────────────── */
 function reloadPage() {
   destroyAll();
@@ -222,10 +241,16 @@ function reloadPage() {
 
 /* ── init ─────────────────────────────────── */
 export async function init() {
+  const user          = getCurrentUser();
   const { id: empId } = getRouteParams();
   if (!empId) return;
 
-  if (_loadedEmpId === empId) { reloadPage(); return; }
+  /* Cache hit — re-validate access before rendering */
+  if (_loadedEmpId === empId) {
+    if (!isAllowed(user, empId, _employee)) { renderDenied(); return; }
+    reloadPage();
+    return;
+  }
 
   /* Reset para novo employee */
   _employee = null;
@@ -267,7 +292,9 @@ export async function init() {
     return;
   }
 
-  _employee    = empRes.data;
+  _employee = empRes.data;
+
+  if (!isAllowed(user, empId, _employee)) { renderDenied(); return; }
   const rawMons = monsRes.data ?? [];
   _monitorings = computeMonData(rawMons);
 

@@ -6,8 +6,9 @@ import {
   initRouter, registerRoute, setDefaultRoute,
   protectRoute, navigate, getCurrentRoute,
 } from './router.js';
+import { can, P } from './utils/permissions.js';
 import { renderHeader, bindHeader, setOnPeriodChange } from './components/header.js';
-import { renderSidebar, bindSidebar, updateActiveNav } from './components/sidebar.js';
+import { renderSidebar, bindSidebar, updateActiveNav, setSidebarCollapsed } from './components/sidebar.js';
 import { destroyAll } from './components/charts.js';
 
 /* ── Page modules ───────────────────────────── */
@@ -62,7 +63,7 @@ function registerRoutes() {
   registerRoute('login', async () => {
     if (isAuthenticated()) {
       const u = getCurrentUser();
-      navigate(u?.role === 'gestor' || u?.accessLevel === 3 ? 'consulta' : 'nova-monitoria');
+      navigate(can(u, P.NEW_MONITORING_ACCESS) ? 'nova-monitoria' : 'consulta');
       return;
     }
     app.innerHTML = LoginPage.render();
@@ -87,12 +88,15 @@ function registerRoutes() {
   protected_.forEach(([route, page]) => {
     protectRoute(route);
     registerRoute(route, async () => {
-      if (route === 'nova-monitoria') {
-        const u = getCurrentUser();
-        if (u?.role === 'gestor' || u?.accessLevel === 3) { navigate('consulta'); return; }
-      }
+      const u = getCurrentUser();
+      if (route === 'nova-monitoria' && !can(u, P.NEW_MONITORING_ACCESS)) { navigate('consulta'); return; }
+      if (route === 'consulta'       && !can(u, P.CONSULT_ACCESS))        { navigate('nova-monitoria'); return; }
+      if (route === 'registros'      && !can(u, P.RECORD_ACCESS))         { navigate('consulta'); return; }
+      if (route === 'perfil'         && !can(u, P.PROFILE_VIEW))          { navigate('nova-monitoria'); return; }
+      if (route === 'admin'          && !can(u, P.ADMIN_ACCESS))          { navigate('consulta'); return; }
       mountShell();
       renderShell();
+      setSidebarCollapsed(route === 'escalas');
       await mountPage(page);
     });
   });

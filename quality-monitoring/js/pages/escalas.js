@@ -4,6 +4,7 @@
 import { supabase } from '../supabase.js';
 import { getCurrentUser } from '../auth.js';
 import { toast } from '../components/toast.js';
+import { can, P } from '../utils/permissions.js';
 
 // ─── Grid constants ───────────────────────────────────────────────────────────
 const GRID_START = 8 * 60
@@ -195,6 +196,7 @@ let _selectedDateRange = { from: null, to: null }
 let _activeMetrics = new Set()
 let _sectors      = []
 let _sectorId     = null
+let _deptSectors  = []   // [{id, name}] — populated in global mode
 let _employees    = []
 let _shifts       = {}
 let _origShifts   = {}
@@ -277,9 +279,9 @@ export async function init() {
   const sig = _abortCtrl.signal
 
   _user = getCurrentUser()
-  _viewMode = 'edit'
+  _viewMode = can(_user, P.SHIFTS_EDIT) ? 'edit' : 'analysis'
   _activeMetrics = new Set()
-  _sectors = []; _sectorId = null
+  _sectors = []; _sectorId = null; _deptSectors = []
   _employees = []; _shifts = {}; _origShifts = {}
   _dirty.clear(); _drag = null
 
@@ -295,9 +297,10 @@ export async function init() {
     await loadData(); renderGrid()
   }, { singleDay: true })
 
-  document.querySelectorAll('.esc-mode-btn').forEach(btn =>
+  document.querySelectorAll('.esc-mode-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.mode === _viewMode)
     btn.addEventListener('click', () => setViewMode(btn.dataset.mode), { signal: sig })
-  )
+  })
   document.querySelectorAll('.esc-metric-btn').forEach(btn =>
     btn.addEventListener('click', () => {
       const m=btn.dataset.metric
@@ -325,9 +328,11 @@ export async function init() {
   }, { signal: sig })
 
   await loadSectors()
-  if (!_sectors.length) { showStatus('Nenhum setor associado a este usuário.', true); return }
-  _sectorId = _sectors[0].id
-  renderSectorTabs()
+  if (!can(_user, P.GLOBAL_VIEW_DEPT)) {
+    if (!_sectors.length) { showStatus('Nenhum setor associado a este usuário.', true); return }
+    _sectorId = _sectors[0].id
+    renderSectorTabs()
+  }
   showStatus('Carregando escala…')
   await loadData()
   renderGrid()
@@ -335,6 +340,10 @@ export async function init() {
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
 async function loadSectors() {
+  if (can(_user, P.GLOBAL_VIEW_DEPT)) {
+    _sectors = []   // global mode — department-wide, no sector tabs
+    return
+  }
   const { data, error } = await supabase
     .from('supervisor_sectors')
     .select('sector_id, sectors(id, name)')
@@ -343,35 +352,67 @@ async function loadSectors() {
 }
 
 async function loadData() {
-  const { data: emps, error: empErr } = await supabase
-    .from('employees').select('*')
-    .eq('sector_id', _sectorId).eq('active', true).order('name')
-  if (empErr) { showStatus('Erro ao carregar colaboradores.', true); return }
-  _employees = emps ?? []
   _shifts = {}; _origShifts = {}
-  const empIds = _employees.map(e=>e.id)
-  if (empIds.length) {
-    const { data: rows } = await supabase
-      .from('shifts').select('*')
-      .in('employee_id', empIds).eq('date', _selectedDate)
-    if (rows) {
-      rows.forEach(s => {
-        const parsed = { ...s, start_min:timeToMin(s.start_time), end_min:timeToMin(s.end_time), break_start_min:timeToMin(s.break_start) }
-        _shifts[s.employee_id]=parsed; _origShifts[s.employee_id]={...parsed}
-      })
-    }
+
+  const SHIFT_COLS = 'id, start_time, end_time, break_start, break_duration_minutes, updated_by, updated_at'
+
+  let query
+  if (can(_user, P.GLOBAL_VIEW_DEPT)) {
+    if (!_user.departmentId) { showStatus('Departamento não configurado para este usuário.', true); return }
+    query = supabase
+      .from('employees')
+      .select(`id, name, supervisor_id, sector_id, sectors!inner(id, name, department_id), shifts(${SHIFT_COLS})`)
+      .eq('sectors.department_id', _user.departmentId)
+      .eq('active', true)
+      .eq('shifts.date', _selectedDate)
+      .order('name')
+  } else {
+    query = supabase
+      .from('employees')
+      .select(`id, name, supervisor_id, sector_id, shifts(${SHIFT_COLS})`)
+      .eq('sector_id', _sectorId)
+      .eq('active', true)
+      .eq('shifts.date', _selectedDate)
+      .order('name')
   }
+
+  const { data: rows, error } = await query
+  if (error) { showStatus('Erro ao carregar colaboradores.', true); return }
+
+  /* Extract unique sectors for grouping (global mode only) */
+  if (can(_user, P.GLOBAL_VIEW_DEPT)) {
+    const seen = new Set()
+    _deptSectors = (rows ?? [])
+      .filter(r => r.sectors && !seen.has(r.sectors.id) && seen.add(r.sectors.id))
+      .map(r => ({ id: r.sectors.id, name: r.sectors.name }))
+  }
+
+  _employees = (rows ?? []).map(({ shifts: _, sectors: __, ...emp }) => emp)
+  for (const row of (rows ?? [])) {
+    const s = row.shifts?.[0]
+    if (!s) continue
+    const parsed = { ...s, employee_id: row.id, date: _selectedDate,
+      start_min: timeToMin(s.start_time), end_min: timeToMin(s.end_time),
+      break_start_min: timeToMin(s.break_start) }
+    _shifts[row.id] = parsed
+    _origShifts[row.id] = { ...parsed }
+  }
+
   _dirty.clear(); hideSaveBar(); updateStats()
 }
 
 // ─── Availability ─────────────────────────────────────────────────────────────
+function calcAvailForGroup(slotMin, empIds) {
+  return empIds.reduce((n, id) => {
+    const s = _shifts[id]; if (!s) return n
+    const inShift = s.start_min <= slotMin && s.end_min > slotMin
+    const onBreak  = s.break_start_min <= slotMin && (s.break_start_min + s.break_duration_minutes) > slotMin
+    return n + (inShift && !onBreak ? 1 : 0)
+  }, 0)
+}
+
 function calcAvail(slotMin) {
-  return _employees.reduce((n,emp) => {
-    const s=_shifts[emp.id]; if(!s) return n
-    const inShift=s.start_min<=slotMin&&s.end_min>slotMin
-    const onBreak=s.break_start_min<=slotMin&&(s.break_start_min+s.break_duration_minutes)>slotMin
-    return n+(inShift&&!onBreak?1:0)
-  },0)
+  return calcAvailForGroup(slotMin, _employees.map(e => e.id))
 }
 
 // ─── Sector tabs ──────────────────────────────────────────────────────────────
@@ -397,15 +438,37 @@ function renderSectorTabs() {
 
 function updateStats() {
   const total=_employees.length, withShift=_employees.filter(e=>_shifts[e.id]).length
-  const sector=_sectors.find(s=>s.id===_sectorId)
   const el=$e('esc-stats'); if(!el) return
+  const scopeItem = can(_user, P.GLOBAL_VIEW_DEPT)
+    ? `<div class="esc-stat-item"><span class="esc-stat-label">Escopo</span><span class="esc-stat-value">Departamento</span></div>`
+    : `<div class="esc-stat-item"><span class="esc-stat-label">Setor</span><span class="esc-stat-value">${_sectors.find(s=>s.id===_sectorId)?.name??'—'}</span></div>`
   el.innerHTML=`
     <div class="esc-stats-content">
-      <div class="esc-stat-item"><span class="esc-stat-label">Setor</span><span class="esc-stat-value">${sector?.name??'—'}</span></div>
+      ${scopeItem}
       <div class="esc-stat-divider"></div>
       <div class="esc-stat-item"><span class="esc-stat-label">Colaboradores</span><span class="esc-stat-value">${total}</span></div>
       <div class="esc-stat-divider"></div>
       <div class="esc-stat-item"><span class="esc-stat-label">Com escala</span><span class="esc-stat-value">${withShift}</span></div>
+    </div>`
+}
+
+// ─── Sector row builders ──────────────────────────────────────────────────────
+function buildSectorHeaderRow(sector, emps) {
+  const empIds = emps.map(e => e.id)
+  const cells = []
+  for (let i = 0; i < NUM_SLOTS; i++) {
+    const sm = GRID_START + i * SLOT_MIN
+    const count = calcAvailForGroup(sm, empIds)
+    const total = emps.length
+    const hue = total ? Math.round(count / total * 120) : 45
+    cells.push(`<div class="esc-avail-slot esc-sector-avail-slot"
+      data-sector-id="${sector.id}" data-slot="${i}"
+      style="left:${slotPct(i)}%;width:${slotPct(1)}%;background:hsl(${hue},38%,85%);color:hsl(${hue},50%,30%)">${count}</div>`)
+  }
+  return `
+    <div class="esc-srow esc-sector-header">
+      <div class="esc-name-cell esc-sector-header-label">${sector.name}</div>
+      <div class="esc-grid-cell esc-sector-header-grid" style="height:var(--esc-hdr-h)">${buildGridLines()}${cells.join('')}</div>
     </div>`
 }
 
@@ -418,11 +481,9 @@ function buildGridLines() {
 
 function renderGrid() {
   const hourSlots=Array.from({length:NUM_SLOTS+1},(_,i)=>i).filter(i=>i%2===0)
-  const timeLabels=hourSlots.map((i,idx)=>{
-    const min=GRID_START+i*SLOT_MIN
-    const edgeCls=idx===0?' slot-first':idx===hourSlots.length-1?' slot-last':''
-    return `<div class="esc-th-slot${edgeCls}" style="left:${slotPct(i)}%">${minToTime(min)}</div>`
-  })
+  const timeLabels=hourSlots
+    .filter((_,idx)=>idx!==0&&idx!==hourSlots.length-1)
+    .map(i=>`<div class="esc-th-slot" style="left:${slotPct(i)}%">${minToTime(GRID_START+i*SLOT_MIN)}</div>`)
   const availCells=[]
   for(let i=0;i<NUM_SLOTS;i++){
     const sm=GRID_START+i*SLOT_MIN, count=calcAvail(sm)
@@ -430,6 +491,23 @@ function renderGrid() {
     availCells.push(`<div class="esc-avail-slot" data-slot="${i}"
       style="left:${slotPct(i)}%;width:${slotPct(1)}%;background:hsl(${hue},38%,88%);color:hsl(${hue},45%,28%)">${count}</div>`)
   }
+  /* Group employees by sector in global mode */
+  let empRowsHtml = ''
+  if (can(_user, P.GLOBAL_VIEW_DEPT) && _deptSectors.length > 0) {
+    const sorted = [..._deptSectors].sort((a, b) => {
+      const ai = SECTOR_ORDER.indexOf(a.name), bi = SECTOR_ORDER.indexOf(b.name)
+      return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi)
+    })
+    for (const sector of sorted) {
+      const emps = _employees.filter(e => e.sector_id === sector.id)
+      if (!emps.length) continue
+      empRowsHtml += buildSectorHeaderRow(sector, emps)
+      empRowsHtml += `<div class="esc-sector-rows" data-sector-id="${sector.id}">${emps.map(buildEmpRow).join('')}</div>`
+    }
+  } else {
+    empRowsHtml = _employees.map(buildEmpRow).join('')
+  }
+
   const el=$e('esc-main'); if(!el) return
   el.innerHTML=`
     <div class="esc-schedule-wrapper">
@@ -437,33 +515,64 @@ function renderGrid() {
         <div class="esc-name-cell esc-header-label">Colaborador</div>
         <div class="esc-grid-cell" style="height:var(--esc-hdr-h)">${buildGridLines()}${timeLabels.join('')}</div>
       </div>
+      ${_deptSectors.length > 1 ? '' : `
       <div class="esc-srow esc-avail-row">
         <div class="esc-name-cell esc-avail-label">Disponíveis</div>
         <div class="esc-grid-cell" id="esc-avail-grid" style="height:var(--esc-hdr-h)">${availCells.join('')}</div>
-      </div>
-      <div id="esc-emp-rows">${_employees.map(buildEmpRow).join('')}</div>
+      </div>`}
+      <div id="esc-emp-rows">${empRowsHtml}</div>
     </div>`
   renderMetricOverlay()
 }
 
 // ─── Metric overlay ───────────────────────────────────────────────────────────
 function buildMetricSvg(data, pxPerUnit, totalH, rgb, id) {
-  const W=1200, hw=W/data.length
+  const W=1200, n=data.length, hw=W/n
   const hs=data.map(v=>Math.min(Math.round(v*pxPerUnit),totalH))
-  let fill=`M 0 0`; hs.forEach((h,i)=>{fill+=` V ${h} H ${(i+1)*hw}`}); fill+=' V 0 Z'
-  let stroke=`M 0 ${hs[0]}`; hs.forEach((h,i)=>{stroke+=` V ${h} H ${(i+1)*hw}`})
+
+  /* Invert: values grow upward — map data height to SVG y (y=0 is top) */
+  const ys=hs.map(h=>totalH-h)
+
+  /* Points: left anchor + data centers (mid-column) + right anchor */
+  const pts=[
+    [0, ys[0]],
+    ...ys.map((y,i)=>[(i+0.5)*hw, y]),
+    [W, ys[n-1]],
+  ]
+
+  /* Catmull-Rom → cubic bezier segments */
+  let segs=''
+  for(let i=0;i<pts.length-1;i++){
+    const p0=pts[Math.max(i-1,0)], p1=pts[i], p2=pts[i+1], p3=pts[Math.min(i+2,pts.length-1)]
+    const cp1x=(p1[0]+(p2[0]-p0[0])/6).toFixed(1), cp1y=(p1[1]+(p2[1]-p0[1])/6).toFixed(1)
+    const cp2x=(p2[0]-(p3[0]-p1[0])/6).toFixed(1), cp2y=(p2[1]-(p3[1]-p1[1])/6).toFixed(1)
+    segs+=` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`
+  }
+
+  const strokeD=`M ${pts[0][0]} ${pts[0][1]}${segs}`
+  /* Fill from bottom edge up to the curve */
+  const fillD=`M 0 ${totalH} L ${pts[0][0]} ${pts[0][1]}${segs} L ${W} ${totalH} Z`
+
+  /* Hour dot markers — visible at each data-center point */
+  const dots=ys.map((y,i)=>{
+    const cx=((i+0.5)*hw).toFixed(1)
+    return `<circle cx="${cx}" cy="${y}" r="5" fill="rgba(${rgb},.8)" stroke="rgba(255,255,255,.85)" stroke-width="2" style="cursor:crosshair"/>`
+  }).join('')
+
   const gid=`escmg-${id}`
   const svg=document.createElementNS('http://www.w3.org/2000/svg','svg')
   svg.setAttribute('width','100%'); svg.setAttribute('height','100%')
   svg.setAttribute('viewBox',`0 0 ${W} ${totalH}`); svg.setAttribute('preserveAspectRatio','none')
-  svg.style.cssText='position:absolute;inset:0'
-  svg.innerHTML=`<defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
-    <stop offset="0%"   stop-color="rgba(${rgb},.42)"/>
-    <stop offset="70%"  stop-color="rgba(${rgb},.07)"/>
-    <stop offset="100%" stop-color="rgba(${rgb},0)"/>
+  svg.style.cssText='position:absolute;inset:0;overflow:visible'
+  /* Gradient: opaque at the curve (top of fill), transparent at bottom */
+  svg.innerHTML=`<defs><linearGradient id="${gid}" x1="0" y1="1" x2="0" y2="0">
+    <stop offset="0%"   stop-color="rgba(${rgb},0)"/>
+    <stop offset="40%"  stop-color="rgba(${rgb},.08)"/>
+    <stop offset="100%" stop-color="rgba(${rgb},.32)"/>
   </linearGradient></defs>
-  <path d="${fill}" fill="url(#${gid})"/>
-  <path d="${stroke}" fill="none" stroke="rgba(${rgb},.65)" stroke-width="4" stroke-linejoin="round"/>`
+  <path d="${fillD}" fill="url(#${gid})"/>
+  <path d="${strokeD}" fill="none" stroke="rgba(${rgb},.7)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  ${dots}`
   return svg
 }
 
@@ -499,9 +608,143 @@ async function loadMetrics() {
   return{...aggregateHourlyMetrics(fbData),fallbackDate:latest.date}
 }
 
+async function loadAllSectorMetrics() {
+  if(!_deptSectors.length||!_selectedDateRange.from) return {}
+  const sectorIds=_deptSectors.map(s=>s.id)
+
+  /* Weekday of the display date (local time) */
+  const [y,mo,d]=_selectedDate.split('-').map(Number)
+  const targetWeekday=new Date(y,mo-1,d).getDay()
+
+  const aggregate=(rows, weekdayFilter)=>{
+    const groups={}
+    for(const row of rows){
+      if(weekdayFilter!=null){
+        const [ry,rm,rd]=row.date.split('-').map(Number)
+        if(new Date(ry,rm-1,rd).getDay()!==weekdayFilter) continue
+      }
+      const sid=row.sector_id
+      if(!groups[sid]) groups[sid]={}
+      if(!groups[sid][row.hour]) groups[sid][row.hour]={tme:[],tma:[],csat:[]}
+      if(row.tme!=null) groups[sid][row.hour].tme.push(row.tme)
+      if(row.tma!=null) groups[sid][row.hour].tma.push(row.tma)
+      if(row.csat!=null) groups[sid][row.hour].csat.push(row.csat)
+    }
+    const avg=arr=>arr.length?arr.reduce((a,b)=>a+b,0)/arr.length:0
+    const result={}
+    for(const [sid,hours] of Object.entries(groups)){
+      result[sid]={tme:Array(12).fill(0),tma:Array(12).fill(0),csat:Array(12).fill(0)}
+      for(let h=8;h<=19;h++){
+        const g=hours[h]; if(!g) continue
+        const i=h-8
+        result[sid].tme[i]=Math.round(avg(g.tme))
+        result[sid].tma[i]=Math.round(avg(g.tma))
+        result[sid].csat[i]=+avg(g.csat).toFixed(2)
+      }
+    }
+    return result
+  }
+
+  /* Try the selected period first, filtered to target weekday */
+  const {data,error}=await supabase.from('sector_metrics')
+    .select('sector_id,date,hour,tme,tma,csat')
+    .in('sector_id',sectorIds)
+    .gte('date',_selectedDateRange.from)
+    .lte('date',_selectedDateRange.to)
+    .gte('hour',8).lte('hour',19)
+
+  if(!error&&data?.length){
+    const result=aggregate(data, targetWeekday)
+    /* If weekday filter left something, return it */
+    if(Object.keys(result).length) return result
+  }
+
+  /* Fallback: latest available date, no weekday filter */
+  const {data:latest}=await supabase.from('sector_metrics')
+    .select('date').in('sector_id',sectorIds)
+    .order('date',{ascending:false}).limit(1).single()
+  if(!latest?.date) return {}
+
+  const {data:fbData,error:fbError}=await supabase.from('sector_metrics')
+    .select('sector_id,date,hour,tme,tma,csat')
+    .in('sector_id',sectorIds)
+    .eq('date',latest.date)
+    .gte('hour',8).lte('hour',19)
+  if(fbError||!fbData?.length) return {}
+
+  showMetricsWarn(latest.date)
+  return aggregate(fbData, null)  // no weekday filter on fallback
+}
+
+async function renderSectorMetricOverlays() {
+  if(_viewMode!=='analysis'||!_activeMetrics.size) return
+
+  const allMetrics=await loadAllSectorMetrics()
+  if(_viewMode!=='analysis'||!_activeMetrics.size) return
+
+  const rowH=parseInt(getComputedStyle(document.documentElement).getPropertyValue('--esc-row-h'))||38
+  const metricCfg={
+    tme: {rgb:'59,130,246',  label:'TME',  fmt:v=>fmtSec(v)},
+    tma: {rgb:'139,92,246',  label:'TMA',  fmt:v=>fmtSec(v)},
+    csat:{rgb:'245,158,11',  label:'CSAT', fmt:v=>Math.round(v*100)+'pp'},
+  }
+
+  for(const sector of _deptSectors){
+    const rowsEl=document.querySelector(`.esc-sector-rows[data-sector-id="${sector.id}"]`)
+    if(!rowsEl) continue
+    const emps=_employees.filter(e=>e.sector_id===sector.id)
+    if(!emps.length) continue
+
+    const metrics=allMetrics[sector.id]
+    if(!metrics) continue
+
+    const totalH=emps.length*rowH
+
+    /* Per-metric scale: largest value in each metric → 90% of sector height */
+    const cfg={}
+    _activeMetrics.forEach(m=>{
+      const c=metricCfg[m]; if(!c) return
+      const maxVal=Math.max(...metrics[m],0.001)
+      cfg[m]={...c, data:metrics[m], pxPerUnit:(totalH*0.9)/maxVal}
+    })
+    if(!Object.keys(cfg).length) continue
+
+    const overlay=document.createElement('div')
+    overlay.className='esc-sector-metric-overlay'
+    overlay.style.pointerEvents='auto'
+    rowsEl.appendChild(overlay)
+
+    Object.entries(cfg).forEach(([m,c])=>
+      overlay.appendChild(buildMetricSvg(c.data,c.pxPerUnit,totalH,c.rgb,`${sector.id}-${m}`))
+    )
+
+    overlay.addEventListener('mousemove',e=>{
+      const xPct=(e.clientX-overlay.getBoundingClientRect().left)/overlay.getBoundingClientRect().width
+      const hourIdx=Math.min(Math.floor(xPct*12),11)
+      const rows=Object.entries(cfg).map(([m,c])=>{
+        const val=c.data[hourIdx]; if(!val) return null
+        return{m,label:c.label,val,fmt:c.fmt}
+      }).filter(Boolean)
+      if(!rows.length){hideMetricTooltip();return}
+      showMetricTooltip(e.clientX,e.clientY,minToTime(GRID_START+hourIdx*60),rows)
+    })
+    overlay.addEventListener('mouseleave',hideMetricTooltip)
+  }
+}
+
 async function renderMetricOverlay() {
-  $e('esc-metric-overlay')?.remove(); hideMetricTooltip(); hideMetricsWarn()
+  $e('esc-metric-overlay')?.remove()
+  document.querySelectorAll('.esc-sector-metric-overlay').forEach(el=>el.remove())
+  hideMetricTooltip(); hideMetricsWarn()
   if(_viewMode!=='analysis'||!_activeMetrics.size||!$e('esc-emp-rows')) return
+
+  /* Per-sector overlays for global mode */
+  if(can(_user, P.GLOBAL_VIEW_DEPT) && _deptSectors.length > 1) {
+    await renderSectorMetricOverlays()
+    return
+  }
+
+  /* Single-sector overlay (supervisor mode) */
   const metricsData=await loadMetrics()
   if(_viewMode!=='analysis'||!_activeMetrics.size) return
   if(metricsData.fallbackDate) showMetricsWarn(metricsData.fallbackDate)
@@ -510,7 +753,7 @@ async function renderMetricOverlay() {
   const totalH=_employees.length*rowH, maxH=totalH-rowH*0.02
   const tmeMax=Math.max(...metricsData.tme,1), tmaMax=Math.max(...metricsData.tma,1)
   const overlay=document.createElement('div')
-  overlay.id='esc-metric-overlay'; overlay.className='esc-metric-overlay'; overlay.style.pointerEvents='all'
+  overlay.id='esc-metric-overlay'; overlay.className='esc-metric-overlay'; overlay.style.pointerEvents='auto'
   empRowsEl.appendChild(overlay)
   const cfg={
     tme: {data:metricsData.tme, pxPerUnit:maxH/tmeMax,  rgb:'59,130,246',  label:'TME',  fmt:v=>fmtSec(v)},
@@ -519,17 +762,15 @@ async function renderMetricOverlay() {
   }
   _activeMetrics.forEach(m=>{const c=cfg[m]; if(c) overlay.appendChild(buildMetricSvg(c.data,c.pxPerUnit,totalH,c.rgb,m))})
   overlay.addEventListener('mousemove',e=>{
-    const rect=overlay.getBoundingClientRect()
-    const xPct=(e.clientX-rect.left)/rect.width, yPx=e.clientY-rect.top
-    const slotIdx=Math.min(Math.floor(xPct*NUM_SLOTS),NUM_SLOTS-1)
-    const hourIdx=Math.min(Math.floor(slotIdx/2),11)
+    const xPct=(e.clientX-overlay.getBoundingClientRect().left)/overlay.getBoundingClientRect().width
+    const hourIdx=Math.min(Math.floor(xPct*12),11)
     const rows=[..._activeMetrics].map(m=>{
       const c=cfg[m]; if(!c) return null
-      const val=c.data[hourIdx]; if(yPx>val*c.pxPerUnit) return null
+      const val=c.data[hourIdx]; if(!val) return null
       return{m,label:c.label,val,fmt:c.fmt}
     }).filter(Boolean)
     if(!rows.length){hideMetricTooltip();return}
-    showMetricTooltip(e.clientX,e.clientY,minToTime(GRID_START+slotIdx*SLOT_MIN),rows)
+    showMetricTooltip(e.clientX,e.clientY,minToTime(GRID_START+hourIdx*60),rows)
   })
   overlay.addEventListener('mouseleave',hideMetricTooltip)
 }
@@ -553,7 +794,7 @@ function hideMetricsWarn(){$e('esc-metrics-warn')?.classList.remove('visible')}
 // ─── Employee row ─────────────────────────────────────────────────────────────
 function buildEmpRow(emp) {
   const shift=_shifts[emp.id]
-  const canEdit=(_user?.accessLevel>=4)||emp.supervisor_id===_user?.id
+  const canEdit = can(_user, P.SHIFTS_EDIT) && (can(_user, P.GLOBAL_VIEW_DEPT) || emp.supervisor_id === _user?.id)
   let gridContent=''
   if(shift){
     const barLeft=minToPct(shift.start_min),barWidth=durToPct(shift.end_min-shift.start_min)
@@ -581,6 +822,7 @@ function buildEmpRow(emp) {
     <div class="esc-srow esc-emp-row" data-eid="${emp.id}">
       <div class="esc-name-cell${canEdit?' esc-my-team':''}">
         <span class="esc-emp-name" title="${emp.name}">${emp.name}</span>
+        ${canEdit ? `
         <div class="esc-row-actions">
           <button class="esc-row-btn esc-row-save" data-eid="${emp.id}" title="Salvar">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
@@ -588,7 +830,7 @@ function buildEmpRow(emp) {
           <button class="esc-row-btn esc-row-discard" data-eid="${emp.id}" title="Descartar">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
           </button>
-        </div>
+        </div>` : ''}
       </div>
       <div class="esc-grid-cell esc-emp-grid" data-eid="${emp.id}" style="height:var(--esc-row-h)">
         ${buildGridLines()}${gridContent}
@@ -691,10 +933,26 @@ function patchShiftBar(eid) {
 }
 
 function refreshAvailRow() {
-  document.querySelectorAll('.esc-avail-slot').forEach((el,i)=>{
-    const count=calcAvail(GRID_START+i*SLOT_MIN), total=_employees.length
-    const hue=total?Math.round(count/total*140):45
-    el.textContent=count; el.style.background=`hsl(${hue},48%,78%)`; el.style.color=`hsl(${hue},55%,38%)`
+  /* Grand-total row (excludes sector subtotal slots) */
+  document.querySelectorAll('#esc-avail-grid .esc-avail-slot').forEach((el, i) => {
+    const count = calcAvail(GRID_START + i * SLOT_MIN), total = _employees.length
+    const hue = total ? Math.round(count / total * 140) : 45
+    el.textContent = count; el.style.background = `hsl(${hue},48%,78%)`; el.style.color = `hsl(${hue},55%,38%)`
+  })
+
+  /* Per-sector subtotal rows */
+  _deptSectors.forEach(sector => {
+    const emps   = _employees.filter(e => e.sector_id === sector.id)
+    const empIds = emps.map(e => e.id)
+    document.querySelectorAll(`.esc-sector-avail-slot[data-sector-id="${sector.id}"]`).forEach(el => {
+      const slot  = parseInt(el.dataset.slot)
+      const count = calcAvailForGroup(GRID_START + slot * SLOT_MIN, empIds)
+      const total = emps.length
+      const hue   = total ? Math.round(count / total * 120) : 45
+      el.textContent = count
+      el.style.background = `hsl(${hue},38%,85%)`
+      el.style.color      = `hsl(${hue},50%,30%)`
+    })
   })
 }
 

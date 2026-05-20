@@ -2,6 +2,7 @@
    AUTH — Autenticação via Supabase
    ============================================================ */
 import { supabase } from './supabase.js';
+import { DEFAULT_PERMISSIONS_BY_LEVEL } from './utils/permissions.js';
 
 let _currentUser = null;
 const _listeners = new Set();
@@ -29,17 +30,21 @@ async function buildUser(authUser) {
 
   const { data: profile } = await supabase
     .from('profiles')
-    .select('name, role, access_level, department_id')
+    .select('name, role, access_level, department_id, employee_id')
     .eq('id', authUser.id)
     .single();
+
+  const accessLevel = profile?.access_level ?? 2;
 
   return {
     id:           authUser.id,
     email:        authUser.email,
     name:         profile?.name          ?? authUser.email,
     role:         profile?.role          ?? 'supervisor',
-    accessLevel:  profile?.access_level  ?? 2,
+    accessLevel,
     departmentId: profile?.department_id ?? null,
+    employeeId:   profile?.employee_id   ?? null,
+    permissions:  DEFAULT_PERMISSIONS_BY_LEVEL[accessLevel] ?? [],
   };
 }
 

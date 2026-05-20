@@ -3,6 +3,7 @@
    ============================================================ */
 import { getCurrentUser } from '../auth.js';
 import { supabase } from '../supabase.js';
+import { can, P } from '../utils/permissions.js';
 import {
   formatDate, resultBand, scoreColor, scoreColorHex, getInitials,
 } from '../utils/formatters.js';
@@ -17,21 +18,9 @@ let _evalCriteria = [];
 let _topicMap     = {};   // {topicId: {eval_criteria_id, points}}
 let _monStats     = {};   // {employeeId: computed stats}
 let _filters      = { supId: '', collabId: '', dateFrom: '', dateTo: '' };
-let _actionPlans  = {};
-let _dataLoaded   = false;
-
-/* ── Role helpers ─────────────────────────── */
-function isAnalista() {
-  return _currentUser?.role === 'analista' || (_currentUser?.accessLevel ?? 0) >= 4;
-}
-
-function isGestor() {
-  return _currentUser?.role === 'gestor' || (_currentUser?.accessLevel ?? 0) === 3;
-}
-
-function canFilterSupervisors() {
-  return isAnalista() || isGestor();
-}
+let _actionPlans       = {};
+let _dataLoaded        = false;
+let _fetchedGlobalScope = null;  // tracks scope used on last fetchData() call
 
 function myDept() {
   return _departments.find(d => d.id === _currentUser?.departmentId);
@@ -158,10 +147,15 @@ function computeMonStats(monitorings) {
 
 /* ── Data fetch ───────────────────────────── */
 async function fetchData() {
+  const globalScope = can(_currentUser, P.GLOBAL_VIEW_DEPT);
+
+  let empQuery = supabase.from('employees').select('id, name, supervisor_id').eq('active', true).order('name');
+  if (!globalScope) empQuery = empQuery.eq('supervisor_id', _currentUser.id);
+
   const [deptRes, supRes, empRes, ecRes, topicRes] = await Promise.all([
     supabase.from('departments').select('id, name').order('name'),
     supabase.from('profiles').select('id, name, department_id').eq('role', 'supervisor').order('name'),
-    supabase.from('employees').select('id, name, supervisor_id').eq('active', true).order('name'),
+    empQuery,
     supabase.from('eval_criteria').select('id, name').eq('active', true),
     supabase.from('topic').select('id, eval_criteria_id, points').eq('active', true),
   ]);
@@ -170,11 +164,12 @@ async function fetchData() {
   if (empRes.error)   console.error('[consulta] employees:', empRes.error);
   if (ecRes.error)    console.error('[consulta] eval_criteria:', ecRes.error);
   if (topicRes.error) console.error('[consulta] topic:', topicRes.error);
-  _departments  = deptRes.data  ?? [];
-  _supervisors  = supRes.data   ?? [];
-  _employees    = empRes.data   ?? [];
-  _evalCriteria = ecRes.data    ?? [];
-  _topicMap     = Object.fromEntries((topicRes.data ?? []).map(t => [t.id, t]));
+  _departments        = deptRes.data  ?? [];
+  _supervisors        = supRes.data   ?? [];
+  _employees          = empRes.data   ?? [];
+  _evalCriteria       = ecRes.data    ?? [];
+  _topicMap           = Object.fromEntries((topicRes.data ?? []).map(t => [t.id, t]));
+  _fetchedGlobalScope = globalScope;
 }
 
 async function fetchMonitoringData() {
@@ -217,9 +212,8 @@ export function render() {
       </div>`;
   }
 
-  const analista    = isAnalista();
-  const canFilterSup = canFilterSupervisors();
-  const dept        = myDept();
+  const canFilterSup = can(_currentUser, P.GLOBAL_VIEW_DEPT);
+  const dept         = myDept();
   const daysDiff = _filters.dateFrom && _filters.dateTo
     ? Math.round((new Date(_filters.dateTo) - new Date(_filters.dateFrom)) / 86400000) + 1
     : 0;
@@ -420,6 +414,7 @@ function renderCard(collab) {
         </div>
       </div>
 
+      ${can(_currentUser, P.CONSULT_ACTION_PLAN) ? `
       <div class="cc-action-plan" id="ap-${collab.id}">
         <button class="cc-action-plan__toggle ap-toggle" data-collab="${collab.id}">
           <span>📋 Plano de Ação ${plan.length ? `(${plan.filter(i=>!i.done).length} pendentes)` : ''}</span>
@@ -437,7 +432,7 @@ function renderCard(collab) {
             <button class="btn btn--primary ap-add-btn" data-collab="${collab.id}">+</button>
           </div>
         </div>
-      </div>
+      </div>` : ''}
 
       <div class="cc-history">
         <div class="cc-history__label">Histórico de Resultados</div>
@@ -600,7 +595,7 @@ function bindEvents() {
   /* Clear all filters */
   document.getElementById('btn-clear-filters')?.addEventListener('click', () => {
     _filters = {
-      supId:    isAnalista() ? '' : (_currentUser?.id ?? ''),
+      supId:    can(_currentUser, P.GLOBAL_VIEW_DEPT) ? '' : (_currentUser?.id ?? ''),
       collabId: '',
       dateFrom: '',
       dateTo:   '',
@@ -644,7 +639,7 @@ function bindEvents() {
 export async function init() {
   _currentUser = getCurrentUser();
 
-  if (!canFilterSupervisors()) {
+  if (!can(_currentUser, P.GLOBAL_VIEW_DEPT)) {
     _filters.supId = _currentUser?.id ?? '';
   }
 
@@ -654,7 +649,8 @@ export async function init() {
   if (_initMain) _initMain.innerHTML = render();
 
   try {
-    if (!_employees.length) await fetchData();
+    const globalScope = can(_currentUser, P.GLOBAL_VIEW_DEPT);
+    if (!_employees.length || _fetchedGlobalScope !== globalScope) await fetchData();
     await fetchMonitoringData();
   } catch (err) {
     console.error('[consulta] init error:', err);

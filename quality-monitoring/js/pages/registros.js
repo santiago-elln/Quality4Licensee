@@ -4,6 +4,7 @@
 import { getCurrentUser } from '../auth.js';
 import { supabase } from '../supabase.js';
 import { navigate } from '../router.js';
+import { can, P } from '../utils/permissions.js';
 import {
   formatDate, resultBand, scoreColor, scoreColorHex, getInitials,
 } from '../utils/formatters.js';
@@ -18,21 +19,13 @@ let _employees    = [];   // [{id, name, supervisor_id}]
 let _supervisors  = [];   // [{id, name}]
 let _topicMap     = {};   // {topicId: {eval_criteria_id, points, item}}
 let _evalCriteria = [];   // [{id, name}]
-let _refDataLoaded = false;
-let _dataLoaded   = false;
-let _expandedId   = null;
-let _pendingDelete = null;  // {id, number, empName}
-let _filters      = { collabId: '', supId: '', dateFrom: '', dateTo: '', band: '' };
-
-/* ── Role helpers ─────────────────────────── */
-function isAnalista() {
-  const u = getCurrentUser();
-  return u?.role === 'analista' || (u?.accessLevel ?? 0) >= 4;
-}
-function canFilterSupervisors() {
-  const u = getCurrentUser();
-  return u?.role === 'analista' || u?.role === 'gestor' || (u?.accessLevel ?? 0) >= 3;
-}
+let _currentUser      = null;
+let _refDataLoaded    = false;
+let _fetchedGlobalScope = null;
+let _dataLoaded       = false;
+let _expandedId       = null;
+let _pendingDelete    = null;  // {id, number, empName}
+let _filters          = { collabId: '', supId: '', dateFrom: '', dateTo: '', band: '' };
 
 /* ── Row processor ────────────────────────── */
 function processRow(mon) {
@@ -69,18 +62,24 @@ function processRow(mon) {
 
 /* ── Data fetch ───────────────────────────── */
 async function fetchRefData() {
-  if (_refDataLoaded) return;
+  const globalScope = can(_currentUser, P.GLOBAL_VIEW_DEPT);
+  if (_refDataLoaded && _fetchedGlobalScope === globalScope) return;
+
+  let empQuery = supabase.from('employees').select('id, name, supervisor_id').eq('active', true);
+  if (!globalScope) empQuery = empQuery.eq('supervisor_id', _currentUser.id);
+
   const [empRes, supRes, topicRes, ecRes] = await Promise.all([
-    supabase.from('employees').select('id, name, supervisor_id').eq('active', true),
+    empQuery,
     supabase.from('profiles').select('id, name').eq('role', 'supervisor'),
     supabase.from('topic').select('id, eval_criteria_id, points, item').eq('active', true),
     supabase.from('eval_criteria').select('id, name').eq('active', true),
   ]);
-  _employees    = empRes.data   ?? [];
-  _supervisors  = supRes.data   ?? [];
-  _topicMap     = Object.fromEntries((topicRes.data ?? []).map(t => [t.id, t]));
-  _evalCriteria = ecRes.data    ?? [];
-  _refDataLoaded = true;
+  _employees          = empRes.data   ?? [];
+  _supervisors        = supRes.data   ?? [];
+  _topicMap           = Object.fromEntries((topicRes.data ?? []).map(t => [t.id, t]));
+  _evalCriteria       = ecRes.data    ?? [];
+  _refDataLoaded      = true;
+  _fetchedGlobalScope = globalScope;
 }
 
 async function fetchMonitorings() {
@@ -134,9 +133,9 @@ export function render() {
       </div>`;
   }
 
-  const canSup  = canFilterSupervisors();
-  const analyst = isAnalista();
-  const cols    = analyst ? 8 : 7;
+  const canSup    = can(_currentUser, P.GLOBAL_VIEW_DEPT);
+  const canDetail = can(_currentUser, P.RECORD_DETAIL);
+  const cols      = canDetail ? 8 : 7;
 
   const collabOpts = `<option value="">Todos os colaboradores</option>` +
     _employees.map(e =>
@@ -164,7 +163,7 @@ export function render() {
             `<div class="form-group" style="margin-bottom:0">
               <label class="form-label">Supervisor</label>
               <div class="form-input" style="opacity:.75;cursor:default">
-              ${getCurrentUser().name ?? '—'}
+              ${_currentUser?.name ?? '—'}
               </div>
             </div>`}
           <select class="form-select" id="filter-collab" style="max-width:220px">${collabOpts}</select>
@@ -194,7 +193,7 @@ export function render() {
                 <th>Pontuação</th>
                 <th>CSAT</th>
                 <th>Resultado</th>
-                ${analyst ? '<th></th>' : ''}
+                ${canDetail ? '<th></th>' : ''}
               </tr>
             </thead>
             <tbody id="records-tbody">${renderRows()}</tbody>
@@ -238,8 +237,9 @@ function paginationInfo() {
 }
 
 function renderRows() {
-  const cols  = isAnalista() ? 8 : 7;
-  const slice = _rows.slice((_page - 1) * PAGE_SIZE, _page * PAGE_SIZE);
+  const canDetail = can(_currentUser, P.RECORD_DETAIL);
+  const cols      = canDetail ? 8 : 7;
+  const slice     = _rows.slice((_page - 1) * PAGE_SIZE, _page * PAGE_SIZE);
   if (!slice.length) {
     return `<tr><td colspan="${cols}" style="text-align:center;padding:var(--space-8);color:var(--text-tertiary)">Nenhum registro encontrado</td></tr>`;
   }
@@ -256,7 +256,7 @@ function renderRows() {
         <td><div class="score-cell">${scoreCell}</div></td>
         <td style="text-align:center">${r.avgCsat ? r.avgCsat + ' ★' : '—'}</td>
         <td><span class="badge badge--${r.band.cls}">${r.band.label}</span></td>
-        ${isAnalista() ? `<td><button class="btn btn--ghost btn--sm detail-btn" data-mon="${r.id}" tabindex="-1">Ver</button></td>` : ''}
+        ${canDetail ? `<td><button class="btn btn--ghost btn--sm detail-btn" data-mon="${r.id}" tabindex="-1">Ver</button></td>` : ''}
       </tr>`;
   }).join('');
 }
@@ -369,7 +369,7 @@ function renderDetail(data, rowData) {
 
   return `
     <div style="background:var(--bg-surface-2);border-top:2px solid var(--brand-green)">
-      ${isAnalista() ? `
+      ${can(_currentUser, P.RECORD_DELETE) ? `
         <div style="display:flex;justify-content:flex-end;gap:var(--space-2);
                     padding:var(--space-3) var(--space-5);border-bottom:1px solid var(--border-light)">
           <button class="btn btn--sm delete-monitoring-btn"
@@ -431,7 +431,7 @@ async function toggleDetail(monId, btn) {
     return;
   }
 
-  const cols     = isAnalista() ? 8 : 7;
+  const cols     = can(_currentUser, P.RECORD_DETAIL) ? 8 : 7;
   const detailTr = document.createElement('tr');
   detailTr.id    = `detail-row-${monId}`;
   const rowData  = _rows.find(r => r.id === monId);
@@ -561,9 +561,14 @@ function bindFilters() {
 
 /* ── init ─────────────────────────────────── */
 export async function init() {
-  _dataLoaded = false;
-  _expandedId = null;
-  _page       = 1;
+  _currentUser = getCurrentUser();
+  _dataLoaded  = false;
+  _expandedId  = null;
+  _page        = 1;
+
+  if (!can(_currentUser, P.GLOBAL_VIEW_DEPT)) {
+    _filters.supId = _currentUser?.id ?? '';
+  }
 
   if (!_filters.dateFrom) {
     const now     = new Date();

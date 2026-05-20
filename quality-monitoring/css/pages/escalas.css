@@ -235,6 +235,19 @@
 .esc-grid-cell { position: relative; flex: 1; min-width: 0; overflow: visible; }
 .esc-emp-row .esc-grid-cell { height: var(--esc-row-h); }
 
+/* ─── Sector header rows ──────────────────────────────────── */
+.esc-sector-header { background: #f3f4f6; border-top: 2px solid #d1d5db; }
+.esc-sector-header-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .7px;
+  color: #374151;
+  height: var(--esc-hdr-h);
+  background: #f3f4f6;
+}
+.esc-sector-header-grid { background: #f3f4f6; }
+
 /* ─── Grid background lines ───────────────────────────────── */
 .esc-grid-bg { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
 .esc-grid-line { position: absolute; top: 0; bottom: 0; width: 1px; pointer-events: none; }
@@ -272,6 +285,16 @@
 /* ─── Metric overlay ──────────────────────────────────────── */
 #esc-emp-rows { position: relative; }
 .esc-metric-overlay {
+  position: absolute;
+  top: 0; left: var(--esc-name-w); right: 0; bottom: 0;
+  pointer-events: none;
+  z-index: 5;
+  overflow: hidden;
+}
+
+/* ─── Per-sector rows wrapper + overlay ──────────────────── */
+.esc-sector-rows { position: relative; }
+.esc-sector-metric-overlay {
   position: absolute;
   top: 0; left: var(--esc-name-w); right: 0; bottom: 0;
   pointer-events: none;

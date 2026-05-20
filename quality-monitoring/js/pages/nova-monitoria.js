@@ -4,6 +4,7 @@
 import { getCurrentUser } from '../auth.js';
 import { navigate }       from '../router.js';
 import { toast }          from '../components/toast.js';
+import { can, P }         from '../utils/permissions.js';
 import { EVAL_CATEGORIES, ANALYTICAL_CRITERIA, TOTAL_MAX_PTS } from '../data/config.js';
 import { supabase }       from '../supabase.js';
 import { formatHHMMSS, parseHHMMSS, resultBand, scoreColor } from '../utils/formatters.js';
@@ -136,7 +137,7 @@ function resetForm() {
 
 /* ── Auto-resize textarea ─────────────────── */
 function autoResize(el) {
-  if (!el.value) { console.log(el.value); el.style.height = '35px'; return; }
+  if (!el.value) { el.style.height = '35px'; return; }
   el.style.height = 'auto';
   el.style.height = el.scrollHeight + 'px';
 }
@@ -513,14 +514,16 @@ export function render() {
           </div>
 
           <div style="display:flex;justify-content:space-between;align-items:center;gap:var(--space-3);margin-top:var(--space-4)">
-            <button class="btn btn--danger btn--lg btn--ghost" id="btn-reset-monitoring">
-              ⚠️ Zerar Monitoria
-            </button>
+            ${can(getCurrentUser(), P.NEW_MONITORING_SAVE) ? `
+              <button class="btn btn--danger btn--lg btn--ghost" id="btn-reset-monitoring">
+                ⚠️ Zerar Monitoria
+              </button>` : '<div></div>'}
             <div style="display:flex;gap:var(--space-3)">
               <button class="btn btn--secondary btn--lg" id="btn-cancel-form">Cancelar</button>
-              <button class="btn btn--primary btn--lg" id="btn-save-monitoring">
-                💾 Salvar Monitoria
-              </button>
+              ${can(getCurrentUser(), P.NEW_MONITORING_SAVE) ? `
+                <button class="btn btn--primary btn--lg" id="btn-save-monitoring">
+                  💾 Salvar Monitoria
+                </button>` : ''}
             </div>
           </div>
         </div>
@@ -815,10 +818,10 @@ export async function init() {
     const [empRes, topicRes, obsTypeRes, evalCrRes, analTypeRes, errTypeRes] = await Promise.all([
       supabase.from('employees').select('id, name').eq('active', true).order('name'),
       supabase.from('topic').select('id, item, eval_criteria_id').eq('active', true),
-      supabase.from('observation_type').select('id, code'),
+      supabase.from('observation_type').select('id, code').eq('active', true),
       supabase.from('eval_criteria').select('id, name').eq('active', true).order('name'),
       supabase.from('analytical_note_type').select('id, name').eq('active', true),
-      supabase.from('error_type').select('id, name, critical').order('name'),
+      supabase.from('error_type').select('id, name, critical').eq('active', true).order('name'),
     ]);
 
     _employees       = empRes.data        ?? [];
@@ -938,6 +941,7 @@ export async function init() {
 
   /* ── Zerar Monitoria ────────────────────── */
   document.getElementById('btn-reset-monitoring')?.addEventListener('click', () => {
+    if (!can(getCurrentUser(), P.NEW_MONITORING_SAVE)) return;
     if (!validateRequiredFields()) return;
     /* Populate protocol select in reset modal */
     const resetProtoEl = document.getElementById('reset-protocol');
@@ -981,6 +985,7 @@ export async function init() {
   document.getElementById('btn-cancel-form')?.addEventListener('click', resetForm);
 
   document.getElementById('btn-save-monitoring')?.addEventListener('click', async () => {
+    if (!can(getCurrentUser(), P.NEW_MONITORING_SAVE)) return;
     if (!validateRequiredFields()) return;
 
     const btn = document.getElementById('btn-save-monitoring');
