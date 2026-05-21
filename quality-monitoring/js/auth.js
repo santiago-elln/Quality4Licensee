@@ -28,23 +28,43 @@ export function isAuthenticated() {
 async function buildUser(authUser) {
   if (!authUser) return null;
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('name, role, access_level, department_id, employee_id')
-    .eq('id', authUser.id)
-    .single();
+  const [{ data: profile }, { data: teams }, { data: employee }] = await Promise.all([
+    supabase
+      .from('profiles')
+      .select('name, role, access_level, department_id, filter_by, shifts_filter_by, sector_id, sector_group_id')
+      .eq('id', authUser.id)
+      .single(),
+    supabase
+      .from('teams')
+      .select('id')
+      .eq('supervisor_id', authUser.id),
+    // employees.id = auth.users.id for user-linked employee records
+    supabase
+      .from('employees')
+      .select('id, name')
+      .eq('id', authUser.id)
+      .single(),
+  ]);
 
   const accessLevel = profile?.access_level ?? 2;
 
   return {
-    id:           authUser.id,
-    email:        authUser.email,
-    name:         profile?.name          ?? authUser.email,
-    role:         profile?.role          ?? 'supervisor',
+    id:                authUser.id,
+    email:             authUser.email,
+    name:              profile?.name ?? employee?.name ?? authUser.email,
+    role:              profile?.role            ?? null,
     accessLevel,
-    departmentId: profile?.department_id ?? null,
-    employeeId:   profile?.employee_id   ?? null,
-    permissions:  DEFAULT_PERMISSIONS_BY_LEVEL[accessLevel] ?? [],
+    // isClaimed: true if the user has an employee record OR a profile.
+    // False means they authenticated via SSO but haven't been onboarded yet.
+    isClaimed:         !!(profile || employee),
+    employeeId:        employee?.id             ?? null,
+    departmentId:      profile?.department_id   ?? null,
+    sectorId:          profile?.sector_id       ?? null,
+    sectorGroupId:     profile?.sector_group_id ?? null,
+    filterBy:          profile?.filter_by       ?? null,
+    shiftsFilterBy:    profile?.shifts_filter_by ?? null,
+    supervisedTeamIds: (teams ?? []).map(t => t.id),
+    permissions:       DEFAULT_PERMISSIONS_BY_LEVEL[accessLevel] ?? [],
   };
 }
 

@@ -12,7 +12,7 @@ import { renderRadarChart, renderHistoryChart, destroyAll } from '../components/
 /* ── Module state ─────────────────────────── */
 let _currentUser  = null;
 let _departments  = [];
-let _supervisors  = [];
+let _teams        = [];
 let _employees    = [];
 let _evalCriteria = [];
 let _topicMap     = {};   // {topicId: {eval_criteria_id, points}}
@@ -28,7 +28,7 @@ function myDept() {
 
 
 function buildCollabOpts(supId, selectedId) {
-  const list = supId ? _employees.filter(e => e.supervisor_id === supId) : _employees;
+  const list = supId ? _employees.filter(e => e.team_id === supId) : _employees;
   return `<option value="">Todos</option>` +
     list.map(c =>
       `<option value="${c.id}" ${c.id === selectedId ? 'selected' : ''}>${c.name}</option>`
@@ -149,24 +149,23 @@ function computeMonStats(monitorings) {
 async function fetchData() {
   const globalScope = can(_currentUser, P.GLOBAL_VIEW_DEPT);
 
-  let empQuery = supabase.from('employees').select('id, name, supervisor_id').eq('active', true).order('name');
-  if (!globalScope) empQuery = empQuery.eq('supervisor_id', _currentUser.id);
+  const empQuery = supabase.from('employees').select('id, name, team_id').eq('active', true).order('name');
 
-  const [deptRes, supRes, empRes, ecRes, topicRes] = await Promise.all([
+  const [deptRes, teamsRes, empRes, ecRes, topicRes] = await Promise.all([
     supabase.from('departments').select('id, name').order('name'),
-    supabase.from('profiles').select('id, name, department_id').eq('role', 'supervisor').order('name'),
+    supabase.from('teams').select('id, name').order('name'),
     empQuery,
     supabase.from('eval_criteria').select('id, name').eq('active', true),
     supabase.from('topic').select('id, eval_criteria_id, points').eq('active', true),
   ]);
   if (deptRes.error)  console.error('[consulta] departments:', deptRes.error);
-  if (supRes.error)   console.error('[consulta] supervisors:', supRes.error);
+  if (teamsRes.error) console.error('[consulta] teams:', teamsRes.error);
   if (empRes.error)   console.error('[consulta] employees:', empRes.error);
   if (ecRes.error)    console.error('[consulta] eval_criteria:', ecRes.error);
   if (topicRes.error) console.error('[consulta] topic:', topicRes.error);
-  _departments        = deptRes.data  ?? [];
-  _supervisors        = supRes.data   ?? [];
-  _employees          = empRes.data   ?? [];
+  _departments        = deptRes.data   ?? [];
+  _teams              = teamsRes.data  ?? [];
+  _employees          = empRes.data    ?? [];
   _evalCriteria       = ecRes.data    ?? [];
   _topicMap           = Object.fromEntries((topicRes.data ?? []).map(t => [t.id, t]));
   _fetchedGlobalScope = globalScope;
@@ -233,8 +232,8 @@ export function render() {
          <label class="form-label">Supervisor</label>
          <select class="form-select" id="f-sup">
            <option value="">Todos</option>
-           ${_supervisors.map(s =>
-             `<option value="${s.id}" ${s.id === _filters.supId ? 'selected' : ''}>${s.name}</option>`
+           ${_teams.map(t =>
+             `<option value="${t.id}" ${t.id === _filters.supId ? 'selected' : ''}>${t.name}</option>`
            ).join('')}
          </select>
        </div>`
@@ -335,7 +334,7 @@ export function render() {
 /* ── Card render ─────────────────────────── */
 function renderCard(collab) {
   const s    = _monStats[collab.id] ?? { count: 0, zeroed: 0, avgPct: 0, ptsLost: 0, scCount: 0, avgTma: '—', avgTmpr: '—', avgTmer: '—', avgCsat: 0, history: [], lastDate: null };
-  const sup  = _supervisors.find(sv => sv.id === collab.supervisor_id);
+  const sup  = _teams.find(t => t.id === collab.team_id);
   const plan = _actionPlans[collab.id] ?? [];
   const band = resultBand(s.avgPct);
 
@@ -364,7 +363,7 @@ function renderCard(collab) {
   `).join('');
 
   return `
-    <div class="cc-card" data-collab="${collab.id}" data-sup-id="${collab.supervisor_id ?? ''}">
+    <div class="cc-card" data-collab="${collab.id}" data-sup-id="${collab.team_id ?? ''}">
 
       <div class="cc-card__header">
         <div class="cc-card__avatar">${getInitials(collab.name)}</div>
@@ -595,7 +594,7 @@ function bindEvents() {
   /* Clear all filters */
   document.getElementById('btn-clear-filters')?.addEventListener('click', () => {
     _filters = {
-      supId:    can(_currentUser, P.GLOBAL_VIEW_DEPT) ? '' : (_currentUser?.id ?? ''),
+      supId:    '',
       collabId: '',
       dateFrom: '',
       dateTo:   '',
@@ -638,10 +637,6 @@ function bindEvents() {
 /* ── init ─────────────────────────────────── */
 export async function init() {
   _currentUser = getCurrentUser();
-
-  if (!can(_currentUser, P.GLOBAL_VIEW_DEPT)) {
-    _filters.supId = _currentUser?.id ?? '';
-  }
 
   /* Garante spinner imediato em qualquer visita (incluindo revisitas com dados obsoletos) */
   _dataLoaded = false;

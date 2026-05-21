@@ -15,8 +15,8 @@ const PAGE_SIZE = 20;
 let _page         = 1;
 let _allRows      = [];   // rows from last DB fetch (date-filtered)
 let _rows         = [];   // after client-side collab/sup/band filters
-let _employees    = [];   // [{id, name, supervisor_id}]
-let _supervisors  = [];   // [{id, name}]
+let _employees    = [];   // [{id, name, team_id}]
+let _teams        = [];   // [{id, name}]
 let _topicMap     = {};   // {topicId: {eval_criteria_id, points, item}}
 let _evalCriteria = [];   // [{id, name}]
 let _currentUser      = null;
@@ -44,7 +44,7 @@ function processRow(mon) {
     : null;
 
   const emp = _employees.find(e => e.id === mon.employee_id);
-  const sup = _supervisors.find(s => s.id === emp?.supervisor_id);
+  const team = _teams.find(t => t.id === emp?.team_id);
 
   return {
     id:      mon.id,
@@ -53,8 +53,8 @@ function processRow(mon) {
     zeroed:  mon.zeroed,
     empId:   emp?.id   ?? null,
     empName: emp?.name ?? '—',
-    supName: sup?.name ?? '—',
-    supId:   emp?.supervisor_id ?? null,
+    supName: team?.name ?? '—',
+    supId:   emp?.team_id ?? null,
     score, total, pct, avgCsat,
     band: resultBand(pct),
   };
@@ -65,17 +65,16 @@ async function fetchRefData() {
   const globalScope = can(_currentUser, P.GLOBAL_VIEW_DEPT);
   if (_refDataLoaded && _fetchedGlobalScope === globalScope) return;
 
-  let empQuery = supabase.from('employees').select('id, name, supervisor_id').eq('active', true);
-  if (!globalScope) empQuery = empQuery.eq('supervisor_id', _currentUser.id);
+  const empQuery = supabase.from('employees').select('id, name, team_id').eq('active', true);
 
-  const [empRes, supRes, topicRes, ecRes] = await Promise.all([
+  const [empRes, teamsRes, topicRes, ecRes] = await Promise.all([
     empQuery,
-    supabase.from('profiles').select('id, name').eq('role', 'supervisor'),
+    supabase.from('teams').select('id, name').order('name'),
     supabase.from('topic').select('id, eval_criteria_id, points, item').eq('active', true),
     supabase.from('eval_criteria').select('id, name').eq('active', true),
   ]);
-  _employees          = empRes.data   ?? [];
-  _supervisors        = supRes.data   ?? [];
+  _employees          = empRes.data    ?? [];
+  _teams              = teamsRes.data  ?? [];
   _topicMap           = Object.fromEntries((topicRes.data ?? []).map(t => [t.id, t]));
   _evalCriteria       = ecRes.data    ?? [];
   _refDataLoaded      = true;
@@ -144,8 +143,8 @@ export function render() {
 
   const supOpts = canSup
     ? `<option value="">Todos os supervisores</option>` +
-      _supervisors.map(s =>
-        `<option value="${s.id}" ${s.id === _filters.supId ? 'selected' : ''}>${s.name}</option>`
+      _teams.map(t =>
+        `<option value="${t.id}" ${t.id === _filters.supId ? 'selected' : ''}>${t.name}</option>`
       ).join('')
     : '';
 
@@ -566,9 +565,7 @@ export async function init() {
   _expandedId  = null;
   _page        = 1;
 
-  if (!can(_currentUser, P.GLOBAL_VIEW_DEPT)) {
-    _filters.supId = _currentUser?.id ?? '';
-  }
+  _filters.supId = '';
 
   if (!_filters.dateFrom) {
     const now     = new Date();

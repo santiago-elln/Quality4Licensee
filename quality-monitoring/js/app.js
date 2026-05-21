@@ -6,25 +6,24 @@ import {
   initRouter, registerRoute, setDefaultRoute,
   protectRoute, navigate, getCurrentRoute,
 } from './router.js';
-import { can, P } from './utils/permissions.js';
 import { renderHeader, bindHeader, setOnPeriodChange } from './components/header.js';
 import { renderSidebar, bindSidebar, updateActiveNav, setSidebarCollapsed } from './components/sidebar.js';
 import { destroyAll } from './components/charts.js';
 
 /* ── Page modules ───────────────────────────── */
-import * as LoginPage          from './pages/login.js';
-import * as DashboardPage      from './pages/dashboard.js';
-import * as NovaMonitoriaPage  from './pages/nova-monitoria.js';
-import * as ColabPage          from './pages/colaboradores.js';
-import * as ConsultaPage       from './pages/consulta.js';
-import * as PerfilPage         from './pages/perfil.js';
-import * as RegistrosPage      from './pages/registros.js';
-import * as AIPage             from './pages/ai-analise.js';
-import * as AdminPage          from './pages/admin.js';
-import * as MetasPage          from './pages/metas.js';
-import * as ComparacaoPage     from './pages/comparacao.js';
-import * as EditarMonitoriaPage from './pages/editar-monitoria.js';
-import * as EscalasPage         from './pages/escalas.js';
+import * as LoginPage            from './pages/login.js';
+import * as NaoAutorizadoPage    from './pages/nao-autorizado.js';
+import * as DashboardPage        from './pages/dashboard.js';
+import * as NovaMonitoriaPage    from './pages/nova-monitoria.js';
+import * as ConsultaPage         from './pages/consulta.js';
+import * as PerfilPage           from './pages/perfil.js';
+import * as RegistrosPage        from './pages/registros.js';
+import * as AIPage               from './pages/ai-analise.js';
+import * as AdminPage            from './pages/admin.js';
+import * as MetasPage            from './pages/metas.js';
+import * as ComparacaoPage       from './pages/comparacao.js';
+import * as EditarMonitoriaPage  from './pages/editar-monitoria.js';
+import * as EscalasPage          from './pages/escalas.js';
 
 const app = document.getElementById('app');
 
@@ -60,27 +59,38 @@ async function mountPage(page) {
 function registerRoutes() {
   setDefaultRoute('login');
 
+  /* Login — redirect authenticated users */
   registerRoute('login', async () => {
     if (isAuthenticated()) {
       const u = getCurrentUser();
-      navigate(can(u, P.NEW_MONITORING_ACCESS) ? 'nova-monitoria' : 'consulta');
+      navigate(u.isClaimed ? 'nova-monitoria' : 'nao-autorizado');
       return;
     }
     app.innerHTML = LoginPage.render();
     LoginPage.init?.();
   });
 
+  /* Unclaimed — SSO users with no employee/profile row */
+  protectRoute('nao-autorizado');
+  registerRoute('nao-autorizado', async () => {
+    const u = getCurrentUser();
+    if (u?.isClaimed) { navigate('nova-monitoria'); return; }
+    mountShell();
+    renderShell();
+    await mountPage(NaoAutorizadoPage);
+  });
+
+  /* All other protected pages */
   const protected_ = [
-    ['dashboard',      DashboardPage],
-    ['nova-monitoria', NovaMonitoriaPage],
-    ['colaboradores',  ColabPage],
-    ['consulta',       ConsultaPage],
-    ['perfil',         PerfilPage],
-    ['registros',      RegistrosPage],
-    ['ai-analise',     AIPage],
-    ['admin',          AdminPage],
-    ['metas',          MetasPage],
-    ['comparacao',     ComparacaoPage],
+    ['dashboard',        DashboardPage],
+    ['nova-monitoria',   NovaMonitoriaPage],
+    ['consulta',         ConsultaPage],
+    ['perfil',           PerfilPage],
+    ['registros',        RegistrosPage],
+    ['ai-analise',       AIPage],
+    ['admin',            AdminPage],
+    ['metas',            MetasPage],
+    ['comparacao',       ComparacaoPage],
     ['editar-monitoria', EditarMonitoriaPage],
     ['escalas',          EscalasPage],
   ];
@@ -89,11 +99,8 @@ function registerRoutes() {
     protectRoute(route);
     registerRoute(route, async () => {
       const u = getCurrentUser();
-      if (route === 'nova-monitoria' && !can(u, P.NEW_MONITORING_ACCESS)) { navigate('consulta'); return; }
-      if (route === 'consulta'       && !can(u, P.CONSULT_ACCESS))        { navigate('nova-monitoria'); return; }
-      if (route === 'registros'      && !can(u, P.RECORD_ACCESS))         { navigate('consulta'); return; }
-      if (route === 'perfil'         && !can(u, P.PROFILE_VIEW))          { navigate('nova-monitoria'); return; }
-      if (route === 'admin'          && !can(u, P.ADMIN_ACCESS))          { navigate('consulta'); return; }
+      /* Unclaimed users can only see the nao-autorizado page */
+      if (!u?.isClaimed) { navigate('nao-autorizado'); return; }
       mountShell();
       renderShell();
       setSidebarCollapsed(route === 'escalas');
@@ -106,10 +113,7 @@ function registerRoutes() {
 function setupPeriodRefresh() {
   setOnPeriodChange(() => {
     const route = getCurrentRoute();
-    const map = {
-      colaboradores: ColabPage,
-      registros:     RegistrosPage,
-    };
+    const map = { registros: RegistrosPage };
     const page = map[route];
     if (page) mountPage(page);
   });

@@ -108,19 +108,20 @@ export function canViewMetric(viewer, subject, metricKey) {
 
 /**
  * Verifica se o viewer pode ver dados do colaborador (scope de acesso).
- * @param {Object} viewer
- * @param {Object} subject
+ * Usa filterBy do perfil para determinar o escopo, espelhando a RLS do banco.
+ * @param {Object} viewer  - { filterBy, sectorId, sectorGroupId, departmentId, id }
+ * @param {Object} subject - { teamId, sectorId, sectorGroupId, departmentId, user_id }
  */
 export function canViewSubject(viewer, subject) {
   if (!viewer || !subject) return false;
-  if (viewer.id === subject.id) return true;
-  if (viewer.accessLevel >= ACCESS_LEVELS.ANALISTA) {
-    return viewer.deptId === subject.deptId;
+  if (viewer.id === subject.userId) return true;
+  switch (viewer.filterBy) {
+    case 'supervisor': return subject.teamSupervisorId === viewer.id;
+    case 'sector':     return subject.sectorId === viewer.sectorId;
+    case 'group':      return subject.sectorGroupId === viewer.sectorGroupId;
+    case 'department': return subject.departmentId === viewer.departmentId;
+    default:           return false;
   }
-  if (viewer.accessLevel === ACCESS_LEVELS.SUPERVISOR) {
-    return viewer.teamId === subject.teamId;
-  }
-  return false;
 }
 
 /**

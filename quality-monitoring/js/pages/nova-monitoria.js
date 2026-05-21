@@ -453,7 +453,7 @@ export function render() {
                 <div class="csat-group">
                   ${[1,2,3,4,5].map(v =>
                     `<label class="csat-option csat-option--${v}">
-                      <input type="radio" name="csat" value="${v}" ${v===5?'checked':''}>
+                      <input type="radio" name="csat" value="${v}">
                       <span class="csat-label">${v}</span>
                     </label>`
                   ).join('')}
@@ -889,6 +889,19 @@ export async function init() {
   document.getElementById('btn-modal-close')?.addEventListener('click', closeResetModal);
   document.getElementById('btn-reset-cancel')?.addEventListener('click', closeResetModal);
 
+  /* ── CSAT toggle-off: clicking an already-selected label deselects it ── */
+  document.querySelectorAll('input[name="csat"]').forEach(radio => {
+    radio.addEventListener('click', function () {
+      if (this.dataset.wasChecked === 'true') {
+        this.checked = false;
+        this.dataset.wasChecked = 'false';
+      } else {
+        document.querySelectorAll('input[name="csat"]').forEach(r => r.dataset.wasChecked = 'false');
+        this.dataset.wasChecked = 'true';
+      }
+    });
+  });
+
   /* ── Add service chat ───────────────────── */
   document.getElementById('btn-add-sc')?.addEventListener('click', () => {
     const collabId  = document.getElementById('collab-select')?.value;
@@ -909,7 +922,8 @@ export async function init() {
 
     const tmpr = document.getElementById('att-tmpr')?.value || null;
     const tmer = document.getElementById('att-tmer')?.value || null;
-    const csat = Number(document.querySelector('input[name="csat"]:checked')?.value ?? 5);
+    const csatChecked = document.querySelector('input[name="csat"]:checked');
+    const csat = csatChecked ? Number(csatChecked.value) : null;
 
     _serviceChats.push({ protocol, startedAt, tmpr: normalizeTime(tmpr), tmer: normalizeTime(tmer), tma: normalizeTime(tma), csat });
     renderServiceChatList();
@@ -921,7 +935,7 @@ export async function init() {
     document.getElementById('att-tmpr').value = '';
     document.getElementById('att-tmer').value = '';
     document.getElementById('att-tma').value  = '';
-    document.querySelector('input[name="csat"][value="5"]').checked = true;
+    document.querySelectorAll('input[name="csat"]').forEach(r => { r.checked = false; r.dataset.wasChecked = 'false'; });
     document.getElementById('att-id')?.focus();
   });
 

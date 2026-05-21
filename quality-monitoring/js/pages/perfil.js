@@ -11,7 +11,7 @@ import {
 import { renderRadarChart, renderHistoryChartFull, destroyAll } from '../components/charts.js';
 
 /* ── Module state ─────────────────────────── */
-let _employee    = null;   // {id, name, supervisor_id}
+let _employee    = null;   // {id, name, team_id}
 let _supervisor  = null;   // {id, name}
 let _monitorings = [];     // [{id, date, zeroed, pct, radarPcts, avgCsat}]
 let _obsLog      = [];     // [{typeCode, typeLabel, criteriaName, content, protocol, monDate}]
@@ -88,8 +88,9 @@ export function render() {
     return { name: ec.name, pct: avg };
   });
 
-  /* Obs log HTML */
-  const obsLogHtml = _obsLog.length
+  /* Obs log HTML — only for users with Profile.canViewObs */
+  const canViewObs = can(getCurrentUser(), P.PROFILE_VIEW_OBS);
+  const obsLogHtml = !canViewObs ? null : _obsLog.length
     ? _obsLog.map(o => `
         <div class="obs-log-item obs-log-item--${o.code}">
           <div class="obs-log-item__badge obs-log-item__badge--${o.code}">${o.code}</div>
@@ -175,6 +176,7 @@ export function render() {
         </div>
       </div>
 
+      ${obsLogHtml !== null ? `
       <!-- Observations log -->
       <div class="panel">
         <div class="panel__header">
@@ -184,7 +186,7 @@ export function render() {
         <div class="panel__body panel__body--compact">
           <div class="obs-log">${obsLogHtml}</div>
         </div>
-      </div>
+      </div>` : ''}
     </div>`;
 }
 
@@ -213,9 +215,11 @@ function initCharts() {
 }
 
 /* ── Access control ───────────────────────── */
-function isAllowed(user, empId, employee) {
+// RLS enforces row-level access at the DB. If the employee was fetched, access is granted.
+// GLOBAL_VIEW_DEPT is kept as an explicit frontend guard for future cached-state edge cases.
+function isAllowed(user, _empId, employee) {
   if (can(user, P.GLOBAL_VIEW_DEPT)) return true;
-  return empId === user.employeeId || employee?.supervisor_id === user.id;
+  return !!employee;
 }
 
 function renderDenied() {
@@ -243,7 +247,19 @@ function reloadPage() {
 export async function init() {
   const user          = getCurrentUser();
   const { id: empId } = getRouteParams();
-  if (!empId) return;
+
+  if (!empId) {
+    const main = document.getElementById('main-content');
+    if (main) main.innerHTML = `
+      <div class="page-enter" style="display:flex;align-items:center;justify-content:center;height:100%;min-height:60vh">
+        <div class="empty-state">
+          <div class="empty-state__icon">👤</div>
+          <div class="empty-state__title">Funcionalidade indisponível</div>
+          <div class="empty-state__desc">Esta funcionalidade não está habilitada para o seu perfil.</div>
+        </div>
+      </div>`;
+    return;
+  }
 
   /* Cache hit — re-validate access before rendering */
   if (_loadedEmpId === empId) {
@@ -268,9 +284,12 @@ export async function init() {
     _topicMap     = Object.fromEntries((topicRes.data ?? []).map(t => [t.id, t]));
   }
 
-  /* Employee + monitorings in parallel */
+  /* Employee (with supervisor via FK chain) + monitorings in parallel */
   const [empRes, monsRes] = await Promise.all([
-    supabase.from('employees').select('id, name, supervisor_id').eq('id', empId).single(),
+    supabase.from('employees')
+      .select('id, name, team_id, teams(supervisor_id, profiles(id, name))')
+      .eq('id', empId)
+      .single(),
     supabase.from('monitoring')
       .select(`
         id, date, zeroed,
@@ -292,22 +311,17 @@ export async function init() {
     return;
   }
 
-  _employee = empRes.data;
+  const { teams: empTeam, ...empData } = empRes.data;
+  _employee   = empData;
+  _supervisor = empTeam?.profiles ?? null;
 
   if (!isAllowed(user, empId, _employee)) { renderDenied(); return; }
   const rawMons = monsRes.data ?? [];
   _monitorings = computeMonData(rawMons);
 
-  /* Supervisor name */
-  if (_employee.supervisor_id) {
-    const { data: sup } = await supabase
-      .from('profiles').select('id, name').eq('id', _employee.supervisor_id).single();
-    _supervisor = sup ?? null;
-  }
-
-  /* Observations */
+  /* Observations — skip fetch for users without Profile.canViewObs */
   const monIds = rawMons.map(m => m.id);
-  if (monIds.length) {
+  if (monIds.length && can(user, P.PROFILE_VIEW_OBS)) {
     const monDateMap = Object.fromEntries(rawMons.map(m => [m.id, m.date]));
 
     const { data: obsData } = await supabase

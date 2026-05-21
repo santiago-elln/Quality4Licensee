@@ -194,9 +194,7 @@ let _viewMode     = 'edit'
 let _selectedDate = null
 let _selectedDateRange = { from: null, to: null }
 let _activeMetrics = new Set()
-let _sectors      = []
-let _sectorId     = null
-let _deptSectors  = []   // [{id, name}] — populated in global mode
+let _sectorGroups = []   // [{id, name}] — unique groups among visible employees
 let _employees    = []
 let _shifts       = {}
 let _origShifts   = {}
@@ -281,7 +279,7 @@ export async function init() {
   _user = getCurrentUser()
   _viewMode = can(_user, P.SHIFTS_EDIT) ? 'edit' : 'analysis'
   _activeMetrics = new Set()
-  _sectors = []; _sectorId = null; _deptSectors = []
+  _sectorGroups = []
   _employees = []; _shifts = {}; _origShifts = {}
   _dirty.clear(); _drag = null
 
@@ -327,67 +325,38 @@ export async function init() {
     if (e.target.closest('.esc-row-discard')) discardOneEmployee(eid)
   }, { signal: sig })
 
-  await loadSectors()
-  if (!can(_user, P.GLOBAL_VIEW_DEPT)) {
-    if (!_sectors.length) { showStatus('Nenhum setor associado a este usuário.', true); return }
-    _sectorId = _sectors[0].id
-    renderSectorTabs()
-  }
+  $e('esc-sector-tabs') && ($e('esc-sector-tabs').innerHTML = '')
   showStatus('Carregando escala…')
   await loadData()
   renderGrid()
 }
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
-async function loadSectors() {
-  if (can(_user, P.GLOBAL_VIEW_DEPT)) {
-    _sectors = []   // global mode — department-wide, no sector tabs
-    return
-  }
-  const { data, error } = await supabase
-    .from('supervisor_sectors')
-    .select('sector_id, sectors(id, name)')
-    .eq('supervisor_id', _user.id)
-  if (!error && data) _sectors = data.map(r=>r.sectors).filter(Boolean)
-}
-
 async function loadData() {
   _shifts = {}; _origShifts = {}
 
   const SHIFT_COLS = 'id, start_time, end_time, break_start, break_duration_minutes, updated_by, updated_at'
+  const EMP_COLS   = `id, name, team_id, sector_id, sector_group_id, sector_groups(id, name), shifts(${SHIFT_COLS})`
 
-  let query
+  let query = supabase.from('employees').select(EMP_COLS).eq('active', true)
+    .eq('shifts.date', _selectedDate).order('name')
+
   if (can(_user, P.GLOBAL_VIEW_DEPT)) {
     if (!_user.departmentId) { showStatus('Departamento não configurado para este usuário.', true); return }
-    query = supabase
-      .from('employees')
-      .select(`id, name, supervisor_id, sector_id, sectors!inner(id, name, department_id), shifts(${SHIFT_COLS})`)
-      .eq('sectors.department_id', _user.departmentId)
-      .eq('active', true)
-      .eq('shifts.date', _selectedDate)
-      .order('name')
-  } else {
-    query = supabase
-      .from('employees')
-      .select(`id, name, supervisor_id, sector_id, shifts(${SHIFT_COLS})`)
-      .eq('sector_id', _sectorId)
-      .eq('active', true)
-      .eq('shifts.date', _selectedDate)
-      .order('name')
+    query = query.eq('department_id', _user.departmentId)
   }
+  // Non-global: RLS (shifts_filter_by = 'group') scopes the result automatically
 
   const { data: rows, error } = await query
   if (error) { showStatus('Erro ao carregar colaboradores.', true); return }
 
-  /* Extract unique sectors for grouping (global mode only) */
-  if (can(_user, P.GLOBAL_VIEW_DEPT)) {
-    const seen = new Set()
-    _deptSectors = (rows ?? [])
-      .filter(r => r.sectors && !seen.has(r.sectors.id) && seen.add(r.sectors.id))
-      .map(r => ({ id: r.sectors.id, name: r.sectors.name }))
-  }
+  /* Collect unique sector_groups from the result, preserving order */
+  const seen = new Set()
+  _sectorGroups = (rows ?? [])
+    .filter(r => r.sector_group_id && !seen.has(r.sector_group_id) && seen.add(r.sector_group_id))
+    .map(r => ({ id: r.sector_group_id, name: r.sector_groups?.name ?? '—' }))
 
-  _employees = (rows ?? []).map(({ shifts: _, sectors: __, ...emp }) => emp)
+  _employees = (rows ?? []).map(({ shifts: _, sector_groups: __, ...emp }) => emp)
   for (const row of (rows ?? [])) {
     const s = row.shifts?.[0]
     if (!s) continue
@@ -415,33 +384,12 @@ function calcAvail(slotMin) {
   return calcAvailForGroup(slotMin, _employees.map(e => e.id))
 }
 
-// ─── Sector tabs ──────────────────────────────────────────────────────────────
-function renderSectorTabs() {
-  const container=$e('esc-sector-tabs'); if(!container) return
-  if (_sectors.length<=1) { container.innerHTML=''; return }
-  const sorted=[..._sectors].sort((a,b)=>{
-    const ai=SECTOR_ORDER.indexOf(a.name), bi=SECTOR_ORDER.indexOf(b.name)
-    return (ai===-1?999:ai)-(bi===-1?999:bi)
-  })
-  container.innerHTML=sorted.map(s=>{
-    const cls=SECTOR_CLASS[s.name]||''
-    return `<button class="esc-sector-tab ${cls}${s.id===_sectorId?' active':''}" data-sid="${s.id}">${s.name}</button>`
-  }).join('')
-  container.querySelectorAll('.esc-sector-tab').forEach(btn=>btn.addEventListener('click',async()=>{
-    if(btn.dataset.sid===_sectorId) return
-    _sectorId=btn.dataset.sid
-    container.querySelectorAll('.esc-sector-tab').forEach(b=>b.classList.remove('active'))
-    btn.classList.add('active'); _dirty.clear(); hideSaveBar()
-    showStatus('Carregando…'); await loadData(); renderGrid()
-  }))
-}
-
 function updateStats() {
   const total=_employees.length, withShift=_employees.filter(e=>_shifts[e.id]).length
   const el=$e('esc-stats'); if(!el) return
   const scopeItem = can(_user, P.GLOBAL_VIEW_DEPT)
     ? `<div class="esc-stat-item"><span class="esc-stat-label">Escopo</span><span class="esc-stat-value">Departamento</span></div>`
-    : `<div class="esc-stat-item"><span class="esc-stat-label">Setor</span><span class="esc-stat-value">${_sectors.find(s=>s.id===_sectorId)?.name??'—'}</span></div>`
+    : `<div class="esc-stat-item"><span class="esc-stat-label">Grupo</span><span class="esc-stat-value">${_sectorGroups[0]?.name ?? '—'}</span></div>`
   el.innerHTML=`
     <div class="esc-stats-content">
       ${scopeItem}
@@ -491,18 +439,14 @@ function renderGrid() {
     availCells.push(`<div class="esc-avail-slot" data-slot="${i}"
       style="left:${slotPct(i)}%;width:${slotPct(1)}%;background:hsl(${hue},38%,88%);color:hsl(${hue},45%,28%)">${count}</div>`)
   }
-  /* Group employees by sector in global mode */
+  /* Group employees by sector_group when more than one group is visible */
   let empRowsHtml = ''
-  if (can(_user, P.GLOBAL_VIEW_DEPT) && _deptSectors.length > 0) {
-    const sorted = [..._deptSectors].sort((a, b) => {
-      const ai = SECTOR_ORDER.indexOf(a.name), bi = SECTOR_ORDER.indexOf(b.name)
-      return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi)
-    })
-    for (const sector of sorted) {
-      const emps = _employees.filter(e => e.sector_id === sector.id)
+  if (_sectorGroups.length > 1) {
+    for (const group of _sectorGroups) {
+      const emps = _employees.filter(e => e.sector_group_id === group.id)
       if (!emps.length) continue
-      empRowsHtml += buildSectorHeaderRow(sector, emps)
-      empRowsHtml += `<div class="esc-sector-rows" data-sector-id="${sector.id}">${emps.map(buildEmpRow).join('')}</div>`
+      empRowsHtml += buildSectorHeaderRow(group, emps)
+      empRowsHtml += `<div class="esc-sector-rows" data-sector-id="${group.id}">${emps.map(buildEmpRow).join('')}</div>`
     }
   } else {
     empRowsHtml = _employees.map(buildEmpRow).join('')
@@ -515,7 +459,7 @@ function renderGrid() {
         <div class="esc-name-cell esc-header-label">Colaborador</div>
         <div class="esc-grid-cell" style="height:var(--esc-hdr-h)">${buildGridLines()}${timeLabels.join('')}</div>
       </div>
-      ${_deptSectors.length > 1 ? '' : `
+      ${_sectorGroups.length > 1 ? '' : `
       <div class="esc-srow esc-avail-row">
         <div class="esc-name-cell esc-avail-label">Disponíveis</div>
         <div class="esc-grid-cell" id="esc-avail-grid" style="height:var(--esc-hdr-h)">${availCells.join('')}</div>
@@ -794,7 +738,7 @@ function hideMetricsWarn(){$e('esc-metrics-warn')?.classList.remove('visible')}
 // ─── Employee row ─────────────────────────────────────────────────────────────
 function buildEmpRow(emp) {
   const shift=_shifts[emp.id]
-  const canEdit = can(_user, P.SHIFTS_EDIT) && (can(_user, P.GLOBAL_VIEW_DEPT) || emp.supervisor_id === _user?.id)
+  const canEdit = can(_user, P.SHIFTS_EDIT) && (can(_user, P.GLOBAL_VIEW_DEPT) || (_user?.supervisedTeamIds ?? []).includes(emp.team_id))
   let gridContent=''
   if(shift){
     const barLeft=minToPct(shift.start_min),barWidth=durToPct(shift.end_min-shift.start_min)

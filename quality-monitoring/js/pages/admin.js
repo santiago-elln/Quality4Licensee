@@ -108,7 +108,7 @@ const CATALOG_SUBTAB_LABELS = {
 /* ── render() ─────────────────────────────── */
 export function render() {
   const user = getCurrentUser();
-  if (!can(user, P.ADMIN_ACCESS)) {
+  if (!can(user, P.ADMIN_VIEW_STRUCT) && !can(user, P.ADMIN_UPDATE_CRITERIA)) {
     return `<div class="empty-state"><div class="empty-state__icon">🔒</div><div class="empty-state__title">Acesso restrito</div></div>`;
   }
 

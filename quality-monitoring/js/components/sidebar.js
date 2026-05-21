@@ -40,12 +40,17 @@ export function setSidebarCollapsed(val) {
 }
 
 const ICONS = {
-  'nova-monitoria': 'writing.png',
-  'consulta':       'mag-glass.png',
-  'registros':      'sheet.png',
-  'perfil':         'user.png',
-  'escalas':        'shifts.png',
-  'admin':          'gear.png',
+  'ai-analise':      'AI.png',
+  'comparacao':      'compare.png',
+  'dashboard':       'dashboard.png',
+  'editar-monitoria':'edit.png',
+  'metas':           'objectives.png',
+  'nova-monitoria':  'writing.png',
+  'consulta':        'mag-glass.png',
+  'registros':       'sheet.png',
+  'perfil':          'user.png',
+  'escalas':         'shifts.png',
+  'admin':           'gear.png',
 };
 
 export function renderSidebar() {
@@ -70,23 +75,8 @@ export function renderSidebar() {
       <span class="sidebar-sep-line-right"></span>
     </div>`;
 
-  /* ── Minha Equipe ─────────────────────────── */
-  const monitoriaItems = [
-    can(user, P.NEW_MONITORING_ACCESS) && item('nova-monitoria', 'Nova Monitoria', 'nova-monitoria'),
-    can(user, P.CONSULT_ACCESS)        && item('consulta',       'Consulta',        'consulta'),
-    can(user, P.RECORD_ACCESS)         && item('registros',      'Registros',       'registros'),
-    can(user, P.PROFILE_VIEW) && user.employeeId && item('perfil', 'Perfil', 'perfil', { id: user.employeeId }),
-  ].filter(Boolean).join('');
-
-  /* ── Operações ────────────────────────────── */
-  const operacoesItems = [
-    can(user, P.SHIFTS_ACCESS) && item('escalas', 'Escalas de Trabalho', 'escalas'),
-  ].filter(Boolean).join('');
-
-  /* ── Sistema ──────────────────────────────── */
-  const adminItems = [
-    can(user, P.ADMIN_ACCESS) && item('admin', 'Administração', 'admin'),
-  ].filter(Boolean).join('');
+  /* Unclaimed users — only the exit button is shown */
+  const nav = user.isClaimed ? buildNav(user, item, sep) : '';
 
   return `
     <aside class="app-sidebar${_collapsed ? ' app-sidebar--collapsed' : ''}">
@@ -100,15 +90,11 @@ export function renderSidebar() {
           <div class="sidebar-avatar">${getInitials(user.name)}</div>
           <div class="sidebar-user-info">
             <div class="sidebar-user-name">${user.name}</div>
-            <div class="sidebar-user-role">${user.title ?? ''}</div>
+            <div class="sidebar-user-role">${user.role ?? ''}</div>
           </div>
         </div>
 
-        <nav class="sidebar-nav">
-          ${monitoriaItems ? sep('Minha Equipe') + monitoriaItems : ''}
-          ${operacoesItems ? sep('Operações')    + operacoesItems : ''}
-          ${adminItems     ? sep('Sistema')      + adminItems     : ''}
-        </nav>
+        <nav class="sidebar-nav">${nav}</nav>
 
         <div class="sidebar-footer">
           <button class="sidebar-footer__logout" id="btn-logout" data-tooltip="Sair">
@@ -119,6 +105,37 @@ export function renderSidebar() {
       </div>
 
     </aside>`;
+}
+
+function buildNav(user, item, sep) {
+  const equipeItems = [
+    can(user, P.SIDEBAR_NEW_MONITORING) && item('nova-monitoria', 'Nova Monitoria',  'nova-monitoria'),
+    can(user, P.SIDEBAR_CONSULT)        && item('consulta',       'Consulta',         'consulta'),
+    can(user, P.SIDEBAR_RECORDS)        && item('registros',      'Registros',        'registros'),
+    can(user, P.SIDEBAR_PROFILE)        && item('perfil', 'Perfil', 'perfil', user.employeeId ? { id: user.employeeId } : null),
+  ].filter(Boolean).join('');
+
+  const analiseItems = [
+    can(user, P.SIDEBAR_DASHBOARD)   && item('dashboard',  'Dashboard',  'dashboard'),
+    can(user, P.SIDEBAR_COMPARATIVE) && item('comparacao', 'Comparativo', 'comparacao'),
+    can(user, P.SIDEBAR_GOALS)       && item('metas',      'Metas',      'metas'),
+    can(user, P.SIDEBAR_AI)          && item('ai-analise', 'Análise IA', 'ai-analise'),
+  ].filter(Boolean).join('');
+
+  const operacoesItems = [
+    can(user, P.SHIFTS_ACCESS)     && item('escalas', 'Escalas de Trabalho', 'escalas'),
+  ].filter(Boolean).join('');
+
+  const adminItems = [
+    can(user, P.SIDEBAR_ADMIN) && item('admin', 'Administração', 'admin'),
+  ].filter(Boolean).join('');
+
+  return [
+    equipeItems    && sep('Minha Equipe') + equipeItems,
+    analiseItems   && sep('Análise')      + analiseItems,
+    operacoesItems && sep('Operações')    + operacoesItems,
+    adminItems     && sep('Sistema')      + adminItems,
+  ].filter(Boolean).join('');
 }
 
 export function bindSidebar() {
@@ -146,6 +163,7 @@ export function bindSidebar() {
       navigate(btn.dataset.route, params);
     });
   });
+
   document.getElementById('btn-logout')?.addEventListener('click', async () => {
     await logout();
     navigate('login');
