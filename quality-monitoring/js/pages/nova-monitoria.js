@@ -293,10 +293,10 @@ async function persistMonitoring({ isZeroed = false, resetData = null } = {}) {
     const obsSCId = scIdByProtocol[obs.proto] ?? scId;
     let errorId = null;
     if (obs.typeCode === 'E' && obs.errorTypeId) {
-      const { data: err, error: errErr } = await supabase
-        .from('error').insert({ error_type_id: obs.errorTypeId }).select('id').single();
+      errorId = crypto.randomUUID();
+      const { error: errErr } = await supabase
+        .from('error').insert({ id: errorId, error_type_id: obs.errorTypeId });
       if (errErr) throw errErr;
-      errorId = err.id;
     }
     const { error } = await supabase.from('monitoring_observation').insert({
       monitoring_id:       monId,
@@ -312,8 +312,9 @@ async function persistMonitoring({ isZeroed = false, resetData = null } = {}) {
 
   /* 6 — critical observation for zeroing */
   if (isZeroed && resetData) {
-    const { data: critErr, error: critErrErr } = await supabase
-      .from('error').insert({ error_type_id: resetData.errorTypeId }).select('id').single();
+    const critErrId = crypto.randomUUID();
+    const { error: critErrErr } = await supabase
+      .from('error').insert({ id: critErrId, error_type_id: resetData.errorTypeId });
     if (critErrErr) throw critErrErr;
 
     let content = resetData.justification;
@@ -325,7 +326,7 @@ async function persistMonitoring({ isZeroed = false, resetData = null } = {}) {
       service_chat_id:     zeroScId,
       observation_type_id: _obsTypeMap['E'],
       eval_criteria_id:    null,
-      error_id:            critErr.id,
+      error_id:            critErrId,
       author_id:           user.id,
       content,
     });

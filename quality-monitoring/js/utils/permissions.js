@@ -17,6 +17,7 @@ export const P = Object.freeze({
   RECORD_ACCESS:         'Record.canAccess',
   RECORD_DETAIL:         'Record.canDetail',
   RECORD_DELETE:         'Record.canDelete',
+  RECORD_EDITABLE_OBS:   'Record.editableObs',
 
   /* Perfil */
   PROFILE_VIEW:          'Profile.canView',
@@ -58,6 +59,7 @@ export const PERMISSION_LABELS = Object.freeze({
   [P.RECORD_ACCESS]:          'Registros — Acessar',
   [P.RECORD_DETAIL]:          'Registros — Ver detalhes',
   [P.RECORD_DELETE]:          'Registros — Excluir',
+  [P.RECORD_EDITABLE_OBS]:    'Registros — Editar observações e atendimentos',
   [P.PROFILE_VIEW]:           'Perfil — Visualizar',
   [P.PROFILE_VIEW_OBS]:       'Perfil — Ver observações qualitativas',
   [P.SHIFTS_ACCESS]:          'Escalas — Acessar',
@@ -119,6 +121,7 @@ export const DEFAULT_PERMISSIONS_BY_LEVEL = Object.freeze({
     P.RECORD_ACCESS,
     P.RECORD_DETAIL,
     P.RECORD_DELETE,
+    P.RECORD_EDITABLE_OBS,
     // P.ADMIN_VIEW_STRUCT,
     P.ADMIN_UPDATE_CRITERIA,
     P.SIDEBAR_NEW_MONITORING,
@@ -167,6 +170,7 @@ export const DEFAULT_PERMISSIONS_BY_LEVEL = Object.freeze({
     P.RECORD_ACCESS,
     P.RECORD_DETAIL,
     // P.RECORD_DELETE,
+    P.RECORD_EDITABLE_OBS,
     P.SHIFTS_ACCESS,
     P.SHIFTS_EDIT,
     P.ADMIN_VIEW_STRUCT,

@@ -25,6 +25,7 @@ let _fetchedGlobalScope = null;
 let _dataLoaded       = false;
 let _expandedId       = null;
 let _pendingDelete    = null;  // {id, number, empName}
+let _editableRefData  = null;  // { obsTypeMap, evalCriteria, errorTypes } — lazily loaded
 let _filters          = { collabId: '', supId: '', dateFrom: '', dateTo: '', band: '' };
 
 /* ── Row processor ────────────────────────── */
@@ -281,7 +282,7 @@ async function fetchDetail(monId) {
   const { data, error } = await supabase
     .from('monitoring')
     .select(`
-      id, date, number, zeroed,
+      id, date, number, zeroed, employee_id,
       service_chat(id, protocol, service_time, first_response_time, max_response_time, csat),
       topic_approval(obtained, topic:topic_id(id, item, points, eval_criteria_id)),
       monitoring_observation(
@@ -364,7 +365,7 @@ function renderDetail(data, rowData) {
         </div>
         <div>${o.content}</div>
       </div>`;
-  }).join('') || `<div style="color:var(--text-tertiary);font-size:var(--text-xs)">Nenhuma observação</div>`;
+  }).join('') || `<div data-obs-empty style="color:var(--text-tertiary);font-size:var(--text-xs)">Nenhuma observação</div>`;
 
   return `
     <div style="background:var(--bg-surface-2);border-top:2px solid var(--brand-green)">
@@ -390,13 +391,18 @@ function renderDetail(data, rowData) {
           ${analyticalHtml}` : ''}
       </div>
       <div>
-        <div class="detail-section-label">Atendimentos</div>
-        <table class="data-table" style="margin-bottom:var(--space-4);font-size:var(--text-xs)">
+        <div class="${can(_currentUser, P.RECORD_EDITABLE_OBS) ? 'detail-section-label editable' : 'detail-section-label'}">Atendimentos</div>
+        <table class="data-table" style="margin-bottom:var(--space-2);font-size:var(--text-xs)">
           <thead><tr><th>Protocolo</th><th>TMA</th><th>TMPr</th><th>TMEr</th><th>CSAT</th></tr></thead>
-          <tbody>${scHtml}</tbody>
+          <tbody id="ro-sc-tbody-${data.id}">${scHtml}</tbody>
         </table>
+        ${can(_currentUser, P.RECORD_EDITABLE_OBS) ? `
+          <div style="display:flex;justify-content:flex-end;margin-bottom:var(--space-3)">
+            <button class="btn btn--secondary btn--sm" id="ro-add-sc-btn-${data.id}">+ Adicionar Atendimento</button>
+          </div>` : ''}
+        ${can(_currentUser, P.RECORD_EDITABLE_OBS) ? buildEditObsPanel(data.id, data.service_chat ?? []) : ''}
         <div class="detail-section-label">Observações</div>
-        ${obsHtml}
+        <div id="ro-obs-list-${data.id}">${obsHtml}</div>
       </div>
     </div>
     </div>`;
@@ -406,6 +412,7 @@ async function toggleDetail(monId, btn) {
   const existing = document.getElementById(`detail-row-${monId}`);
   if (existing) {
     existing.remove();
+    document.getElementById('ro-sc-modal')?.remove();
     btn.textContent = 'Ver';
     _expandedId = null;
     return;
@@ -436,6 +443,33 @@ async function toggleDetail(monId, btn) {
   const rowData  = _rows.find(r => r.id === monId);
   detailTr.innerHTML = `<td colspan="${cols}" style="padding:0">${renderDetail(data, rowData)}</td>`;
   row.after(detailTr);
+
+  /* Bind editable obs + SC for users with permission */
+  if (can(_currentUser, P.RECORD_EDITABLE_OBS)) {
+    loadEditableRefData().then(ref => {
+      const critSel = document.getElementById(`ro-obs-criteria-${monId}`);
+      if (critSel) {
+        critSel.innerHTML = `<option value="">— nenhum —</option>` +
+          ref.evalCriteria.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+      }
+      const errSel = document.getElementById(`ro-obs-error-type-${monId}`);
+      if (errSel) {
+        errSel.innerHTML = `<option value="">— selecione —</option>` +
+          ref.errorTypes.filter(e => !e.critical)
+            .map(e => `<option value="${e.id}">${e.name}</option>`).join('');
+      }
+      document.getElementById(`ro-obs-type-${monId}`)?.addEventListener('change', e => {
+        const errField = document.getElementById(`ro-obs-error-field-${monId}`);
+        if (errField) errField.style.display = e.target.value === 'E' ? '' : 'none';
+      });
+      document.getElementById(`ro-obs-save-${monId}`)?.addEventListener('click', () =>
+        saveNewObservation(monId, ref)
+      );
+    });
+    document.getElementById(`ro-add-sc-btn-${monId}`)?.addEventListener('click', () =>
+      openAddScModal(monId, data.employee_id)
+    );
+  }
 
   /* Bind do botão de exclusão criado dinamicamente */
   detailTr.querySelector('.delete-monitoring-btn')?.addEventListener('click', e => {
@@ -556,6 +590,292 @@ function bindFilters() {
   document.getElementById('delete-mon-confirm')?.addEventListener('click', () => {
     if (_pendingDelete) deleteMonitoring(_pendingDelete.id);
   });
+}
+
+/* ── Editable obs helpers ─────────────────── */
+async function loadEditableRefData() {
+  if (_editableRefData) return _editableRefData;
+  const [obsTypeRes, evalCrRes, errTypeRes] = await Promise.all([
+    supabase.from('observation_type').select('id, code').eq('active', true),
+    supabase.from('eval_criteria').select('id, name').eq('active', true).order('name'),
+    supabase.from('error_type').select('id, name, critical').eq('active', true).order('name'),
+  ]);
+  const codeToKey = { default: 'G', improvable_by: 'O', excelled_by: 'A', failed_by: 'E' };
+  const obsTypeMap = {};
+  for (const row of (obsTypeRes.data ?? [])) {
+    const key = codeToKey[row.code];
+    if (key) obsTypeMap[key] = row.id;
+  }
+  _editableRefData = {
+    obsTypeMap,
+    evalCriteria: evalCrRes.data ?? [],
+    errorTypes:   errTypeRes.data ?? [],
+  };
+  return _editableRefData;
+}
+
+function buildEditObsPanel(monId, serviceChats) {
+  const scOpts = serviceChats
+    .map(sc => `<option value="${sc.id}">${sc.protocol}</option>`)
+    .join('');
+  return `
+    <div style="margin-top:var(--space-4)" id="ro-edit-obs-${monId}">
+      <div class="${can(_currentUser, P.RECORD_EDITABLE_OBS) ? 'detail-section-label editable' : 'detail-section-label'}">Nova Observação</div>
+      <div class="obs-add-form">
+        <div class="obs-add-form__row">
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Protocolo <span class="required">*</span></label>
+            <select class="form-select" id="ro-obs-proto-${monId}">
+              <option value="">— selecione —</option>
+              ${scOpts}
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Tipo <span class="required">*</span></label>
+            <select class="form-select" id="ro-obs-type-${monId}">
+              <option value="G">Genérico</option>
+              <option value="O">Oportunidade</option>
+              <option value="A">Acerto</option>
+              <option value="E">Erro</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label class="form-label">Critério (opcional)</label>
+          <select class="form-select" id="ro-obs-criteria-${monId}">
+            <option value="">— nenhum —</option>
+          </select>
+        </div>
+        <div class="form-group" id="ro-obs-error-field-${monId}" style="margin-bottom:0;display:none">
+          <label class="form-label" style="color:var(--color-danger)">Tipo do Erro</label>
+          <select class="form-select" id="ro-obs-error-type-${monId}">
+            <option value="">— selecione —</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label class="form-label">Observação <span class="required">*</span></label>
+          <textarea class="form-input" id="ro-obs-text-${monId}" rows="2"
+            style="resize:none;font-family:var(--font-sans)"
+            placeholder="Descreva a observação…"></textarea>
+        </div>
+        <button class="btn btn--primary btn--sm" style="width:100%" id="ro-obs-save-${monId}">
+          + Adicionar Observação
+        </button>
+      </div>
+    </div>`;
+}
+
+function syncObsProtoDropdown(monId, sc) {
+  const sel = document.getElementById(`ro-obs-proto-${monId}`);
+  if (!sel) return;
+  const opt = document.createElement('option');
+  opt.value = sc.id;
+  opt.textContent = sc.protocol;
+  sel.appendChild(opt);
+}
+
+function openAddScModal(monId, empId) {
+  document.getElementById('ro-sc-modal')?.remove();
+  const modal = document.createElement('div');
+  modal.id = 'ro-sc-modal';
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="modal modal--lg" id="ro-sc-modal-content">
+      <div class="modal__header">
+        <div class="modal__title">Adicionar Atendimento</div>
+        <button class="modal__close" id="ro-sc-close">✕</button>
+      </div>
+      <div class="modal__body">
+        <div class="attendance-grid">
+          <div class="attendance-field">
+            <div class="attendance-field__label">ID / Protocolo <span class="required">*</span></div>
+            <input class="attendance-field__input" id="ro-att-id" placeholder="ex: 123456">
+          </div>
+          <div class="attendance-field">
+            <div class="attendance-field__label">Data e hora do início <span class="required">*</span></div>
+            <input class="attendance-field__input" id="ro-att-date" type="datetime-local">
+          </div>
+          <div class="attendance-field">
+            <div class="attendance-field__label">Tempo de primeira resposta</div>
+            <input class="attendance-field__input" id="ro-att-tmpr" type="time" step="1">
+          </div>
+          <div class="attendance-field">
+            <div class="attendance-field__label">Tempo máx. entre respostas</div>
+            <input class="attendance-field__input" id="ro-att-tmer" type="time" step="1">
+          </div>
+          <div class="attendance-field">
+            <div class="attendance-field__label">Tempo de atendimento <span class="required">*</span></div>
+            <input class="attendance-field__input" id="ro-att-tma" type="time" step="1">
+          </div>
+          <div class="attendance-field">
+            <div class="attendance-field__label">Avaliação CSAT</div>
+            <div class="csat-group">
+              ${[1,2,3,4,5].map(v => `
+                <label class="csat-option csat-option--${v}">
+                  <input type="radio" name="ro-csat" value="${v}">
+                  <span class="csat-label">${v}</span>
+                </label>`).join('')}
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal__footer">
+        <button class="btn btn--ghost" id="ro-sc-cancel">Cancelar</button>
+        <button class="btn btn--primary" id="ro-sc-save">Adicionar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+
+  const close = () => modal.remove();
+  document.getElementById('ro-sc-close')?.addEventListener('click', close);
+  document.getElementById('ro-sc-cancel')?.addEventListener('click', close);
+  modal.addEventListener('click', e => { if (e.target === modal) close(); });
+  document.getElementById('ro-sc-save')?.addEventListener('click', () =>
+    saveNewServiceChat(monId, empId, close)
+  );
+}
+
+function normalizeTimeVal(val) {
+  if (!val) return null;
+  const parts = val.split(':');
+  if (parts.length === 2) return `${parts[0].padStart(2,'0')}:${parts[1].padStart(2,'0')}:00`;
+  return parts.map(p => p.padStart(2,'0')).join(':');
+}
+
+async function saveNewServiceChat(monId, empId, closeModal) {
+  const protocol  = document.getElementById('ro-att-id')?.value.trim();
+  const startedAt = document.getElementById('ro-att-date')?.value;
+  const tma       = document.getElementById('ro-att-tma')?.value;
+
+  if (!protocol)  { toast.warning('Atenção', 'Informe o protocolo.'); return; }
+  if (!startedAt) { toast.warning('Atenção', 'Informe a data e hora.'); return; }
+  if (!tma)       { toast.warning('Atenção', 'Informe o tempo de atendimento.'); return; }
+
+  const tmpr = document.getElementById('ro-att-tmpr')?.value || null;
+  const tmer = document.getElementById('ro-att-tmer')?.value || null;
+  const csatChecked = document.querySelector('input[name="ro-csat"]:checked');
+  const csat = csatChecked ? Number(csatChecked.value) : null;
+
+  const { data: emp } = await supabase.from('employees').select('sector_id').eq('id', empId).single();
+  const started = startedAt.length === 16 ? `${startedAt}:00` : startedAt;
+
+  const btn = document.getElementById('ro-sc-save');
+  if (btn) { btn.disabled = true; btn.textContent = 'Adicionando…'; }
+
+  const { data: sc, error } = await supabase.from('service_chat').insert({
+    protocol,
+    employee_id:         empId,
+    support_type:        emp?.sector_id ?? null,
+    started_at:          started,
+    service_time:        normalizeTimeVal(tma),
+    first_response_time: normalizeTimeVal(tmpr),
+    max_response_time:   normalizeTimeVal(tmer),
+    csat,
+    monitoring_id:       monId,
+  }).select('id').single();
+
+  if (error) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Adicionar'; }
+    if (error.code === '23505') toast.warning('Atenção', `Protocolo duplicado: ${protocol}`);
+    else toast.error('Erro ao adicionar atendimento', error.message);
+    return;
+  }
+
+  /* Update the atendimentos table body in the expanded row */
+  const tbody = document.getElementById(`ro-sc-tbody-${monId}`);
+  if (tbody) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="muted" style="font-family:var(--font-mono)">${protocol}</td>
+      <td>${normalizeTimeVal(tma) ?? '—'}</td>
+      <td>${normalizeTimeVal(tmpr) ?? '—'}</td>
+      <td>${normalizeTimeVal(tmer) ?? '—'}</td>
+      <td style="text-align:center">${csat ? csat + ' ★' : '—'}</td>`;
+    tbody.appendChild(tr);
+  }
+
+  syncObsProtoDropdown(monId, { id: sc.id, protocol });
+  closeModal();
+  toast.success('Atendimento adicionado');
+}
+
+async function saveNewObservation(monId, ref) {
+  const scId = document.getElementById(`ro-obs-proto-${monId}`)?.value;
+  if (!scId) { toast.warning('Atenção', 'Selecione o protocolo.'); return; }
+
+  const text = document.getElementById(`ro-obs-text-${monId}`)?.value.trim();
+  if (!text) { toast.warning('Atenção', 'Preencha a observação.'); return; }
+
+  const typeCode  = document.getElementById(`ro-obs-type-${monId}`)?.value ?? 'G';
+  const typeId    = ref.obsTypeMap[typeCode] ?? null;
+  const criteriaEl = document.getElementById(`ro-obs-criteria-${monId}`);
+  const criteriaId = criteriaEl?.value || null;
+
+  let errorId = null;
+  if (typeCode === 'E') {
+    const errEl = document.getElementById(`ro-obs-error-type-${monId}`);
+    if (!errEl?.value) { toast.warning('Atenção', 'Selecione o tipo de erro.'); return; }
+    errorId = crypto.randomUUID();
+    const { error: errErr } = await supabase.from('error')
+      .insert({ id: errorId, error_type_id: errEl.value });
+    if (errErr) { toast.error('Erro', errErr.message); return; }
+  }
+
+  const btn = document.getElementById(`ro-obs-save-${monId}`);
+  if (btn) { btn.disabled = true; btn.textContent = 'Adicionando…'; }
+
+  const { error } = await supabase.from('monitoring_observation').insert({
+    monitoring_id:       monId,
+    service_chat_id:     scId,
+    observation_type_id: typeId,
+    eval_criteria_id:    criteriaId,
+    error_id:            errorId,
+    author_id:           _currentUser.id,
+    content:             text,
+  });
+
+  if (btn) { btn.disabled = false; btn.textContent = '+ Adicionar Observação'; }
+  if (error) { toast.error('Erro', error.message); return; }
+
+  document.getElementById(`ro-obs-text-${monId}`).value = '';
+  document.getElementById(`ro-obs-type-${monId}`).value = 'G';
+  document.getElementById(`ro-obs-error-field-${monId}`).style.display = 'none';
+
+  /* Append new bubble to the list without a full re-render */
+  const obsContainer = document.getElementById(`ro-obs-list-${monId}`);
+  if (obsContainer) {
+    obsContainer.querySelector('[data-obs-empty]')?.remove();
+
+    const OBS_INFO = {
+      G: { label: 'Geral',        color: 'var(--text-secondary)' },
+      O: { label: 'Oportunidade', color: '#2563eb' },
+      A: { label: 'Acerto',       color: 'var(--brand-green-dark)' },
+      E: { label: 'Erro',         color: 'var(--color-danger)' },
+    };
+    const t = OBS_INFO[typeCode] ?? OBS_INFO.G;
+
+    const protoSel    = document.getElementById(`ro-obs-proto-${monId}`);
+    const protoText   = protoSel?.options[protoSel.selectedIndex]?.text ?? '';
+    const criteriaText = criteriaEl?.value
+      ? (criteriaEl.options[criteriaEl.selectedIndex]?.text ?? '') : '';
+
+    const bubble = document.createElement('div');
+    bubble.style.cssText = 'padding:var(--space-2) 0;border-bottom:1px solid var(--border-light);font-size:var(--text-xs)';
+    bubble.innerHTML = `
+      <div style="display:flex;gap:var(--space-2);align-items:center;margin-bottom:2px">
+        <span style="font-weight:700;color:${t.color}">${t.label}</span>
+        ${criteriaText ? `<span style="color:var(--text-tertiary)">· ${criteriaText}</span>` : ''}
+        ${protoText    ? `<span style="color:var(--text-tertiary);font-family:var(--font-mono)">· ${protoText}</span>` : ''}
+      </div>
+      <div>${text}</div>`;
+    bubble.animate(
+      [{ opacity: 0, transform: 'translateY(-6px)' }, { opacity: 1, transform: 'translateY(0)' }],
+      { duration: 200, easing: 'ease', fill: 'forwards' }
+    );
+    obsContainer.appendChild(bubble);
+  }
+
+  toast.success('Observação adicionada');
 }
 
 /* ── init ─────────────────────────────────── */
