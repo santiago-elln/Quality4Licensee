@@ -3,29 +3,54 @@
    ============================================================ */
 import { getCurrentUser } from '../auth.js';
 import { supabase } from '../supabase.js';
+import { navigate } from '../router.js';
 import { can, P } from '../utils/permissions.js';
 import {
   formatDate, resultBand, scoreColor, scoreColorHex, getInitials,
 } from '../utils/formatters.js';
 import { renderRadarChart, renderHistoryChart, destroyAll } from '../components/charts.js';
+import { toast } from '../components/toast.js';
 
 /* ── Module state ─────────────────────────── */
-let _currentUser  = null;
-let _departments  = [];
-let _teams        = [];
-let _employees    = [];
-let _evalCriteria = [];
-let _topicMap     = {};   // {topicId: {eval_criteria_id, points}}
-let _monStats     = {};   // {employeeId: computed stats}
-let _filters      = { supId: '', collabId: '', dateFrom: '', dateTo: '' };
-let _actionPlans       = {};
-let _dataLoaded        = false;
-let _fetchedGlobalScope = null;  // tracks scope used on last fetchData() call
+let _currentUser        = null;
+let _departments        = [];
+let _teams              = [];
+let _employees          = [];
+let _evalCriteria       = [];
+let _topicMap           = {};
+let _monStats           = {};
+let _filters            = { supId: '', collabId: '', dateFrom: '', dateTo: '' };
+let _employeeActionPlans = {};  // { empId: [plans] }
+let _dataLoaded         = false;
+let _fetchedGlobalScope = null;
 
+/* ── New plan modal state ─────────────────── */
+let _npEmpId     = null;   // employee the modal is targeting
+let _npRowCount  = 0;      // monotonic index for target rows
+let _npStepCount = 0;      // monotonic index for step rows
+
+/* ── AP target label helpers ──────────────── */
+const AP_TARGET_LABELS = {
+  monitoring_pct: 'Pontuação', tmer: 'TMEr',
+  tmpr: 'TMPr', tma: 'TMA', csat: 'CSAT',
+};
+
+function apTargetLabel(t) {
+  if (t.target_type === 'eval_criteria') return t.eval_criteria?.name ?? '—';
+  if (t.target_type === 'custom')        return t.custom_label ?? '—';
+  return AP_TARGET_LABELS[t.target_type] ?? t.target_type;
+}
+
+function apFmtValue(pct, time) {
+  if (pct  != null) return `${pct}%`;
+  if (time != null) return String(time).substring(0, 8);
+  return '—';
+}
+
+/* ── Department helper ────────────────────── */
 function myDept() {
   return _departments.find(d => d.id === _currentUser?.departmentId);
 }
-
 
 function buildCollabOpts(supId, selectedId) {
   const list = supId ? _employees.filter(e => e.team_id === supId) : _employees;
@@ -35,7 +60,7 @@ function buildCollabOpts(supId, selectedId) {
     ).join('');
 }
 
-/* ── Card visibility (no re-render) ─────── */
+/* ── Card visibility ──────────────────────── */
 function applyCardVisibility() {
   const { supId, collabId } = _filters;
   let visible = 0;
@@ -63,16 +88,14 @@ function secsToHHMMSS(secs) {
   return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
 }
 
-/* ── Compute per-employee stats from monitoring rows ── */
+/* ── Compute per-employee stats ───────────── */
 function computeMonStats(monitorings) {
   const stats = {};
   for (const emp of _employees) {
     stats[emp.id] = {
       count: 0, zeroed: 0, avgPct: 0, ptsLost: 0,
       scCount: 0, avgTma: '—', avgTmpr: '—', avgTmer: '—', avgCsat: 0,
-      radarPcts: {},   // {criteriaId: pct}
-      history:   [],   // [{date, pct}] sorted asc
-      lastDate:  null,
+      radarPcts: {}, history: [], lastDate: null,
     };
   }
 
@@ -83,10 +106,8 @@ function computeMonStats(monitorings) {
     s.count++;
     if (mon.zeroed) s.zeroed++;
 
-    let earnedPts = 0;
-    let totalMax  = 0;
-    const earnedByCriteria = {};
-    const maxByCriteria    = {};
+    let earnedPts = 0, totalMax = 0;
+    const earnedByCriteria = {}, maxByCriteria = {};
 
     for (const ta of (mon.topic_approval ?? [])) {
       const topic = _topicMap[ta.topic_id];
@@ -148,12 +169,11 @@ function computeMonStats(monitorings) {
 /* ── Data fetch ───────────────────────────── */
 async function fetchData() {
   const globalScope = can(_currentUser, P.GLOBAL_VIEW_DEPT);
-
   const empQuery = supabase.from('employees').select('id, name, team_id').eq('active', true).order('name');
 
   const [deptRes, teamsRes, empRes, ecRes, topicRes] = await Promise.all([
-    supabase.from('departments').select('id, name').order('name'),
-    supabase.from('teams').select('id, name').order('name'),
+    supabase.from('departments').select('id, name').eq('active', true).order('name'),
+    supabase.from('teams').select('id, name').eq('active', true).order('name'),
     empQuery,
     supabase.from('eval_criteria').select('id, name').eq('active', true),
     supabase.from('topic').select('id, eval_criteria_id, points').eq('active', true),
@@ -166,7 +186,7 @@ async function fetchData() {
   _departments        = deptRes.data   ?? [];
   _teams              = teamsRes.data  ?? [];
   _employees          = empRes.data    ?? [];
-  _evalCriteria       = ecRes.data    ?? [];
+  _evalCriteria       = ecRes.data     ?? [];
   _topicMap           = Object.fromEntries((topicRes.data ?? []).map(t => [t.id, t]));
   _fetchedGlobalScope = globalScope;
 }
@@ -186,15 +206,45 @@ async function fetchMonitoringData() {
   _monStats = computeMonStats(data ?? []);
 }
 
+async function fetchEmployeeActionPlans() {
+  const empIds = _employees.map(e => e.id);
+  if (!empIds.length) { _employeeActionPlans = {}; return; }
+
+  const { data, error } = await supabase
+    .from('action_plans')
+    .select(`
+      id, start_date, finished_at, title, emp_visible, scope_id, created_at,
+      profiles!created_by(name),
+      action_plan_targets(
+        id, target_type, custom_label, eval_criteria_id,
+        objective_pct, objective_time,
+        eval_criteria(name)
+      ),
+      action_steps(id, finished_at)
+    `)
+    .eq('scope_type', 'employee')
+    .eq('active', true)
+    .in('scope_id', empIds)
+    .order('created_at', { ascending: false });
+
+  if (error) { console.error('[consulta] action_plans:', error); _employeeActionPlans = {}; return; }
+
+  _employeeActionPlans = {};
+  for (const plan of (data ?? [])) {
+    plan.action_steps = (plan.action_steps ?? []).filter(s => s.active !== false);
+    (_employeeActionPlans[plan.scope_id] ??= []).push(plan);
+  }
+}
+
 /* ── render() ─────────────────────────────── */
 export function render() {
   if (!_filters.dateFrom) {
-    const now     = new Date();
-    const y       = now.getFullYear();
-    const m       = String(now.getMonth() + 1).padStart(2, '0');
-    const lastDay = new Date(y, now.getMonth() + 1, 0).getDate();
+    const now  = new Date();
+    const y    = now.getFullYear();
+    const m    = String(now.getMonth() + 1).padStart(2, '0');
+    const last = new Date(y, now.getMonth() + 1, 0).getDate();
     _filters.dateFrom = `${y}-${m}-01`;
-    _filters.dateTo   = `${y}-${m}-${lastDay}`;
+    _filters.dateTo   = `${y}-${m}-${last}`;
   }
 
   if (!_dataLoaded) {
@@ -202,7 +252,6 @@ export function render() {
       <div class="page-enter">
         <div class="page-header">
           <div class="page-title">Consulta por Associado</div>
-          <div class="page-subtitle">Análise detalhada de desempenho individual por período</div>
         </div>
         <div style="display:flex;align-items:center;justify-content:center;height:300px;gap:12px;color:var(--text-secondary)">
           <div class="boot-spinner" style="width:20px;height:20px;border-width:2px"></div>
@@ -213,11 +262,10 @@ export function render() {
 
   const canFilterSup = can(_currentUser, P.GLOBAL_VIEW_DEPT);
   const dept         = myDept();
-  const daysDiff = _filters.dateFrom && _filters.dateTo
+  const daysDiff     = _filters.dateFrom && _filters.dateTo
     ? Math.round((new Date(_filters.dateTo) - new Date(_filters.dateFrom)) / 86400000) + 1
     : 0;
 
-  /* Department: info display (same visual as form-group) */
   const deptInfoHtml = `
     <div class="form-group" style="margin-bottom:0">
       <label class="form-label">Departamento</label>
@@ -226,7 +274,6 @@ export function render() {
       </div>
     </div>`;
 
-  /* Supervisor: select for analyst/gestor, readonly for supervisor */
   const supFilterHtml = canFilterSup
     ? `<div class="form-group" style="margin-bottom:0">
          <label class="form-label">Supervisor</label>
@@ -239,12 +286,9 @@ export function render() {
        </div>`
     : `<div class="form-group" style="margin-bottom:0">
          <label class="form-label">Supervisor</label>
-         <div class="form-input" style="opacity:.75;cursor:default">
-           ${_currentUser?.name ?? '—'}
-         </div>
+         <div class="form-input" style="opacity:.75;cursor:default">${_currentUser?.name ?? '—'}</div>
        </div>`;
 
-  /* Render ALL employees as cards sorted by most recent monitoring date */
   const sorted = [..._employees].sort((a, b) => {
     const da = _monStats[a.id]?.lastDate ?? '';
     const db = _monStats[b.id]?.lastDate ?? '';
@@ -255,15 +299,17 @@ export function render() {
   });
   const cards = sorted.map(c => renderCard(c)).join('');
 
+  const ecOpts = _evalCriteria.map(ec =>
+    `<option value="eval_criteria:${ec.id}">${ec.name}</option>`
+  ).join('');
+
   return `
     <div class="page-enter">
-      <!-- Header -->
       <div class="page-header">
         <div class="page-title">Consulta por Associado</div>
         <div class="page-subtitle">Análise detalhada de desempenho individual por período</div>
       </div>
 
-      <!-- Filters -->
       <div class="consulta-filters">
         <div class="consulta-filters__grid">
           ${deptInfoHtml}
@@ -275,7 +321,6 @@ export function render() {
             </select>
           </div>
         </div>
-
         <div class="consulta-filters__date-row">
           <div class="form-group" style="margin-bottom:0">
             <label class="form-label">Data inicial</label>
@@ -295,7 +340,6 @@ export function render() {
         </div>
       </div>
 
-      <!-- Summary bar -->
       <div class="consulta-summary-bar">
         <div class="consulta-summary-bar__stat">
           <span>👥 Colaboradores:</span><strong id="summary-collab-count">${_employees.length}</strong>
@@ -317,7 +361,6 @@ export function render() {
         </div>
       </div>
 
-      <!-- Cards grid -->
       <div class="consulta-grid" id="consulta-grid">
         ${cards || `
           <div class="empty-state" style="grid-column:1/-1;background:var(--bg-surface);border-radius:var(--radius-md);border:1px solid var(--border)">
@@ -328,15 +371,89 @@ export function render() {
         `}
       </div>
     </div>
-  `;
+
+    <!-- ── New action plan modal ───────────── -->
+    <div id="np-modal" class="modal-overlay modal-overlay--hidden">
+      <div class="modal modal--xl">
+        <div class="modal__header">
+          <div class="modal__title" id="np-modal-title">Novo Plano de Ação</div>
+          <button class="modal__close" id="np-close">✕</button>
+        </div>
+
+        <div class="modal__body" style="display:flex;flex-direction:column;gap:var(--space-5)">
+
+          <!-- Top row: title, start date, visibility (full width) -->
+          <div style="display:grid;grid-template-columns:1fr auto auto;gap:var(--space-4);align-items:end">
+            <div class="form-group" style="margin-bottom:0">
+              <label class="form-label">
+                Título
+                <span style="font-weight:var(--weight-normal);color:var(--text-tertiary)">(opcional)</span>
+              </label>
+              <input class="form-input" type="text" id="np-title"
+                     placeholder="Ex: Melhoria de CSAT — Q3">
+            </div>
+            <div class="form-group" style="margin-bottom:0">
+              <label class="form-label">Data de início <span class="required">*</span></label>
+              <input class="form-input" type="date" id="np-start-date">
+            </div>
+            <div class="form-group" style="margin-bottom:0;padding-bottom:2px">
+              <label class="check-item">
+                <input type="checkbox" id="np-emp-visible" checked>
+                <span class="form-label">Visível para o colaborador</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Bottom row: objectives | steps (two equal columns) -->
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space-6);align-items:start">
+
+            <!-- Left: objectives -->
+            <div style="display:flex;flex-direction:column;gap:var(--space-3)">
+              <div style="font-size:var(--text-xs);font-weight:var(--weight-bold);
+                          text-transform:uppercase;letter-spacing:.07em;color:var(--text-tertiary)">
+                Objetivos <span class="required">*</span>
+              </div>
+              <div id="np-target-rows" style="display:flex;flex-direction:column;gap:var(--space-3)">
+              </div>
+              <button class="btn btn--ghost btn--sm" id="np-add-target">
+                + Adicionar objetivo
+              </button>
+            </div>
+
+            <!-- Right: steps -->
+            <div style="display:flex;flex-direction:column;gap:var(--space-3)">
+              <div style="font-size:var(--text-xs);font-weight:var(--weight-bold);
+                          text-transform:uppercase;letter-spacing:.07em;color:var(--text-tertiary)">
+                Passos do plano
+              </div>
+              <div id="np-step-rows" style="display:flex;flex-direction:column;gap:var(--space-3)">
+              </div>
+              <button class="btn btn--ghost btn--sm" id="np-add-step">
+                + Adicionar passo
+              </button>
+            </div>
+
+          </div>
+        </div>
+
+        <div class="modal__footer">
+          <button class="btn btn--ghost" id="np-cancel">Cancelar</button>
+          <button class="btn btn--primary" id="np-save">Criar plano</button>
+        </div>
+      </div>
+    </div>`;
 }
 
 /* ── Card render ─────────────────────────── */
 function renderCard(collab) {
-  const s    = _monStats[collab.id] ?? { count: 0, zeroed: 0, avgPct: 0, ptsLost: 0, scCount: 0, avgTma: '—', avgTmpr: '—', avgTmer: '—', avgCsat: 0, history: [], lastDate: null };
-  const sup  = _teams.find(t => t.id === collab.team_id);
-  const plan = _actionPlans[collab.id] ?? [];
-  const band = resultBand(s.avgPct);
+  const s    = _monStats[collab.id] ?? {
+    count: 0, zeroed: 0, avgPct: 0, ptsLost: 0,
+    scCount: 0, avgTma: '—', avgTmpr: '—', avgTmer: '—', avgCsat: 0,
+    history: [], lastDate: null,
+  };
+  const sup   = _teams.find(t => t.id === collab.team_id);
+  const plans = _employeeActionPlans[collab.id] ?? [];
+  const band  = resultBand(s.avgPct);
 
   const scoreValHtml = s.count
     ? `<div class="cc-card__score-val" style="color:${scoreColor(s.avgPct)}">${s.avgPct}%</div>`
@@ -352,15 +469,45 @@ function renderCard(collab) {
 
   const csatDisplay = s.avgCsat ? `${s.avgCsat} ★` : '—';
 
-  const planItems = plan.map((item, i) => `
-    <div class="cc-action-item">
-      <input type="checkbox" class="cc-action-item__check ap-check"
-             data-collab="${collab.id}" data-idx="${i}" ${item.done ? 'checked' : ''}>
-      <span class="cc-action-item__text" style="${item.done ? 'text-decoration:line-through;opacity:.5' : ''}">${item.text}</span>
-      ${item.deadline ? `<span class="cc-action-item__deadline">${item.deadline}</span>` : ''}
-      <button class="cc-action-item__del ap-del" data-collab="${collab.id}" data-idx="${i}">🗑</button>
-    </div>
-  `).join('');
+  /* Action plan items */
+  const planItems = plans.map(plan => {
+    const totalSteps    = plan.action_steps?.length ?? 0;
+    const finishedSteps = (plan.action_steps ?? []).filter(s => s.finished_at).length;
+    const targets       = plan.action_plan_targets ?? [];
+    return `
+      <div class="cc-ap-item">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:3px">
+          <div style="font-size:var(--text-xs);font-weight:var(--weight-semibold);
+                      color:var(--text-primary);min-width:0;overflow:hidden;
+                      text-overflow:ellipsis;white-space:nowrap">
+            ${plan.title || '<em style="font-weight:normal;color:var(--text-tertiary)">Sem título</em>'}
+          </div>
+          <button class="btn btn--ghost cc-ap-link"
+                  data-plan-id="${plan.id}"
+                  style="flex-shrink:0;font-size:10px;padding:1px 6px;height:auto;line-height:1.6">
+            Detalhes →
+          </button>
+        </div>
+        <div style="font-size:10px;color:var(--text-tertiary);margin-bottom:3px">
+          ${plan.profiles?.name ?? '—'} · ${formatDate(plan.start_date)}
+          ${plan.finished_at
+            ? ` · <span style="color:var(--color-success)">Concluído</span>`
+            : ''}
+        </div>
+        ${targets.length ? `
+          <div style="font-size:10px;color:var(--text-secondary)">
+            ${targets.map(t =>
+              `${apTargetLabel(t)}: <strong>${apFmtValue(t.objective_pct, t.objective_time)}</strong>`
+            ).join(' · ')}
+          </div>
+        ` : ''}
+        ${totalSteps ? `
+          <div style="font-size:10px;color:var(--text-tertiary);margin-top:2px">
+            ${finishedSteps}/${totalSteps} passos concluídos
+          </div>
+        ` : ''}
+      </div>`;
+  }).join('');
 
   return `
     <div class="cc-card" data-collab="${collab.id}" data-sup-id="${collab.team_id ?? ''}">
@@ -368,7 +515,9 @@ function renderCard(collab) {
       <div class="cc-card__header">
         <div class="cc-card__avatar">${getInitials(collab.name)}</div>
         <div class="cc-card__info">
-          <div class="cc-card__name"><a href="#perfil?id=${collab.id}">${collab.name}</a></div>
+          <div class="cc-card__name">
+            <a href="#perfil?id=${collab.id}">${collab.name}</a>
+          </div>
           <div class="cc-card__last-mon">${lastMonHtml}</div>
           <div class="cc-card__badges">
             <span class="cc-badge">${sup?.name?.split(' ')[0] ?? '—'}</span>
@@ -405,7 +554,9 @@ function renderCard(collab) {
           </div>
           <div class="cc-metric-row">
             <span class="cc-metric-row__label">Monitorias zeradas</span>
-            <span class="cc-metric-row__val ${s.zeroed ? 'cc-metric-row__val--red' : ''}">${s.count ? s.zeroed : '—'}</span>
+            <span class="cc-metric-row__val ${s.zeroed ? 'cc-metric-row__val--red' : ''}">
+              ${s.count ? s.zeroed : '—'}
+            </span>
           </div>
         </div>
         <div class="cc-radar-wrap">
@@ -413,48 +564,33 @@ function renderCard(collab) {
         </div>
       </div>
 
-      ${can(_currentUser, P.CONSULT_ACTION_PLAN) ? `
+      <!-- Action plan section (always visible; creation is permission-gated) -->
       <div class="cc-action-plan" id="ap-${collab.id}">
         <button class="cc-action-plan__toggle ap-toggle" data-collab="${collab.id}">
-          <span>📋 Plano de Ação ${plan.length ? `(${plan.filter(i=>!i.done).length} pendentes)` : ''}</span>
+          <span>📋 Planos de Ação${plans.length ? ` (${plans.length})` : ''}</span>
           <span class="cc-action-plan__toggle-icon">›</span>
         </button>
         <div class="cc-action-plan__body">
-          <div class="cc-action-items" id="ap-items-${collab.id}">
-            ${planItems || `<div style="font-size:var(--text-xs);color:var(--text-tertiary);padding:var(--space-2) 0">Nenhuma ação cadastrada</div>`}
-          </div>
-          <div class="cc-action-add">
-            <input class="form-input ap-input" id="ap-input-${collab.id}"
-                   placeholder="Nova ação de melhoria…" data-collab="${collab.id}">
-            <input class="form-input" type="date" id="ap-date-${collab.id}"
-                   style="font-size:var(--text-xs);height:28px;padding:0 8px">
-            <button class="btn btn--primary ap-add-btn" data-collab="${collab.id}">+</button>
-          </div>
+          ${planItems || `
+            <div style="font-size:var(--text-xs);color:var(--text-tertiary);
+                        padding:var(--space-1) 0">
+              Nenhum plano cadastrado
+            </div>`}
+          ${can(_currentUser, P.CONSULT_ACTION_PLAN) ? `
+            <button class="btn btn--ghost btn--sm ap-new-btn"
+                    data-collab="${collab.id}"
+                    style="margin-top:var(--space-2);width:100%">
+              + Novo plano
+            </button>
+          ` : ''}
         </div>
-      </div>` : ''}
+      </div>
 
       <div class="cc-history">
         <div class="cc-history__label">Histórico de Resultados</div>
         <div class="cc-history-bar">${historyHtml}</div>
       </div>
     </div>`;
-  //     <div class="cc-insights">
-  //       <div class="cc-insight-col cc-insight-col--error">
-  //         <div class="cc-insight-col__title cc-insight-col__title--error">⚠ Erros frequentes</div>
-  //         <div class="cc-insight-item" style="opacity:.35">Sem dados</div>
-  //       </div>
-  //       <div class="cc-insight-col cc-insight-col--good">
-  //         <div class="cc-insight-col__title cc-insight-col__title--good">✔ Tem acertado em</div>
-  //         <div class="cc-insight-item" style="opacity:.35">Sem dados</div>
-  //       </div>
-  //       <div class="cc-insight-col cc-insight-col--opp">
-  //         <div class="cc-insight-col__title cc-insight-col__title--opp">📘 Oportunidades</div>
-  //         <div class="cc-insight-item" style="opacity:.35">Sem dados</div>
-  //       </div>
-  //     </div>
-
-  //   </div>
-  // `;
 }
 
 /* ── Charts ───────────────────────────────── */
@@ -482,7 +618,7 @@ function initCharts() {
   });
 }
 
-/* ── Page reload (uses cached data) ──────── */
+/* ── Page reload ──────────────────────────── */
 function reloadPage() {
   destroyAll();
   const main = document.getElementById('main-content');
@@ -492,7 +628,7 @@ function reloadPage() {
   applyCardVisibility();
 }
 
-/* ── Date range validation ─────────────────── */
+/* ── Date range validation ────────────────── */
 function enforceDateRange() {
   const fromEl = document.getElementById('f-date-from');
   const toEl   = document.getElementById('f-date-to');
@@ -514,52 +650,374 @@ function enforceDateRange() {
   }
 }
 
-/* ── Action plan helpers ─────────────────── */
-function savePlan(collabId) {
-  const items     = _actionPlans[collabId] ?? [];
-  const container = document.getElementById(`ap-items-${collabId}`);
+/* ── New plan modal ───────────────────────── */
+function openNewPlanModal(empId) {
+  _npEmpId    = empId;
+  _npRowCount = 0;
+
+  const emp = _employees.find(e => e.id === empId);
+  const titleEl = document.getElementById('np-modal-title');
+  if (titleEl) titleEl.textContent = emp ? `Novo Plano — ${emp.name}` : 'Novo Plano de Ação';
+
+  const titleInput = document.getElementById('np-title');
+  if (titleInput) titleInput.value = '';
+
+  const dateInput = document.getElementById('np-start-date');
+  if (dateInput) dateInput.value = new Date().toISOString().split('T')[0];
+
+  const visCheck = document.getElementById('np-emp-visible');
+  if (visCheck) visCheck.checked = true;
+
+  const rowsContainer = document.getElementById('np-target-rows');
+  if (rowsContainer) rowsContainer.innerHTML = '';
+
+  const stepContainer = document.getElementById('np-step-rows');
+  if (stepContainer) stepContainer.innerHTML = '';
+
+  _npRowCount  = 0;
+  _npStepCount = 0;
+  addTargetRow(empId);
+  addStepRow();
+
+  document.getElementById('np-modal')?.classList.remove('modal-overlay--hidden');
+}
+
+function closeNewPlanModal() {
+  document.getElementById('np-modal')?.classList.add('modal-overlay--hidden');
+  _npEmpId = null;
+}
+
+function addTargetRow(empId) {
+  const container = document.getElementById('np-target-rows');
   if (!container) return;
-  container.innerHTML = items.length
-    ? items.map((item, i) => `
-        <div class="cc-action-item">
-          <input type="checkbox" class="cc-action-item__check ap-check"
-                 data-collab="${collabId}" data-idx="${i}" ${item.done ? 'checked' : ''}>
-          <span class="cc-action-item__text" style="${item.done ? 'text-decoration:line-through;opacity:.5' : ''}">${item.text}</span>
-          ${item.deadline ? `<span class="cc-action-item__deadline">${item.deadline}</span>` : ''}
-          <button class="cc-action-item__del ap-del" data-collab="${collabId}" data-idx="${i}">🗑</button>
+
+  const idx    = _npRowCount++;
+  const ecOpts = _evalCriteria.map(ec =>
+    `<option value="eval_criteria:${ec.id}">${ec.name}</option>`
+  ).join('');
+
+  const wrapper = document.createElement('div');
+  wrapper.id = `np-row-${idx}`;
+  wrapper.innerHTML = `
+    <div style="background:var(--bg-surface-3);border-radius:var(--radius-sm);
+                padding:var(--space-3);position:relative">
+      ${idx > 0 ? `
+        <button class="btn btn--ghost btn--sm np-remove-target" data-row="${idx}"
+                style="position:absolute;top:6px;right:6px;padding:2px 7px;font-size:11px">✕</button>
+      ` : ''}
+
+      <div class="form-group" style="margin-bottom:var(--space-2)">
+        <label class="form-label">Métrica</label>
+        <select class="form-select" id="np-type-${idx}" data-row="${idx}">
+          <option value="">— selecione —</option>
+          <option value="monitoring_pct">Pontuação de monitoria</option>
+          <option value="csat">CSAT</option>
+          <option value="tma">TMA</option>
+          <option value="tmpr">TMPr</option>
+          <option value="tmer">TMEr</option>
+          ${ecOpts}
+          <option value="custom">Personalizado</option>
+        </select>
+      </div>
+
+      <div id="np-custom-label-wrap-${idx}" class="form-group"
+           style="margin-bottom:var(--space-2);display:none">
+        <label class="form-label">Nome do objetivo <span class="required">*</span></label>
+        <input class="form-input" type="text" id="np-custom-label-${idx}"
+               placeholder="Ex: Taxa de resolução">
+      </div>
+
+      <div style="display:flex;gap:var(--space-3);align-items:flex-start">
+        <div class="form-group" id="np-obj-pct-wrap-${idx}"
+             style="flex:1;margin-bottom:0;display:none">
+          <label class="form-label">Meta:
+            <span id="np-obj-pct-${idx}-val"
+                  style="font-weight:var(--weight-semibold);color:var(--brand-green-dark)">0%</span>
+            <span class="required">*</span>
+          </label>
+          <input type="range" min="0" max="100" value="0" id="np-obj-pct-${idx}"
+                 style="width:100%;accent-color:var(--brand-green);cursor:pointer">
         </div>
-      `).join('')
-    : `<div style="font-size:var(--text-xs);color:var(--text-tertiary);padding:var(--space-2) 0">Nenhuma ação cadastrada</div>`;
+        <div class="form-group" id="np-obj-time-wrap-${idx}"
+             style="flex:1;margin-bottom:0;display:none">
+          <label class="form-label">Meta <span class="required">*</span></label>
+          <input class="form-input" type="time" step="1"
+                 id="np-obj-time-${idx}" placeholder="HH:MM:SS">
+        </div>
+        <div class="form-group" id="np-baseline-wrap-${idx}"
+             style="flex:1;margin-bottom:0;display:none">
+          <label class="form-label">Valor atual:
+            <span id="np-baseline-${idx}-val"
+                  style="font-weight:var(--weight-semibold);color:var(--text-secondary)">0%</span>
+            <span class="required">*</span>
+          </label>
+          <input type="range" min="0" max="100" value="0" id="np-baseline-${idx}"
+                 style="width:100%;accent-color:var(--brand-green);cursor:pointer">
+        </div>
+        <div class="form-group" id="np-obj-custom-wrap-${idx}"
+             style="flex:1;margin-bottom:0;display:none">
+          <label class="form-label">Meta:
+            <span id="np-obj-custom-${idx}-val"
+                  style="font-weight:var(--weight-semibold);color:var(--brand-green-dark)">0%</span>
+            <span class="required">*</span>
+          </label>
+          <input type="range" min="0" max="100" value="0" id="np-obj-custom-${idx}"
+                 style="width:100%;accent-color:var(--brand-green);cursor:pointer">
+        </div>
+      </div>
+    </div>`;
 
-  container.querySelectorAll('.ap-check').forEach(bindCheckEvent);
-  container.querySelectorAll('.ap-del').forEach(bindDelEvent);
+  container.appendChild(wrapper);
+  bindTargetRowEvents(idx);
+}
 
-  const toggle = document.querySelector(`.ap-toggle[data-collab="${collabId}"] span:first-child`);
-  if (toggle) {
-    const pending = items.filter(i => !i.done).length;
-    toggle.textContent = `📋 Plano de Ação ${items.length ? `(${pending} pendentes)` : ''}`;
+function computeStartlineFromMons(targetType, ecId, mons, topicMap) {
+  switch (targetType) {
+    case 'monitoring_pct': {
+      const pcts = mons.map(m => {
+        let earned = 0, total = 0;
+        for (const ta of (m.topic_approval ?? [])) {
+          const t = topicMap[ta.topic_id]; if (!t) continue;
+          total += t.points; if (ta.obtained) earned += t.points;
+        }
+        return total > 0 ? earned / total * 100 : null;
+      }).filter(v => v !== null);
+      return { pct: pcts.length ? Math.round(pcts.reduce((a,b) => a+b,0) / pcts.length) : 0, time: null };
+    }
+    case 'eval_criteria': {
+      const pcts = mons.map(m => {
+        let earned = 0, total = 0;
+        for (const ta of (m.topic_approval ?? [])) {
+          const t = topicMap[ta.topic_id]; if (!t || t.eval_criteria_id !== ecId) continue;
+          total += t.points; if (ta.obtained) earned += t.points;
+        }
+        return total > 0 ? earned / total * 100 : null;
+      }).filter(v => v !== null);
+      return { pct: pcts.length ? Math.round(pcts.reduce((a,b) => a+b,0) / pcts.length) : 0, time: null };
+    }
+    case 'csat': {
+      const csats = mons.flatMap(m => (m.service_chat ?? []).filter(sc => sc.csat).map(sc => sc.csat));
+      return { pct: csats.length ? Math.round(csats.filter(c => c >= 4).length / csats.length * 100) : 0, time: null };
+    }
+    case 'tma': case 'tmpr': case 'tmer': {
+      const col  = { tma: 'service_time', tmpr: 'first_response_time', tmer: 'max_response_time' }[targetType];
+      const secs = mons.flatMap(m => (m.service_chat ?? []).filter(sc => sc[col]).map(sc => intervalToSecs(sc[col]))).filter(s => s > 0);
+      if (!secs.length) return { pct: null, time: null };
+      const avg = Math.round(secs.reduce((a,b) => a+b,0) / secs.length);
+      const h = Math.floor(avg/3600), mn = Math.floor((avg%3600)/60), s = avg%60;
+      return { pct: null, time: `${String(h).padStart(2,'0')}:${String(mn).padStart(2,'0')}:${String(s).padStart(2,'0')}` };
+    }
+    default: return { pct: null, time: null };
   }
 }
 
-function bindCheckEvent(chk) {
-  chk.addEventListener('change', () => {
-    const { collab, idx } = chk.dataset;
-    if (_actionPlans[collab]?.[idx]) {
-      _actionPlans[collab][idx].done = chk.checked;
-      savePlan(collab);
+async function fetchEmployeeMonData(empId) {
+  const [monRes, topicRes] = await Promise.all([
+    supabase.from('monitoring').select(`
+      topic_approval(topic_id, obtained),
+      service_chat(csat, service_time, first_response_time, max_response_time)
+    `).eq('employee_id', empId),
+    supabase.from('topic').select('id, eval_criteria_id, points').eq('active', true),
+  ]);
+  return {
+    mons:     monRes.data ?? [],
+    topicMap: Object.fromEntries((topicRes.data ?? []).map(t => [t.id, t])),
+  };
+}
+
+function bindTargetRowEvents(idx) {
+  document.getElementById(`np-type-${idx}`)?.addEventListener('change', e => {
+    const typeVal  = e.target.value;
+    const isTime   = ['tma', 'tmpr', 'tmer'].includes(typeVal);
+    const isCustom = typeVal === 'custom';
+    const hasPct   = !isTime && !isCustom && typeVal !== '';
+
+    document.getElementById(`np-obj-pct-wrap-${idx}`).style.display      = hasPct   ? '' : 'none';
+    document.getElementById(`np-obj-time-wrap-${idx}`).style.display     = isTime   ? '' : 'none';
+    document.getElementById(`np-baseline-wrap-${idx}`).style.display     = isCustom ? '' : 'none';
+    document.getElementById(`np-obj-custom-wrap-${idx}`).style.display   = isCustom ? '' : 'none';
+    document.getElementById(`np-custom-label-wrap-${idx}`).style.display = isCustom ? '' : 'none';
+  });
+
+  [`np-obj-pct-${idx}`, `np-baseline-${idx}`, `np-obj-custom-${idx}`].forEach(id => {
+    document.getElementById(id)?.addEventListener('input', e => {
+      document.getElementById(`${id}-val`).textContent = `${e.target.value}%`;
+    });
+  });
+
+  document.querySelector(`.np-remove-target[data-row="${idx}"]`)
+    ?.addEventListener('click', () => document.getElementById(`np-row-${idx}`)?.remove());
+}
+
+function addStepRow() {
+  const container = document.getElementById('np-step-rows');
+  if (!container) return;
+
+  const idx     = _npStepCount++;
+  const wrapper = document.createElement('div');
+  wrapper.id    = `np-step-${idx}`;
+  wrapper.innerHTML = `
+    <div style="background:var(--bg-surface-3);border-radius:var(--radius-sm);
+                padding:var(--space-3);position:relative">
+      ${idx > 0 ? `
+        <button class="np-remove-step" data-row="${idx}"
+                style="position:absolute;top:6px;right:6px;
+                       background:none;border:none;cursor:pointer;
+                       font-size:11px;color:var(--text-tertiary);
+                       padding:2px 6px;border-radius:var(--radius-sm)">✕</button>
+      ` : ''}
+      <div class="form-group" style="margin-bottom:var(--space-2)">
+        <label class="form-label">Descrição <span class="required">*</span></label>
+        <input class="form-input" type="text" id="np-step-desc-${idx}"
+               placeholder="Descreva o passo…">
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label class="form-label">
+          Data de início
+          <span style="font-weight:var(--weight-normal);color:var(--text-tertiary)">(opcional)</span>
+        </label>
+        <input class="form-input" type="date" id="np-step-date-${idx}"
+               min="${document.getElementById('np-start-date')?.value ?? ''}"
+               value="${document.getElementById('np-start-date')?.value ?? ''}">
+      </div>
+    </div>`;
+
+  container.appendChild(wrapper);
+
+  wrapper.querySelector('.np-remove-step')
+    ?.addEventListener('click', () => wrapper.remove());
+}
+
+async function saveNewPlan() {
+  const empId = _npEmpId;
+  if (!empId) return;
+
+  const title      = document.getElementById('np-title')?.value.trim() || null;
+  const startDate  = document.getElementById('np-start-date')?.value;
+  const empVisible = document.getElementById('np-emp-visible')?.checked ?? true;
+
+  if (!startDate) { toast.warning('Atenção', 'Informe a data de início.'); return; }
+
+  const rows = document.querySelectorAll('#np-target-rows > div');
+  if (!rows.length) { toast.warning('Atenção', 'Adicione ao menos um objetivo.'); return; }
+
+  const targets = [];
+  for (const row of rows) {
+    const idx     = row.id.replace('np-row-', '');
+    const typeVal = document.getElementById(`np-type-${idx}`)?.value;
+    if (!typeVal) { toast.warning('Atenção', 'Selecione o tipo de cada objetivo.'); return; }
+
+    const isTime   = ['tma', 'tmpr', 'tmer'].includes(typeVal);
+    const isCustom = typeVal === 'custom';
+    const isEC     = typeVal.startsWith('eval_criteria:');
+
+    const targetType  = isEC ? 'eval_criteria' : typeVal;
+    const ecId        = isEC ? typeVal.split(':')[1] : null;
+    const customLabel = isCustom
+      ? document.getElementById(`np-custom-label-${idx}`)?.value.trim() : null;
+
+    if (isCustom && !customLabel) {
+      toast.warning('Atenção', 'Informe o nome do objetivo personalizado.'); return;
     }
-  });
+
+    let objPct = null, objTime = null, baselinePct = null;
+    if (isTime) {
+      objTime = document.getElementById(`np-obj-time-${idx}`)?.value.trim() || null;
+      if (!objTime) { toast.warning('Atenção', 'Informe o tempo objetivo.'); return; }
+    } else if (isCustom) {
+      const baseRaw = document.getElementById(`np-baseline-${idx}`)?.value;
+      const goalRaw = document.getElementById(`np-obj-custom-${idx}`)?.value;
+      if (baseRaw === '' || baseRaw == null) { toast.warning('Atenção', 'Informe o valor atual do objetivo personalizado.'); return; }
+      if (goalRaw === '' || goalRaw == null) { toast.warning('Atenção', 'Informe o valor meta do objetivo personalizado.'); return; }
+      baselinePct = Number(baseRaw); objPct = Number(goalRaw);
+      if ([baselinePct, objPct].some(v => isNaN(v) || v < 0 || v > 100)) {
+        toast.warning('Atenção', 'Os valores devem estar entre 0 e 100.'); return;
+      }
+    } else {
+      const rawVal = document.getElementById(`np-obj-pct-${idx}`)?.value;
+      if (rawVal === '' || rawVal == null) { toast.warning('Atenção', 'Informe o valor objetivo.'); return; }
+      objPct = Number(rawVal);
+      if (isNaN(objPct) || objPct < 0 || objPct > 100) { toast.warning('Atenção', 'O valor deve estar entre 0 e 100.'); return; }
+    }
+
+    targets.push({
+      target_type:      targetType,
+      eval_criteria_id: ecId || null,
+      custom_label:     customLabel || null,
+      objective_pct:    objPct,
+      objective_time:   objTime,
+      startline_pct:    isCustom ? baselinePct : null,   // computed below for non-custom
+      startline_time:   null,
+      _isCustom:        isCustom,
+    });
+  }
+
+  /* Collect steps before any DB write — empty rows are skipped (steps are optional) */
+  const rawSteps = [];
+  for (const el of document.querySelectorAll('#np-step-rows > div')) {
+    const idx  = el.id.replace('np-step-', '');
+    const desc = document.getElementById(`np-step-desc-${idx}`)?.value.trim();
+    const date = document.getElementById(`np-step-date-${idx}`)?.value || null;
+    if (desc) rawSteps.push({ description: desc, start_date: date });
+  }
+
+  const saveBtn = document.getElementById('np-save');
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = 'Calculando baseline…'; }
+
+  /* Compute startlines from all-time employee data, ignoring date filters and access level */
+  if (targets.some(t => !t._isCustom)) {
+    const { mons, topicMap } = await fetchEmployeeMonData(empId);
+    for (const t of targets) {
+      if (t._isCustom) continue;
+      const isTimeT = ['tma','tmpr','tmer'].includes(t.target_type);
+      const val     = computeStartlineFromMons(t.target_type, t.eval_criteria_id, mons, topicMap);
+      t.startline_pct  = isTimeT ? null : (val.pct  ?? 0);
+      t.startline_time = isTimeT ? (val.time ?? '00:00:00') : null;
+    }
+  }
+  targets.forEach(t => delete t._isCustom);
+
+  if (saveBtn) saveBtn.textContent = 'Criando…';
+
+  try {
+    const { data: plan, error: planErr } = await supabase
+      .from('action_plans')
+      .insert({
+        created_by:  _currentUser.id,
+        start_date:  startDate,
+        emp_visible: empVisible,
+        title,
+        scope_type:  'employee',
+        scope_id:    empId,
+      })
+      .select('id')
+      .single();
+    if (planErr) throw planErr;
+
+    if (targets.length) {
+      const { error: targErr } = await supabase
+        .from('action_plan_targets')
+        .insert(targets.map(t => ({ ...t, action_plan_id: plan.id })));
+      if (targErr) throw targErr;
+    }
+
+    if (rawSteps.length) {
+      const { error: stepsErr } = await supabase.from('action_steps')
+        .insert(rawSteps.map(s => ({ ...s, action_plan_id: plan.id })));
+      if (stepsErr) throw stepsErr;
+    }
+
+    closeNewPlanModal();
+    toast.success('Plano criado');
+    await fetchEmployeeActionPlans();
+    reloadPage();
+  } catch (err) {
+    toast.error('Erro ao criar plano', err.message);
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = 'Criar plano'; }
+  }
 }
 
-function bindDelEvent(btn) {
-  btn.addEventListener('click', () => {
-    const { collab, idx } = btn.dataset;
-    _actionPlans[collab]?.splice(Number(idx), 1);
-    savePlan(collab);
-  });
-}
-
-/* ── Event binding ─────────────────────────── */
+/* ── Event binding ────────────────────────── */
 function bindEvents() {
   initCharts();
 
@@ -576,7 +1034,6 @@ function bindEvents() {
     reloadPage();
   });
 
-  /* Supervisor change → update collab select + apply visibility */
   document.getElementById('f-sup')?.addEventListener('change', e => {
     _filters.supId    = e.target.value;
     _filters.collabId = '';
@@ -585,68 +1042,71 @@ function bindEvents() {
     applyCardVisibility();
   });
 
-  /* Collaborator change → apply visibility immediately */
   document.getElementById('f-collab')?.addEventListener('change', e => {
     _filters.collabId = e.target.value;
     applyCardVisibility();
   });
 
-  /* Clear all filters */
   document.getElementById('btn-clear-filters')?.addEventListener('click', () => {
-    _filters = {
-      supId:    '',
-      collabId: '',
-      dateFrom: '',
-      dateTo:   '',
-    };
+    _filters = { supId: '', collabId: '', dateFrom: '', dateTo: '' };
     reloadPage();
   });
 
+  /* Action plan toggles */
   document.querySelectorAll('.ap-toggle').forEach(btn => {
     btn.addEventListener('click', () => {
       document.getElementById(`ap-${btn.dataset.collab}`)?.classList.toggle('open');
     });
   });
 
-  document.querySelectorAll('.ap-add-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const collabId = btn.dataset.collab;
-      const input    = document.getElementById(`ap-input-${collabId}`);
-      const dateEl   = document.getElementById(`ap-date-${collabId}`);
-      const text     = input?.value.trim();
-      if (!text) return;
-      if (!_actionPlans[collabId]) _actionPlans[collabId] = [];
-      _actionPlans[collabId].push({ text, done: false, deadline: dateEl?.value ?? '' });
-      if (input)  input.value  = '';
-      if (dateEl) dateEl.value = '';
-      savePlan(collabId);
-    });
+  /* "Ver no Metas" links */
+  document.querySelectorAll('.cc-ap-link').forEach(btn => {
+    btn.addEventListener('click', () => navigate('metas', { planId: btn.dataset.planId }));
   });
 
-  document.querySelectorAll('.ap-input').forEach(inp => {
-    inp.addEventListener('keydown', e => {
-      if (e.key === 'Enter')
-        document.querySelector(`.ap-add-btn[data-collab="${inp.dataset.collab}"]`)?.click();
-    });
+  /* "Novo plano" buttons */
+  document.querySelectorAll('.ap-new-btn').forEach(btn => {
+    btn.addEventListener('click', () => openNewPlanModal(btn.dataset.collab));
   });
 
-  document.querySelectorAll('.ap-check').forEach(bindCheckEvent);
-  document.querySelectorAll('.ap-del').forEach(bindDelEvent);
+  /* Modal controls */
+  document.getElementById('np-close')?.addEventListener('click',  closeNewPlanModal);
+  document.getElementById('np-cancel')?.addEventListener('click', closeNewPlanModal);
+  document.getElementById('np-modal')?.addEventListener('click',
+    e => { if (e.target.id === 'np-modal') closeNewPlanModal(); });
+  document.getElementById('np-save')?.addEventListener('click', saveNewPlan);
+  document.getElementById('np-add-target')?.addEventListener('click', () => {
+    if (_npEmpId) addTargetRow(_npEmpId);
+  });
+  document.getElementById('np-add-step')?.addEventListener('click', addStepRow);
+
+  /* When plan start date changes, push new min to all existing step date inputs */
+  document.getElementById('np-start-date')?.addEventListener('change', e => {
+    const min = e.target.value;
+    document.querySelectorAll('[id^="np-step-date-"]').forEach(input => {
+      input.min = min;
+      /* Also advance the value if it's now before the new minimum */
+      if (input.value && input.value < min) input.value = min;
+    });
+  });
 }
 
 /* ── init ─────────────────────────────────── */
 export async function init() {
   _currentUser = getCurrentUser();
+  _dataLoaded  = false;
+  _npEmpId     = null;
 
-  /* Garante spinner imediato em qualquer visita (incluindo revisitas com dados obsoletos) */
-  _dataLoaded = false;
   const _initMain = document.getElementById('main-content');
   if (_initMain) _initMain.innerHTML = render();
 
   try {
     const globalScope = can(_currentUser, P.GLOBAL_VIEW_DEPT);
     if (!_employees.length || _fetchedGlobalScope !== globalScope) await fetchData();
-    await fetchMonitoringData();
+    await Promise.all([
+      fetchMonitoringData(),
+      fetchEmployeeActionPlans(),
+    ]);
   } catch (err) {
     console.error('[consulta] init error:', err);
     const main = document.getElementById('main-content');

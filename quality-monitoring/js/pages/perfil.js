@@ -248,7 +248,9 @@ export async function init() {
   const user          = getCurrentUser();
   const { id: empId } = getRouteParams();
 
-  if (!empId) {
+  /* No employee ID in params, OR user passed their own profile ID but has no employee record */
+  const ownProfileWithNoEmployee = empId === user?.id && !user?.employeeId;
+  if (!empId || ownProfileWithNoEmployee) {
     const main = document.getElementById('main-content');
     if (main) main.innerHTML = `
       <div class="page-enter" style="display:flex;align-items:center;justify-content:center;height:100%;min-height:60vh">
@@ -284,10 +286,10 @@ export async function init() {
     _topicMap     = Object.fromEntries((topicRes.data ?? []).map(t => [t.id, t]));
   }
 
-  /* Employee (with supervisor via FK chain) + monitorings in parallel */
+  /* Employee + monitorings in parallel; supervisor resolved separately to avoid FK ambiguity */
   const [empRes, monsRes] = await Promise.all([
     supabase.from('employees')
-      .select('id, name, team_id, teams(supervisor_id, profiles(id, name))')
+      .select('id, name, team_id, teams(supervisor_id)')
       .eq('id', empId)
       .single(),
     supabase.from('monitoring')
@@ -312,8 +314,16 @@ export async function init() {
   }
 
   const { teams: empTeam, ...empData } = empRes.data;
-  _employee   = empData;
-  _supervisor = empTeam?.profiles ?? null;
+  _employee = empData;
+
+  const supervisorId = empTeam?.supervisor_id ?? null;
+  if (supervisorId) {
+    const { data: supData } = await supabase
+      .from('profiles').select('id, name').eq('id', supervisorId).single();
+    _supervisor = supData ?? null;
+  } else {
+    _supervisor = null;
+  }
 
   if (!isAllowed(user, empId, _employee)) { renderDenied(); return; }
   const rawMons = monsRes.data ?? [];

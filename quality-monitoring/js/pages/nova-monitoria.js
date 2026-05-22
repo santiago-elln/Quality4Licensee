@@ -5,7 +5,8 @@ import { getCurrentUser } from '../auth.js';
 import { navigate }       from '../router.js';
 import { toast }          from '../components/toast.js';
 import { can, P }         from '../utils/permissions.js';
-import { EVAL_CATEGORIES, ANALYTICAL_CRITERIA, TOTAL_MAX_PTS } from '../data/config.js';
+/* EVAL_CATEGORIES, ANALYTICAL_CRITERIA and TOTAL_MAX_PTS are now built
+   dynamically from the DB in init() — config.js is no longer used here. */
 import { supabase }       from '../supabase.js';
 import { formatHHMMSS, parseHHMMSS, resultBand, scoreColor } from '../utils/formatters.js';
 
@@ -16,13 +17,17 @@ let _totalEarned           = 0;
 let _pendingDeleteProtocol = null;
 
 /* Fetched from DB on init */
-let _topics          = [];   // [{id, item}]
+let _topics          = [];   // [{id, item, eval_criteria_id, points, description}]
 let _obsTypeMap      = {};   // {G: uuid, O: uuid, A: uuid, E: uuid}
 let _evalCriteria    = [];   // [{id, name}]
 let _analyticalTypes = [];   // [{id, name}]
 let _errorTypes      = [];   // [{id, name, critical}]
 let _employees       = [];   // [{id, name}]
-let _refDataLoaded   = false;
+
+/* Built from DB data after first fetch */
+let _EVAL_CATEGORIES    = [];  // [{id, name, items:[{id,name,pts,description}], totalPts}]
+let _ANALYTICAL_CRITERIA = []; // [{id, name}]
+let _TOTAL_MAX_PTS      = 0;
 
 /* ── Draft (localStorage) ─────────────────── */
 const DRAFT_KEY = 'nova-monitoria-draft';
@@ -196,7 +201,7 @@ function validateRequiredFields() {
     return false;
   }
 
-  for (const c of ANALYTICAL_CRITERIA) {
+  for (const c of _ANALYTICAL_CRITERIA) {
     const checked = document.getElementById(`an-${c.id}`)?.checked;
     if (!checked) {
       const just = document.getElementById(`an-just-${c.id}`)?.value.trim();
@@ -258,26 +263,26 @@ async function persistMonitoring({ isZeroed = false, resetData = null } = {}) {
   }
   const scId = firstScId;
 
-  /* 3 — topic_approval (batch) */
-  const approvals = EVAL_CATEGORIES.flatMap(cat =>
-    cat.items.map(item => {
-      const obtained = isZeroed ? false : (document.getElementById(`chk-${item.id}`)?.checked ?? false);
-      const dbTopic  = _topics.find(t => t.item === item.name);
-      return dbTopic ? { monitoring_id: monId, topic_id: dbTopic.id, obtained } : null;
-    }).filter(Boolean)
+  /* 3 — topic_approval (batch) — item.id is the DB topic UUID */
+  const approvals = _EVAL_CATEGORIES.flatMap(cat =>
+    cat.items.map(item => ({
+      monitoring_id: monId,
+      topic_id:      item.id,
+      obtained:      isZeroed ? false : (document.getElementById(`chk-${item.id}`)?.checked ?? false),
+    }))
   );
   if (approvals.length) {
     const { error } = await supabase.from('topic_approval').insert(approvals);
     if (error) throw error;
   }
 
-  /* 4 — analytical_note (batch) */
-  const notes = ANALYTICAL_CRITERIA.map(c => {
-    const obtained      = document.getElementById(`an-${c.id}`)?.checked ?? true;
-    const justification = document.getElementById(`an-just-${c.id}`)?.value.trim() || null;
-    const dbType        = _analyticalTypes.find(t => t.name === c.name);
-    return dbType ? { monitoring_id: monId, analytical_note_type_id: dbType.id, obtained, justification } : null;
-  }).filter(Boolean);
+  /* 4 — analytical_note (batch) — c.id is the DB analytical_note_type UUID */
+  const notes = _ANALYTICAL_CRITERIA.map(c => ({
+    monitoring_id:           monId,
+    analytical_note_type_id: c.id,
+    obtained:                document.getElementById(`an-${c.id}`)?.checked ?? true,
+    justification:           document.getElementById(`an-just-${c.id}`)?.value.trim() || null,
+  }));
   if (notes.length) {
     const { error } = await supabase.from('analytical_note').insert(notes);
     if (error) throw error;
@@ -334,13 +339,23 @@ async function persistMonitoring({ isZeroed = false, resetData = null } = {}) {
 const MONTH_NAMES = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
 
 export function render() {
+  if (!_EVAL_CATEGORIES.length) {
+    return `
+      <div class="page-enter"
+           style="display:flex;align-items:center;justify-content:center;height:300px;
+                  gap:12px;color:var(--text-secondary)">
+        <div class="boot-spinner" style="width:20px;height:20px;border-width:2px"></div>
+        Carregando formulário…
+      </div>`;
+  }
+
   const { weekNumber, referenceMonth } = computeMonitoringWeek(new Date());
   const refDate   = new Date(`${referenceMonth}T12:00:00`);
   const weekLabel = `Sem. ${weekNumber} · ${MONTH_NAMES[refDate.getMonth()]}`;
 
-  const categorySections = EVAL_CATEGORIES.map(cat => renderCategory(cat)).join('');
+  const categorySections = _EVAL_CATEGORIES.map(cat => renderCategory(cat)).join('');
 
-  const analyticalRows = ANALYTICAL_CRITERIA.map(c => `
+  const analyticalRows = _ANALYTICAL_CRITERIA.map(c => `
     <div class="analytical-item">
       <div class="analytical-item__name">${c.name}</div>
       <div class="analytical-item__check-wrap">
@@ -356,7 +371,6 @@ export function render() {
       <div class="monitoring-header">
         <div class="monitoring-header__title-wrap">
           <div class="monitoring-header__title">Monitoria de Qualidade</div>
-          <div class="monitoring-header__subtitle">Registro de atendimento</div>
         </div>
       </div>
 
@@ -478,7 +492,7 @@ export function render() {
               <div class="score-summary__title">Pontuação Total</div>
               <div style="display:flex;align-items:baseline;gap:8px">
                 <div class="score-summary__value" id="score-total">0</div>
-                <div class="score-summary__max">/ ${TOTAL_MAX_PTS}</div>
+                <div class="score-summary__max">/ ${_TOTAL_MAX_PTS}</div>
               </div>
             </div>
             <div style="flex:1;margin:0 var(--space-5)">
@@ -674,8 +688,9 @@ function renderCategory(cat) {
 
 /* ── Score recalculation ───────────────────── */
 function recalcScores() {
+  if (!_EVAL_CATEGORIES.length) return;
   let total = 0;
-  EVAL_CATEGORIES.forEach(cat => {
+  _EVAL_CATEGORIES.forEach(cat => {
     let earned = 0;
     cat.items.forEach(item => {
       const chk = document.getElementById(`chk-${item.id}`);
@@ -696,7 +711,7 @@ function recalcScores() {
   });
 
   _totalEarned = total;
-  const pct  = Math.round((total / TOTAL_MAX_PTS) * 100);
+  const pct  = _TOTAL_MAX_PTS ? Math.round((total / _TOTAL_MAX_PTS) * 100) : 0;
   const band = resultBand(pct);
 
   const bar     = document.getElementById('total-progress-bar');
@@ -809,36 +824,47 @@ export async function init() {
   _serviceChats = _draft?.serviceChats ?? [];
   _observations = _draft?.observations ?? [];
 
+  /* ── Fetch ref data on every visit — guarantees active topics/criteria are current ── */
+  const [empRes, topicRes, obsTypeRes, evalCrRes, analTypeRes, errTypeRes] = await Promise.all([
+    supabase.from('employees').select('id, name').eq('active', true).order('name'),
+    supabase.from('topic').select('id, item, eval_criteria_id, points, description').eq('active', true),
+    supabase.from('observation_type').select('id, code').eq('active', true),
+    supabase.from('eval_criteria').select('id, name').eq('active', true).order('name'),
+    supabase.from('analytical_note_type').select('id, name').eq('active', true),
+    supabase.from('error_type').select('id, name, critical').eq('active', true).order('name'),
+  ]);
+
+  _employees       = empRes.data        ?? [];
+  _topics          = topicRes.data      ?? [];
+  _evalCriteria    = evalCrRes.data     ?? [];
+  _analyticalTypes = analTypeRes.data   ?? [];
+  _errorTypes      = errTypeRes.data    ?? [];
+
+  const codeToKey = { default: 'G', improvable_by: 'O', excelled_by: 'A', failed_by: 'E' };
+  _obsTypeMap = {};
+  for (const row of (obsTypeRes.data ?? [])) {
+    const key = codeToKey[row.code];
+    if (key) _obsTypeMap[key] = row.id;
+  }
+
+  _EVAL_CATEGORIES = _evalCriteria.map(ec => {
+    const items = _topics
+      .filter(t => t.eval_criteria_id === ec.id)
+      .map(t => ({ id: t.id, name: t.item, pts: t.points ?? 0, description: t.description ?? '' }));
+    return { id: ec.id, name: ec.name, items, totalPts: items.reduce((s, i) => s + i.pts, 0) };
+  });
+  _TOTAL_MAX_PTS       = _EVAL_CATEGORIES.reduce((s, c) => s + c.totalPts, 0);
+  _ANALYTICAL_CRITERIA = _analyticalTypes.map(t => ({ id: t.id, name: t.name }));
+
+  /* Re-render now that fresh data is available */
+  const main = document.getElementById('main-content');
+  if (main) main.innerHTML = render();
+
+  /* ── Restore transient state into the (now fully populated) DOM ── */
   recalcScores();
   renderObsChat();
   renderServiceChatList();
-
-  /* ── Fetch dados de referência apenas na primeira visita ── */
-  if (!_refDataLoaded) {
-    const [empRes, topicRes, obsTypeRes, evalCrRes, analTypeRes, errTypeRes] = await Promise.all([
-      supabase.from('employees').select('id, name').eq('active', true).order('name'),
-      supabase.from('topic').select('id, item, eval_criteria_id').eq('active', true),
-      supabase.from('observation_type').select('id, code').eq('active', true),
-      supabase.from('eval_criteria').select('id, name').eq('active', true).order('name'),
-      supabase.from('analytical_note_type').select('id, name').eq('active', true),
-      supabase.from('error_type').select('id, name, critical').eq('active', true).order('name'),
-    ]);
-
-    _employees       = empRes.data        ?? [];
-    _topics          = topicRes.data      ?? [];
-    _evalCriteria    = evalCrRes.data     ?? [];
-    _analyticalTypes = analTypeRes.data   ?? [];
-    _errorTypes      = errTypeRes.data    ?? [];
-
-    const codeToKey = { default: 'G', improvable_by: 'O', excelled_by: 'A', failed_by: 'E' };
-    _obsTypeMap = {};
-    for (const row of (obsTypeRes.data ?? [])) {
-      const key = codeToKey[row.code];
-      if (key) _obsTypeMap[key] = row.id;
-    }
-
-    _refDataLoaded = true;
-  }
+  restoreDraftCheckboxes(_draft);
 
   /* ── Populate selects ───────────────────── */
   const collabSel = document.getElementById('collab-select');
@@ -1008,9 +1034,9 @@ export async function init() {
     try {
       await persistMonitoring();
       clearDraft();
-      const pct = Math.round(_totalEarned / TOTAL_MAX_PTS * 100);
+      const pct = _TOTAL_MAX_PTS ? Math.round(_totalEarned / _TOTAL_MAX_PTS * 100) : 0;
       toast.success('Monitoria salva!',
-        `${_totalEarned}/${TOTAL_MAX_PTS} pts (${pct}%) · ${_observations.length} obs.`);
+        `${_totalEarned}/${_TOTAL_MAX_PTS} pts (${pct}%) · ${_observations.length} obs.`);
       setTimeout(() => navigate('consulta'), 1200);
     } catch (err) {
       console.error('[save-monitoring]', err);
@@ -1099,7 +1125,7 @@ export async function init() {
   });
 
   /* ── Analytical justifications — auto-resize + salvar ── */
-  ANALYTICAL_CRITERIA.forEach(c => {
+  _ANALYTICAL_CRITERIA.forEach(c => {
     const el = document.getElementById(`an-just-${c.id}`);
     if (!el) return;
     el.addEventListener('input', () => { autoResize(el); saveDraft(); });

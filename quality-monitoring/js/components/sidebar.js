@@ -118,11 +118,11 @@ function buildNav(user, item, sep) {
   const analiseItems = [
     can(user, P.SIDEBAR_DASHBOARD)   && item('dashboard',  'Dashboard',  'dashboard'),
     can(user, P.SIDEBAR_COMPARATIVE) && item('comparacao', 'Comparativo', 'comparacao'),
-    can(user, P.SIDEBAR_GOALS)       && item('metas',      'Metas',      'metas'),
     can(user, P.SIDEBAR_AI)          && item('ai-analise', 'Análise IA', 'ai-analise'),
   ].filter(Boolean).join('');
 
   const operacoesItems = [
+    can(user, P.SIDEBAR_GOALS)     && item('metas',   'Ações de Melhoria',      'metas'),
     can(user, P.SHIFTS_ACCESS)     && item('escalas', 'Escalas de Trabalho', 'escalas'),
   ].filter(Boolean).join('');
 

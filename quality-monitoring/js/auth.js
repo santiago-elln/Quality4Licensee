@@ -37,7 +37,8 @@ async function buildUser(authUser) {
     supabase
       .from('teams')
       .select('id')
-      .eq('supervisor_id', authUser.id),
+      .eq('supervisor_id', authUser.id)
+      .eq('active', true),
     // employees.id = auth.users.id for user-linked employee records
     supabase
       .from('employees')

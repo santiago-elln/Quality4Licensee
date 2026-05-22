@@ -69,7 +69,7 @@ async function fetchRefData() {
 
   const [empRes, teamsRes, topicRes, ecRes] = await Promise.all([
     empQuery,
-    supabase.from('teams').select('id, name').order('name'),
+    supabase.from('teams').select('id, name').eq('active', true).order('name'),
     supabase.from('topic').select('id, eval_criteria_id, points, item').eq('active', true),
     supabase.from('eval_criteria').select('id, name').eq('active', true),
   ]);
