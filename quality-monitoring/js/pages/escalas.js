@@ -199,8 +199,10 @@ let _employees    = []
 let _shifts       = {}
 let _origShifts   = {}
 const _dirty      = new Set()
-let _drag         = null
-let _abortCtrl    = null
+let _drag              = null
+let _abortCtrl         = null
+let _pendingSingleSave  = null  // eid awaiting confirmation via the row ✓ button
+let _defaultShiftCache = {}    // { [employee_id]: parsed shift } — survives date changes
 
 // ─── render ───────────────────────────────────────────────────────────────────
 export function render() {
@@ -259,6 +261,10 @@ export function render() {
               Deseja salvar as alterações feitas nas escalas?<br>
               Esta ação irá atualizar os dados no banco de dados.
             </p>
+            <label class="check-item" style="margin-top:var(--space-3)">
+              <input type="checkbox" id="esc-set-default" value="1" checked/>
+              <span class="form-label" style="font-weight:var(--weight-normal)">Definir como horário padrão?</span>
+            </label>
           </div>
           <div class="modal__footer">
             <button id="esc-modal-cancel" class="btn btn--ghost">Cancelar</button>
@@ -310,8 +316,11 @@ export async function init() {
 
   $e('esc-discard-btn')?.addEventListener('click', discardChanges, { signal: sig })
   $e('esc-save-btn')?.addEventListener('click', openConfirmModal, { signal: sig })
-  $e('esc-modal-cancel')?.addEventListener('click', closeConfirmModal, { signal: sig })
-  $e('esc-modal-confirm')?.addEventListener('click', saveChanges, { signal: sig })
+  $e('esc-modal-cancel')?.addEventListener('click', () => {
+    _pendingSingleSave = null
+    closeConfirmModal()
+  }, { signal: sig })
+  $e('esc-modal-confirm')?.addEventListener('click', confirmSave, { signal: sig })
 
   document.addEventListener('mousedown',  onDown, { signal: sig })
   document.addEventListener('mousemove',  onMove, { signal: sig })
@@ -321,7 +330,7 @@ export async function init() {
   document.addEventListener('touchend',   onUp,   { signal: sig })
   document.addEventListener('click', e => {
     const eid = e.target.closest('[data-eid]')?.dataset.eid; if (!eid) return
-    if (e.target.closest('.esc-row-save'))    saveOneEmployee(eid)
+    if (e.target.closest('.esc-row-save'))    { _pendingSingleSave = eid; openConfirmModal() }
     if (e.target.closest('.esc-row-discard')) discardOneEmployee(eid)
   }, { signal: sig })
 
@@ -335,19 +344,18 @@ export async function init() {
 async function loadData() {
   _shifts = {}; _origShifts = {}
 
-  const SHIFT_COLS = 'id, start_time, end_time, break_start, break_duration_minutes, updated_by, updated_at'
-  const EMP_COLS   = `id, name, team_id, sector_id, sector_group_id, sector_groups(id, name), shifts(${SHIFT_COLS})`
+  const EMP_COLS   = `id, name, team_id, sector_id, sector_group_id, sector_groups(id, name)`
+  const SHIFT_COLS = 'id, employee_id, start_time, end_time, break_start, break_duration_minutes, is_default, updated_by, updated_at'
 
-  let query = supabase.from('employees').select(EMP_COLS).eq('active', true)
-    .eq('shifts.date', _selectedDate).order('name')
+  let empQuery = supabase.from('employees').select(EMP_COLS).eq('active', true).order('name')
 
   if (can(_user, P.GLOBAL_VIEW_DEPT)) {
     if (!_user.departmentId) { showStatus('Departamento não configurado para este usuário.', true); return }
-    query = query.eq('department_id', _user.departmentId)
+    empQuery = empQuery.eq('department_id', _user.departmentId)
   }
-  // Non-global: RLS (shifts_filter_by = 'group') scopes the result automatically
+  // Non-global: RLS scopes the result automatically
 
-  const { data: rows, error } = await query
+  const { data: rows, error } = await empQuery
   if (error) { showStatus('Erro ao carregar colaboradores.', true); return }
 
   /* Collect unique sector_groups from the result, preserving order */
@@ -356,15 +364,50 @@ async function loadData() {
     .filter(r => r.sector_group_id && !seen.has(r.sector_group_id) && seen.add(r.sector_group_id))
     .map(r => ({ id: r.sector_group_id, name: r.sector_groups?.name ?? '—' }))
 
-  _employees = (rows ?? []).map(({ shifts: _, sector_groups: __, ...emp }) => emp)
-  for (const row of (rows ?? [])) {
-    const s = row.shifts?.[0]
-    if (!s) continue
-    const parsed = { ...s, employee_id: row.id, date: _selectedDate,
-      start_min: timeToMin(s.start_time), end_min: timeToMin(s.end_time),
-      break_start_min: timeToMin(s.break_start) }
-    _shifts[row.id] = parsed
-    _origShifts[row.id] = { ...parsed }
+  _employees = (rows ?? []).map(({ sector_groups: _, ...emp }) => emp)
+
+  const empIds = _employees.map(e => e.id)
+  if (!empIds.length) { _dirty.clear(); hideSaveBar(); updateStats(); return }
+
+  /* Phase 1: date-specific shifts for the selected date */
+  const { data: dateShifts } = await supabase
+    .from('shifts').select(SHIFT_COLS)
+    .in('employee_id', empIds)
+    .eq('date', _selectedDate)
+    .eq('is_default', false)
+
+  /* Phase 2: default shifts for employees without a date-specific one (cache-first) */
+  const hasDateShift  = new Set((dateShifts ?? []).map(s => s.employee_id))
+  const missingIds    = empIds.filter(id => !hasDateShift.has(id))
+  const uncachedIds   = missingIds.filter(id => !_defaultShiftCache[id])
+  if (uncachedIds.length) {
+    const { data: fetched } = await supabase
+      .from('shifts').select(SHIFT_COLS).in('employee_id', uncachedIds).eq('is_default', true)
+    for (const s of (fetched ?? []))
+      _defaultShiftCache[s.employee_id] = s
+  }
+  const defaultShifts = missingIds.map(id => _defaultShiftCache[id]).filter(Boolean)
+
+  /* Merge: date-specific takes priority, default is fallback */
+  const parseShift = (s, fromDefault) => ({
+    ...s,
+    start_min:       timeToMin(s.start_time),
+    end_min:         timeToMin(s.end_time),
+    break_start_min: timeToMin(s.break_start),
+    is_from_default: fromDefault,
+    date_shift_id:   fromDefault ? null : s.id,
+    default_shift_id: fromDefault ? s.id : null,
+  })
+
+  for (const s of (dateShifts ?? [])) {
+    const parsed = parseShift(s, false)
+    _shifts[s.employee_id]     = parsed
+    _origShifts[s.employee_id] = { ...parsed }
+  }
+  for (const s of (defaultShifts ?? [])) {
+    const parsed = parseShift(s, true)
+    _shifts[s.employee_id]     = parsed
+    _origShifts[s.employee_id] = { ...parsed }
   }
 
   _dirty.clear(); hideSaveBar(); updateStats()
@@ -910,6 +953,16 @@ function setViewMode(m) {
 }
 
 // ─── Save flow ────────────────────────────────────────────────────────────────
+function confirmSave() {
+  if (_pendingSingleSave) {
+    const eid = _pendingSingleSave
+    _pendingSingleSave = null
+    saveOneEmployee(eid)
+  } else {
+    saveChanges()
+  }
+}
+
 function showSaveBar(){$e('esc-save-bar')?.classList.remove('esc-save-hidden')}
 function hideSaveBar() {$e('esc-save-bar')?.classList.add('esc-save-hidden')}
 function openConfirmModal() {$e('esc-confirm-modal')?.classList.remove('modal-overlay--hidden')}
@@ -922,14 +975,47 @@ function markRowClean(eid){
 }
 
 async function saveOneEmployee(eid) {
-  const s=_shifts[eid]; if(!s) return
-  const{error}=await supabase.from('shifts').update({
-    start_time: minToTime(s.start_min)+':00', end_time:minToTime(s.end_min)+':00',
-    break_start:minToTime(s.break_start_min)+':00', updated_by:_user.id, updated_at:new Date().toISOString()
-  }).eq('id',s.id)
-  if(error){toast.error('Erro ao salvar',error.message);return}
-  _origShifts[eid]={...s}; _dirty.delete(eid); markRowClean(eid)
-  if(_dirty.size===0) hideSaveBar(); toast.success('Escala salva!')
+  const s = _shifts[eid]; if (!s) return
+  closeConfirmModal()
+  const setAsDefault = $e('esc-set-default')?.checked ?? false
+  const payload = {
+    start_time:  minToTime(s.start_min)+':00',
+    end_time:    minToTime(s.end_min)+':00',
+    break_start: minToTime(s.break_start_min)+':00',
+    updated_by: _user.id, updated_at: new Date().toISOString(),
+  }
+  let error
+  if (setAsDefault) {
+    if (s.default_shift_id) {
+      ;({ error } = await supabase.from('shifts').update(payload).eq('id', s.default_shift_id))
+    } else {
+      const { data: inserted, error: err } = await supabase.from('shifts')
+        .insert({ ...payload, employee_id: eid, is_default: true, date: null,
+                  break_duration_minutes: s.break_duration_minutes })
+        .select('id').single()
+      error = err
+      if (!error && inserted)
+        _shifts[eid] = { ..._shifts[eid], default_shift_id: inserted.id }
+    }
+    if (!error) delete _defaultShiftCache[eid]  // invalidate so next load re-fetches
+  } else {
+    if (s.date_shift_id) {
+      ;({ error } = await supabase.from('shifts').update(payload).eq('id', s.date_shift_id))
+    } else {
+      const { data: inserted, error: err } = await supabase.from('shifts')
+        .insert({ ...payload, employee_id: eid, date: _selectedDate, is_default: false,
+                  break_duration_minutes: s.break_duration_minutes })
+        .select('id').single()
+      error = err
+      if (!error && inserted)
+        _shifts[eid] = { ..._shifts[eid], date_shift_id: inserted.id, is_from_default: false }
+    }
+  }
+  if (error) { toast.error('Erro ao salvar', error.message); return }
+  _origShifts[eid] = { ..._shifts[eid] }
+  _dirty.delete(eid); markRowClean(eid)
+  if (_dirty.size === 0) hideSaveBar()
+  toast.success('Escala salva!')
 }
 
 function discardOneEmployee(eid) {
@@ -943,22 +1029,43 @@ async function discardChanges(){_dirty.clear();hideSaveBar();await loadData();re
 
 async function saveChanges() {
   closeConfirmModal()
-  const btn=$e('esc-save-btn'); if(btn){btn.disabled=true;btn.textContent='Salvando…'}
-  try{
-    const results=await Promise.all([..._dirty].map(eid=>{
-      const s=_shifts[eid]
-      return supabase.from('shifts').update({
-        start_time: minToTime(s.start_min)+':00', end_time:minToTime(s.end_min)+':00',
-        break_start:minToTime(s.break_start_min)+':00', updated_by:_user.id, updated_at:new Date().toISOString()
-      }).eq('id',s.id)
+  const setAsDefault = $e('esc-set-default')?.checked ?? false
+  const btn = $e('esc-save-btn')
+  if (btn) { btn.disabled = true; btn.textContent = 'Salvando…' }
+  try {
+    const results = await Promise.all([..._dirty].map(eid => {
+      const s = _shifts[eid]
+      const payload = {
+        start_time:  minToTime(s.start_min)+':00',
+        end_time:    minToTime(s.end_min)+':00',
+        break_start: minToTime(s.break_start_min)+':00',
+        updated_by: _user.id, updated_at: new Date().toISOString(),
+      }
+      if (setAsDefault) {
+        /* Update or insert the employee's default shift */
+        return s.default_shift_id
+          ? supabase.from('shifts').update(payload).eq('id', s.default_shift_id)
+          : supabase.from('shifts').insert({ ...payload, employee_id: eid,
+              is_default: true, date: null, break_duration_minutes: s.break_duration_minutes })
+      } else {
+        /* Update or insert a date-specific shift for the selected date */
+        return s.date_shift_id
+          ? supabase.from('shifts').update(payload).eq('id', s.date_shift_id)
+          : supabase.from('shifts').insert({ ...payload, employee_id: eid,
+              is_default: false, date: _selectedDate, break_duration_minutes: s.break_duration_minutes })
+      }
     }))
-    const failed=results.filter(r=>r.error)
-    if(failed.length) throw new Error(failed[0].error.message)
-    _dirty.forEach(eid=>{_origShifts[eid]={..._shifts[eid]};markRowClean(eid)})
-    _dirty.clear(); hideSaveBar(); toast.success('Escalas salvas com sucesso!')
-  }catch(err){
-    toast.error('Erro ao salvar',err.message)
-    if(btn){btn.disabled=false;btn.textContent='Salvar Alterações'}
+    const failed = results.filter(r => r.error)
+    if (failed.length) throw new Error(failed[0].error.message)
+    /* Invalidate cache for any employees whose default was just written */
+    if (setAsDefault) for (const eid of _dirty) delete _defaultShiftCache[eid]
+    _dirty.clear(); hideSaveBar()
+    /* Reload to sync newly-inserted shift IDs */
+    await loadData(); renderGrid()
+    toast.success('Escalas salvas com sucesso!')
+  } catch (err) {
+    toast.error('Erro ao salvar', err.message)
+    if (btn) { btn.disabled = false; btn.textContent = 'Salvar Alterações' }
   }
 }
 

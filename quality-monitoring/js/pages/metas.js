@@ -1215,6 +1215,7 @@ function reloadPage() {
   if (!main) return;
   main.innerHTML = render();
   bindEvents();
+  if (_selectedId) refreshDetail();
 }
 
 /* ── Delete plan ──────────────────────────── */
@@ -1222,7 +1223,10 @@ async function deletePlan(planId) {
   const ok = confirm('Excluir este plano de ação? Esta ação não pode ser desfeita.');
   if (!ok) return;
 
-  const { error } = await supabase.from('action_plans').update({ active: false }).eq('id', planId);
+  const hardDelete = _currentUser?.accessLevel >= 4;
+  const { error } = hardDelete
+    ? await supabase.from('action_plans').delete().eq('id', planId)
+    : await supabase.from('action_plans').update({ active: false }).eq('id', planId);
   if (error) { toast.error('Erro ao excluir', error.message); return; }
 
   _selectedId         = null;
