@@ -9,6 +9,7 @@ export const ACCESS_LEVELS = {
   GESTOR:       5,
   COORDENADOR:  5,
   ADMIN:        6,
+  SYSOWNER:     9,
 };
 
 /* Configuração de visibilidade por métrica.
@@ -132,6 +133,7 @@ export function filterVisibleSubjects(viewer, allUsers) {
 }
 
 export function roleName(accessLevel) {
+  if (accessLevel >= 9) return 'SysOwner';
   if (accessLevel >= 6) return 'Admin';
   if (accessLevel >= 5) return 'Gestor / Coordenador';
   if (accessLevel >= 4) return 'Analista';
@@ -141,6 +143,7 @@ export function roleName(accessLevel) {
 
 export function roleClass(role) {
   const map = {
+    sysowner: 'sysowner',
     admin: 'admin',
     coordenador: 'coordenador',
     gestor: 'gestor',

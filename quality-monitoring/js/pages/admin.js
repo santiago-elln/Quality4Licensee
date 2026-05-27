@@ -224,17 +224,23 @@ function renderCatalogTab() {
 }
 
 function renderCatalogContent() {
-  const user    = getCurrentUser();
-  const canEdit = can(user, P.ADMIN_UPDATE_CRITERIA);
-  const cfg     = CATALOG[_catalogTab];
-  const allRows = _catalogData?.[_catalogTab] ?? [];
+  const user      = getCurrentUser();
+  const canEdit       = can(user, P.ADMIN_UPDATE_CRITERIA);
+  const isSysOwner    = can(user, P.CROSS_DEPT_VIEW);
+  const cfg       = CATALOG[_catalogTab];
+  const allRows   = _catalogData?.[_catalogTab] ?? [];
 
-  /* Department filter */
+  /* Department filter — sysowner uses _catalogDeptFilter; others are locked to own dept */
   let displayRows = allRows;
-  if (_catalogDeptFilter === 'global') {
-    displayRows = allRows.filter(r => !r.department_id);
-  } else if (_catalogDeptFilter) {
-    displayRows = allRows.filter(r => r.department_id === _catalogDeptFilter);
+  if (isSysOwner) {
+    if (_catalogDeptFilter === 'global') {
+      displayRows = allRows.filter(r => !r.department_id);
+    } else if (_catalogDeptFilter) {
+      displayRows = allRows.filter(r => r.department_id === _catalogDeptFilter);
+    }
+  } else {
+    const myDeptId = user?.departmentId ?? null;
+    displayRows = allRows.filter(r => !r.department_id || r.department_id === myDeptId);
   }
 
   /* Effective permissions: table config AND user permission */
@@ -258,7 +264,7 @@ function renderCatalogContent() {
     : `<div class="catalog-empty">Nenhum registro encontrado.</div>`;
 
   const depts = _catalogData?.departments ?? [];
-  const filterBar = `
+  const filterBar = isSysOwner ? `
     <div class="catalog-dept-filter">
       <span class="catalog-dept-filter__label">Departamento</span>
       <select class="form-select catalog-dept-filter__select" id="catalog-dept-filter">
@@ -266,7 +272,7 @@ function renderCatalogContent() {
         <option value="global" ${_catalogDeptFilter === 'global' ? 'selected' : ''}>Global</option>
         ${depts.map(d => `<option value="${d.id}" ${_catalogDeptFilter === d.id ? 'selected' : ''}>${d.name}</option>`).join('')}
       </select>
-    </div>`;
+    </div>` : '';
 
   return `
     ${filterBar}
@@ -326,12 +332,23 @@ function renderCatalogRow(cfg, row) {
 }
 
 /* ── Points helpers ───────────────────────── */
+function _deptMatchFn() {
+  const user       = getCurrentUser();
+  const isSysOwner = can(user, P.CROSS_DEPT_VIEW);
+  if (isSysOwner) {
+    if (_catalogDeptFilter === 'global') return item => !item.department_id;
+    if (_catalogDeptFilter)             return item => item.department_id === _catalogDeptFilter;
+    return () => true;
+  }
+  const myDeptId = user?.departmentId ?? null;
+  return item => !item.department_id || item.department_id === myDeptId;
+}
+
 function ecPointsMap() {
+  const match = _deptMatchFn();
   const map = {};
   for (const t of _catalogData?.topic ?? []) {
-    if (!t.active) continue;
-    if (_catalogDeptFilter === 'global' && t.department_id) continue;
-    if (_catalogDeptFilter && _catalogDeptFilter !== 'global' && t.department_id !== _catalogDeptFilter) continue;
+    if (!t.active || !match(t)) continue;
     map[t.eval_criteria_id] = (map[t.eval_criteria_id] ?? 0) + (t.points ?? 0);
   }
   return map;
@@ -409,9 +426,7 @@ function updatePageDonutSlot() {
     return;
   }
 
-  const deptMatch = item =>
-    !_catalogDeptFilter ||
-    (_catalogDeptFilter === 'global' ? !item.department_id : item.department_id === _catalogDeptFilter);
+  const deptMatch = _deptMatchFn();
 
   const totalPts = (_catalogData?.topic ?? [])
     .filter(t => t.active && deptMatch(t))
@@ -669,7 +684,7 @@ function bindModalEvents() {
 async function loadOrgTabData() {
   const user      = getCurrentUser();
   const deptId    = user.departmentId;
-  const isGlobal  = can(user, P.ADMIN_GLOBAL_VIEW);
+  const isGlobal  = can(user, P.ADMIN_GLOBAL_VIEW) && can(user, P.CROSS_DEPT_VIEW);
 
   /* supervisedTeamIds already resolved by buildUser() — no extra query needed */
   const supervisedTeamIds = isGlobal ? null : (user.supervisedTeamIds ?? []);
@@ -1382,6 +1397,32 @@ function bindTabEvents() {
       btn.closest('.org-team-block')?.classList.toggle('org-team-block--collapsed');
     });
   });
+
+  /* ── Org tab — drag-scroll ── */
+  let _dragScrollRaf = null;
+  function _dragScroll(e) {
+    const ZONE = 80, SPEED = 12;
+    const y = e.clientY;
+    const h = window.innerHeight;
+    cancelAnimationFrame(_dragScrollRaf);
+    if (y < ZONE) {
+      const force = (ZONE - y) / ZONE;
+      _dragScrollRaf = requestAnimationFrame(function tick() {
+        window.scrollBy(0, -Math.round(SPEED * force));
+        _dragScrollRaf = requestAnimationFrame(tick);
+      });
+    } else if (y > h - ZONE) {
+      const force = (y - (h - ZONE)) / ZONE;
+      _dragScrollRaf = requestAnimationFrame(function tick() {
+        window.scrollBy(0, Math.round(SPEED * force));
+        _dragScrollRaf = requestAnimationFrame(tick);
+      });
+    }
+  }
+  function _stopDragScroll() { cancelAnimationFrame(_dragScrollRaf); _dragScrollRaf = null; }
+  document.addEventListener('dragover',  _dragScroll);
+  document.addEventListener('dragend',   _stopDragScroll);
+  document.addEventListener('drop',      _stopDragScroll);
 
   /* ── Org tab — drag & drop transfers ── */
   document.querySelectorAll('.org-node--user[draggable="true"]').forEach(card => {

@@ -37,6 +37,7 @@ export const P = Object.freeze({
 
   /* Global */
   GLOBAL_VIEW_DEPT:      'Global.canViewDept',
+  CROSS_DEPT_VIEW:       'Global.canViewCrossDept',
 
   /* Sidebar — visibilidade de botões na navegação lateral */
   SIDEBAR_NEW_MONITORING: 'Sidebar.newMonitoring',
@@ -69,6 +70,7 @@ export const PERMISSION_LABELS = Object.freeze({
   [P.ADMIN_GLOBAL_VIEW]:       'Admin — Visualizar departamento inteiro',
   [P.ADMIN_SET_ACCESS_LEVEL]:  'Admin — Alterar Nível de Acesso',
   [P.GLOBAL_VIEW_DEPT]:       'Global — Ver todo o departamento',
+  [P.CROSS_DEPT_VIEW]:        'Global — Ver outros departamentos',
   [P.SIDEBAR_NEW_MONITORING]: 'Sidebar — Nova Monitoria',
   [P.SIDEBAR_CONSULT]:        'Sidebar — Consulta',
   [P.SIDEBAR_RECORDS]:        'Sidebar — Registros',
@@ -158,13 +160,14 @@ export const DEFAULT_PERMISSIONS_BY_LEVEL = Object.freeze({
     P.SIDEBAR_ADMIN,
   ],
 
-  // Nível 6 — ADMIN (acesso total)
-  6: [
+  // Nível 9 — SYSOWNER (acesso total)
+  9: [
     P.NEW_MONITORING_ACCESS,
     P.NEW_MONITORING_SAVE,
     P.CONSULT_ACCESS,
     P.CONSULT_ACTION_PLAN,
     P.GLOBAL_VIEW_DEPT,
+    P.CROSS_DEPT_VIEW,
     P.PROFILE_VIEW,
     P.PROFILE_VIEW_OBS,
     P.RECORD_ACCESS,
