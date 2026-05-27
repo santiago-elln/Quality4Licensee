@@ -1007,6 +1007,38 @@ function renderOrgTab(user) {
     </div>`;
 }
 
+/* ── Demotion pre-check ───────────────────────── */
+async function checkDemotionAllowed(profileId) {
+  const { data: supervisedTeams } = await supabase
+    .from('teams')
+    .select('id, name')
+    .eq('supervisor_id', profileId)
+    .eq('active', true);
+  if (!supervisedTeams?.length) return { allowed: true };
+
+  const teamIds = supervisedTeams.map(t => t.id);
+  const { data: sectors } = await supabase
+    .from('sectors')
+    .select('id, name')
+    .in('team_id', teamIds);
+  if (!sectors?.length) return { allowed: true };
+
+  const sectorIds = sectors.map(s => s.id);
+  const { data: activeEmps, count } = await supabase
+    .from('employees')
+    .select('id, sector_id', { count: 'exact' })
+    .in('sector_id', sectorIds)
+    .eq('active', true);
+  if (!count) return { allowed: true };
+
+  const firstBlockingSector = sectors.find(s => activeEmps.some(e => e.sector_id === s.id));
+  return {
+    allowed: false,
+    sectorName: firstBlockingSector?.name ?? '?',
+    employeeCount: count,
+  };
+}
+
 /* ── Level change application ─────────────────── */
 async function applyLevelChanges() {
   const changes = Object.entries(_pendingLevelChanges);
@@ -1020,36 +1052,62 @@ async function applyLevelChanges() {
       const { newLevel, originalLevel } = change;
 
       if (originalLevel === 2 && newLevel > 2) {
-        /* Upgrade: soft-delete employee row, elevate profile */
+        /* Promotion:
+           1. Deactivate employee row
+           2. Upsert profile with role scope fields
+           3. Create a new team if supervisor */
+        const { data: empRow } = await supabase
+          .from('employees').select('name, team_id, teams(sector_group_id, sector_groups(department_id))')
+          .eq('id', profileId).maybeSingle();
+        const sectorGroupId = empRow?.teams?.sector_group_id ?? null;
+        const departmentId  = empRow?.teams?.sector_groups?.department_id ?? null;
+        const empName       = empRow?.name ?? change.name;
+
         const { error: e1 } = await supabase.from('employees').update({ active: false }).eq('id', profileId);
         if (e1) throw e1;
-        const { error: e2 } = await supabase.from('profiles').update({ access_level: newLevel }).eq('id', profileId);
+
+        const { error: e2 } = await supabase.from('profiles').upsert({
+          id:              profileId,
+          name:            empName,
+          role:            roleClass(newLevel),
+          access_level:    newLevel,
+          filter_by:       newLevel === 3 ? 'supervisor' : 'department',
+          shifts_filter_by: newLevel === 3 ? 'group' : 'department',
+          sector_group_id: sectorGroupId,
+          department_id:   departmentId,
+        }, { onConflict: 'id' });
         if (e2) throw e2;
 
-      } else if (originalLevel > 2 && newLevel === 2) {
-        /* Demotion: set profile to level 2, reactivate or create employee */
-        const { error: e1 } = await supabase.from('profiles').update({ access_level: 2 }).eq('id', profileId);
+        if(newLevel === 3) {
+          const { error: e3 } = await supabase.from('teams').insert({
+            name:           empName,
+            supervisor_id:  profileId,
+            sector_group_id: sectorGroupId,
+            active:         true,
+          });
+          if (e3) throw e3;
+        }
+
+      } else if (newLevel === 2) {
+        /* Demotion to employee:
+           Pre-check (safety net in case check was bypassed), then hard delete
+           profile and reactivate the employee record. */
+        const check = await checkDemotionAllowed(profileId);
+        if (!check.allowed) {
+          throw new Error(`Não é possível rebaixar ${change.name}: Setor ${check.sectorName} tem ${check.employeeCount} colaborador(es) ativo(s).`);
+        }
+
+        const { error: e1 } = await supabase.from('profiles').delete().eq('id', profileId);
         if (e1) throw e1;
+
         const { data: existingEmp } = await supabase.from('employees').select('id').eq('id', profileId).maybeSingle();
         if (existingEmp) {
           const { error: e2 } = await supabase.from('employees').update({ active: true }).eq('id', profileId);
           if (e2) throw e2;
-        } else {
-          /* No prior employee record — create one using profile's sector */
-          const { data: profile } = await supabase.from('profiles').select('name, sector_id').eq('id', profileId).single();
-          if (profile?.sector_id) {
-            const { error: e3 } = await supabase.from('employees').insert({
-              id:        profileId,
-              name:      profile.name,
-              sector_id: profile.sector_id,
-              active:    true,
-            });
-            if (e3) throw e3;
-          }
         }
 
       } else {
-        /* Lateral level change (3+ → different 3+): update profile only */
+        /* Other lateral changes (e.g. 4→5): update level only */
         const { error: e1 } = await supabase.from('profiles').update({ access_level: newLevel }).eq('id', profileId);
         if (e1) throw e1;
       }
@@ -1175,16 +1233,42 @@ async function absorbUser() {
   const sectorId = document.getElementById('absorb-sector')?.value;
   if (!sectorId) { toast.warning('Atenção', 'Selecione um setor.'); return; }
 
-  const profile = _unclaimedProfiles.find(p => p.id === _absorbTarget);
-  if (!profile) return;
+  const authUser = _unclaimedProfiles.find(p => p.id === _absorbTarget);
+  if (!authUser) return;
 
   const btn = document.getElementById('absorb-confirm');
   if (btn) { btn.disabled = true; btn.textContent = 'Absorvendo…'; }
 
+  /* Resolve sector → sector_group → department for profile fields */
+  const { data: sectorRow } = await supabase
+    .from('sectors')
+    .select('id, sector_group_id, sector_groups(department_id)')
+    .eq('id', sectorId)
+    .single();
+  const sectorGroupId = sectorRow?.sector_group_id ?? null;
+  const departmentId  = sectorRow?.sector_groups?.department_id ?? null;
+
+  /* Upsert profile — auth users coming from the unlinked tab have no profile yet */
+  const { error: profError } = await supabase.from('profiles').upsert({
+    id:             authUser.id,
+    name:           authUser.name,
+    role:           'colaborador',
+    access_level:   2,
+    sector_id:      sectorId,
+    sector_group_id: sectorGroupId,
+    department_id:  departmentId,
+    filter_by:      'supervisor',
+  }, { onConflict: 'id' });
+  if (profError) {
+    toast.error('Erro ao criar perfil', profError.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Absorver'; }
+    return;
+  }
+
   const { error } = await supabase.from('employees').insert({
-    id:        profile.id,   // employees.id = profiles.id by convention (see auth.js)
-    name:      profile.name,
-    sector_id: sectorId,     // trigger auto-fills sector_group_id + department_id
+    id:        authUser.id,
+    name:      authUser.name,
+    sector_id: sectorId,
     active:    true,
   });
 
@@ -1198,7 +1282,7 @@ async function absorbUser() {
   const user = getCurrentUser();
   await supabase.from('shifts').insert({
     id:                      crypto.randomUUID(),
-    employee_id:             profile.id,
+    employee_id:             authUser.id,
     is_default:              true,
     date:                    null,
     validated:               false,
@@ -1206,12 +1290,12 @@ async function absorbUser() {
     end_time:                '18:00:00',
     break_start:             '13:00:00',
     break_duration_minutes:  60,
-    updated_by:              user?.id ?? profile.id,
+    updated_by:              user?.id ?? authUser.id,
     updated_at:              new Date().toISOString(),
   });
 
   closeAbsorbModal();
-  toast.success(`${profile.name} absorvido com sucesso`);
+  toast.success(`${authUser.name} absorvido com sucesso`);
   await loadUsersTabData();
   document.getElementById('admin-tab-content').innerHTML = renderTab('users', getCurrentUser());
   bindTabEvents();
@@ -1524,7 +1608,7 @@ function bindTabEvents() {
 
   /* ── Org tab — level steppers ── */
   document.querySelectorAll('.level-stepper__btn').forEach(btn => {
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', async () => {
       const stepper       = btn.closest('.level-stepper');
       const profileId     = stepper.dataset.profileId;
       const originalLevel = Number(stepper.dataset.originalLevel);
@@ -1541,6 +1625,17 @@ function bindTabEvents() {
         currentDisplayLevel++;
       } else {
         if (currentDisplayLevel <= 2) return;
+        if (currentDisplayLevel - 1 === 2) {
+          const check = await checkDemotionAllowed(profileId);
+          if (!check.allowed) {
+            toast.warn(
+              `Este usuário não pode ser rebaixado, pois é supervisor do Setor ${check.sectorName} ` +
+              `(${check.employeeCount} colaborador${check.employeeCount !== 1 ? 'es' : ''}). ` +
+              `Para continuar, realoque os colaboradores para outra equipe.`
+            );
+            return;
+          }
+        }
         currentDisplayLevel--;
       }
 

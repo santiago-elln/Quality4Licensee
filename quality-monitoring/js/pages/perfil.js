@@ -107,14 +107,28 @@ export function render() {
          <div class="empty-state__title">Sem observações</div>
        </div>`;
 
+  const currentUser = getCurrentUser();
+  const isSelf = currentUser?.employeeId === _employee.id || can(currentUser, P.CROSS_DEPT_VIEW);
+
   return `
     <div class="profile-page page-enter">
       <!-- Hero -->
       <div class="profile-hero">
         <div class="profile-hero__top">
-          <div class="profile-hero__avatar">${getInitials(_employee.name)}</div>
+          <div class="profile-hero__avatar" id="profile-avatar">${getInitials(_employee.name)}</div>
           <div class="profile-hero__info">
-            <div class="profile-hero__name">${_employee.name}</div>
+            <div class="profile-hero__name-row">
+              <div class="profile-hero__name" id="profile-name-display">${_employee.name}</div>
+              ${isSelf ? `
+                <input class="profile-hero__name-input hidden" id="profile-name-input"
+                       value="${_employee.name.replace(/"/g, '&quot;')}" maxlength="80" />
+                <button class="profile-hero__edit-btn" id="profile-name-edit" title="Editar nome" type="button">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                  </svg>
+                </button>` : ''}
+            </div>
             <div class="profile-hero__meta">${_supervisor?.name ?? '—'}</div>
             <div class="profile-hero__badges">
               ${lastDate ? `<span class="badge badge--neutral">Última monitoria: ${formatDate(lastDate)}</span>` : ''}
@@ -241,6 +255,52 @@ function reloadPage() {
   if (!main) return;
   main.innerHTML = render();
   initCharts();
+  bindNameEdit();
+}
+
+function bindNameEdit() {
+  const editBtn  = document.getElementById('profile-name-edit');
+  const display  = document.getElementById('profile-name-display');
+  const input    = document.getElementById('profile-name-input');
+  const avatar   = document.getElementById('profile-avatar');
+  if (!editBtn || !display || !input) return;
+
+  editBtn.addEventListener('click', () => {
+    display.classList.add('hidden');
+    editBtn.classList.add('hidden');
+    input.classList.remove('hidden');
+    input.focus();
+    input.select();
+  });
+
+  async function commitEdit() {
+    const newName = input.value.trim();
+    if (!newName || newName === _employee.name) {
+      input.value = _employee.name;
+      input.classList.add('hidden');
+      display.classList.remove('hidden');
+      editBtn.classList.remove('hidden');
+      return;
+    }
+    const { error } = await supabase
+      .from('employees').update({ name: newName }).eq('id', _employee.id);
+    if (error) {
+      input.value = _employee.name;
+    } else {
+      _employee = { ..._employee, name: newName };
+      display.textContent = newName;
+      if (avatar) avatar.textContent = getInitials(newName);
+    }
+    input.classList.add('hidden');
+    display.classList.remove('hidden');
+    editBtn.classList.remove('hidden');
+  }
+
+  input.addEventListener('blur', commitEdit);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    if (e.key === 'Escape') { input.value = _employee.name; input.blur(); }
+  });
 }
 
 /* ── init ─────────────────────────────────── */
