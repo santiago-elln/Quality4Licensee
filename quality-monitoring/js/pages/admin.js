@@ -689,19 +689,37 @@ async function loadOrgTabData() {
   /* supervisedTeamIds already resolved by buildUser() — no extra query needed */
   const supervisedTeamIds = isGlobal ? null : (user.supervisedTeamIds ?? []);
 
-  /* teams.supervisor_id has no FK to profiles — omit nested profile join */
-  let empQuery = supabase
-    .from('employees')
-    .select('id, name, team_id, teams(id, name, supervisor_id)')
-    .eq('department_id', deptId)
-    .eq('active', true);
-
-  if (!isGlobal) {
-    /* Show only employees on supervised teams; empty list if supervising none */
-    empQuery = supervisedTeamIds.length
-      ? empQuery.in('team_id', supervisedTeamIds)
-      : empQuery.in('team_id', ['00000000-0000-0000-0000-000000000000']); // no results
+  /* ── Step 1: resolve teams
+     teams have no direct department_id — they link via sector_group_id → sector_groups.
+     Global: resolve sector_groups for the dept first, then fetch their teams.
+     Non-global: fetch supervised teams directly by ID. */
+  let allTeams = [];
+  if (isGlobal && deptId) {
+    const { data: sgs } = await supabase
+      .from('sector_groups').select('id').eq('department_id', deptId);
+    const sgIds = (sgs ?? []).map(sg => sg.id);
+    if (sgIds.length) {
+      const { data: tRows } = await supabase
+        .from('teams').select('id, name, supervisor_id')
+        .in('sector_group_id', sgIds).eq('active', true).order('name');
+      allTeams = tRows ?? [];
+    }
+  } else if (!isGlobal && supervisedTeamIds.length) {
+    const { data: tRows } = await supabase
+      .from('teams').select('id, name, supervisor_id')
+      .in('id', supervisedTeamIds).eq('active', true).order('name');
+    allTeams = tRows ?? [];
   }
+
+  /* ── Step 2: fetch employees and managers in parallel */
+  const visibleTeamIds = allTeams.map(t => t.id);
+
+  let empQuery = supabase
+    .from('employees').select('id, name, team_id')
+    .eq('active', true);
+  empQuery = visibleTeamIds.length
+    ? empQuery.in('team_id', visibleTeamIds)
+    : empQuery.in('team_id', ['00000000-0000-0000-0000-000000000000']);
 
   const [deptRes, managersRes, employeesRes] = await Promise.all([
     deptId
@@ -713,21 +731,16 @@ async function loadOrgTabData() {
           .eq('department_id', deptId)
           .gte('access_level', 3)
           .order('access_level', { ascending: false })
-      : { data: [] },   // non-global users don't see the managers strip
+      : { data: [] },
     empQuery,
   ]);
 
-  /* Build supervisor profile map.
-     Global users: managersRes already contains all profiles with access_level ≥ 3,
-     which is a superset of every team supervisor — no extra fetch needed.
-     Non-global users: fetch only the profiles for supervisors visible in their teams. */
+  /* ── Step 3: build supervisor profile map from team supervisor_ids */
   const supProfileMap = {};
   if (isGlobal) {
     for (const p of (managersRes.data ?? [])) supProfileMap[p.id] = p;
   } else {
-    const supervisorIds = [...new Set(
-      (employeesRes.data ?? []).map(e => e.teams?.supervisor_id).filter(Boolean)
-    )];
+    const supervisorIds = [...new Set(allTeams.map(t => t.supervisor_id).filter(Boolean))];
     if (supervisorIds.length) {
       const { data: supProfiles } = await supabase
         .from('profiles').select('id, name, role, access_level').in('id', supervisorIds);
@@ -735,24 +748,23 @@ async function loadOrgTabData() {
     }
   }
 
-  /* Group employees by team */
+  /* ── Step 4: seed teamMap from all fetched teams (guarantees empty teams appear),
+     then slot employees in */
   const teamMap = {};
+  for (const t of allTeams) {
+    const supPro = t.supervisor_id ? (supProfileMap[t.supervisor_id] ?? null) : null;
+    teamMap[t.id] = {
+      id:              t.id,
+      name:            t.name,
+      supervisorId:    t.supervisor_id ?? null,
+      supervisorName:  supPro?.name         ?? '—',
+      supervisorRole:  supPro?.role         ?? '—',
+      supervisorLevel: supPro?.access_level ?? 3,
+      members:         [],
+    };
+  }
   for (const emp of (employeesRes.data ?? [])) {
-    if (!emp.team_id) continue;
-    if (!teamMap[emp.team_id]) {
-      const supId  = emp.teams?.supervisor_id ?? null;
-      const supPro = supId ? (supProfileMap[supId] ?? null) : null;
-      teamMap[emp.team_id] = {
-        id:              emp.team_id,
-        name:            emp.teams?.name ?? '—',
-        supervisorId:    supId,
-        supervisorName:  supPro?.name         ?? '—',
-        supervisorRole:  supPro?.role         ?? '—',
-        supervisorLevel: supPro?.access_level ?? 3,
-        members:         [],
-      };
-    }
-    teamMap[emp.team_id].members.push(emp);
+    if (emp.team_id && teamMap[emp.team_id]) teamMap[emp.team_id].members.push(emp);
   }
 
   const teams    = Object.values(teamMap).sort((a, b) => a.name.localeCompare(b.name));
@@ -1062,12 +1074,14 @@ function renderUsersTab() {
           <td>
             <div style="display:flex;align-items:center;gap:var(--space-3)">
               <div class="user-list-item__avatar">${getInitials(p.name)}</div>
-              <span style="font-weight:var(--weight-medium)">${p.name}</span>
+              <div>
+                <div style="font-weight:var(--weight-medium)">${p.name}</div>
+                <div style="font-size:var(--text-xs);color:var(--text-secondary)">${p.email}</div>
+              </div>
             </div>
           </td>
-          <td>${p.role ?? '—'}</td>
-          <td>
-            <span class="role-badge role-badge--${roleClass(p.role)}">${ACCESS_LEVELS[p.access_level] ?? `Nível ${p.access_level}`}</span>
+          <td style="font-size:var(--text-xs);color:var(--text-secondary)">
+            ${new Date(p.created_at).toLocaleDateString('pt-BR')}
           </td>
           <td style="text-align:right">
             <button class="btn btn--primary btn--sm btn-absorb"
@@ -1077,7 +1091,7 @@ function renderUsersTab() {
           </td>
         </tr>`)
       .join('')
-    : `<tr><td colspan="4">
+    : `<tr><td colspan="3">
          <div class="empty-state" style="padding:var(--space-6)">
            <div class="empty-state__title">Todos os usuários já possuem vínculo</div>
          </div>
@@ -1096,9 +1110,8 @@ function renderUsersTab() {
       <table class="admin-table" style="width:100%; padding:10px">
         <thead>
           <tr>
-            <th>Nome</th>
-            <th>Cargo</th>
-            <th>Nível</th>
+            <th>Usuário</th>
+            <th>Cadastro</th>
             <th></th>
           </tr>
         </thead>
@@ -1137,15 +1150,11 @@ function renderUsersTab() {
 
 /* ── Users tab data ───────────────────────── */
 async function loadUsersTabData() {
-  const [profilesRes, empRes, sectorsRes] = await Promise.all([
-    /* Only collaborators (level 2) can be absorbed as employees */
-    supabase.from('profiles').select('id, name, role, access_level')
-      .eq('access_level', 2).order('name'),
-    supabase.from('employees').select('id'),
+  const [usersRes, sectorsRes] = await Promise.all([
+    supabase.rpc('get_unlinked_auth_users'),
     supabase.from('sectors').select('id, name').eq('active', true).order('name'),
   ]);
-  const claimedIds = new Set((empRes.data ?? []).map(e => e.id));
-  _unclaimedProfiles = (profilesRes.data ?? []).filter(p => !claimedIds.has(p.id));
+  _unclaimedProfiles = usersRes.data ?? [];
   _adminSectors      = sectorsRes.data ?? [];
 }
 

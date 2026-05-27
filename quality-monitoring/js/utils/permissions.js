@@ -91,6 +91,7 @@ export const DEFAULT_PERMISSIONS_BY_LEVEL = Object.freeze({
     P.PROFILE_VIEW,
     P.SHIFTS_ACCESS,
     P.SIDEBAR_PROFILE,
+    P.SIDEBAR_GOALS,
   ],
 
   // Nível 3 — Supervisor
