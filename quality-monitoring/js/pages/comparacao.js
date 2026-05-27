@@ -2,6 +2,11 @@
    COMPARAÇÃO — Comparativo de períodos entre departamentos
    ============================================================ */
 import { getDailyStats, getDailyHeatmapStats, QUEUE_HOURS } from '../data/mock.js';
+import { CalPicker, calTriggerHtml } from '../components/cal-picker.js';
+
+/* ── Date picker state ───────────────────────── */
+let _currFrom = '', _currTo = '', _pastFrom = '', _pastTo = '';
+let _currPicker = null, _pastPicker = null;
 
 /* ── Department / metric configuration ──────── */
 const DEPARTMENTS = [
@@ -266,10 +271,10 @@ function buildInfoHtml(dept, currFrom, currTo, pastFrom, pastTo, nCurr, nPast) {
 /* ── Run comparison ──────────────────────────── */
 function run() {
   const deptId   = document.getElementById('comp-dept')?.value ?? 'exec';
-  const currFrom = document.getElementById('comp-curr-from')?.value;
-  const currTo   = document.getElementById('comp-curr-to')?.value;
-  const pastFrom = document.getElementById('comp-past-from')?.value;
-  const pastTo   = document.getElementById('comp-past-to')?.value;
+  const currFrom = _currFrom;
+  const currTo   = _currTo;
+  const pastFrom = _pastFrom;
+  const pastTo   = _pastTo;
   if (!currFrom || !currTo || !pastFrom || !pastTo) return;
   if (currFrom > currTo || pastFrom > pastTo)       return;
 
@@ -299,7 +304,10 @@ function run() {
 
 /* ── Render & Init ───────────────────────────── */
 export function render() {
-  const { currFrom, currTo, pastFrom, pastTo } = getDefaults();
+  const currFrom = _currFrom;
+  const currTo   = _currTo;
+  const pastFrom = _pastFrom;
+  const pastTo   = _pastTo;
   const deptOpts = DEPARTMENTS.map(d => `<option value="${d.id}">${d.label}</option>`).join('');
 
   return `
@@ -319,19 +327,11 @@ export function render() {
           </div>
           <div class="comp-ctrl-group">
             <label class="comp-ctrl-label">Período Atual</label>
-            <div class="comp-date-range">
-              <input type="date" class="comp-ctrl-date" id="comp-curr-from" value="${currFrom}">
-              <span class="comp-date-sep">→</span>
-              <input type="date" class="comp-ctrl-date" id="comp-curr-to" value="${currTo}">
-            </div>
+            ${calTriggerHtml('comp-curr-trigger', currFrom, currTo)}
           </div>
           <div class="comp-ctrl-group">
             <label class="comp-ctrl-label">Período Base (comparação)</label>
-            <div class="comp-date-range">
-              <input type="date" class="comp-ctrl-date" id="comp-past-from" value="${pastFrom}">
-              <span class="comp-date-sep">→</span>
-              <input type="date" class="comp-ctrl-date" id="comp-past-to" value="${pastTo}">
-            </div>
+            ${calTriggerHtml('comp-past-trigger', pastFrom, pastTo)}
           </div>
           <button class="comp-apply-btn" id="comp-apply">Comparar</button>
         </div>
@@ -352,8 +352,28 @@ export function render() {
 }
 
 export function init() {
+  _currFrom = ''; _currTo = '';
+  _pastFrom = ''; _pastTo = '';
+
+  _currPicker?.destroy();
+  _currPicker = new CalPicker({
+    triggerEl: document.getElementById('comp-curr-trigger'),
+    from: _currFrom,
+    to:   _currTo,
+    onApply: (from, to) => { _currFrom = from; _currTo = to; run(); },
+    onClear: ()         => { _currFrom = '';  _currTo = '';  run(); },
+  });
+
+  _pastPicker?.destroy();
+  _pastPicker = new CalPicker({
+    triggerEl: document.getElementById('comp-past-trigger'),
+    from: _pastFrom,
+    to:   _pastTo,
+    onApply: (from, to) => { _pastFrom = from; _pastTo = to; run(); },
+    onClear: ()         => { _pastFrom = '';  _pastTo = '';  run(); },
+  });
+
   document.getElementById('comp-apply')?.addEventListener('click', run);
-  // Re-run when department changes so heatmaps update immediately
   document.getElementById('comp-dept')?.addEventListener('change', run);
   run();
 }

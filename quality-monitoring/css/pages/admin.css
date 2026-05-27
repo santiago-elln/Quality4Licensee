@@ -303,7 +303,7 @@
 
 /* ── Catalog panel (inside catalog shell) ─── */
 .catalog-panel {
-  border-radius: 0 var(--radius-md) var(--radius-md);
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
   margin-top: 0;
   border-top: none;
 }
@@ -346,6 +346,44 @@
 
 /* ── Badge size inside catalog rows ──────── */
 .catalog-row .badge { font-size: 10px; }
+
+/* ── Department / global badge ────────────── */
+.catalog-badge--dept {
+  background: #dbeafe;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+.catalog-badge--global {
+  background: var(--bg-surface-3);
+  color: var(--text-tertiary);
+  border: 1px solid var(--border-light);
+}
+
+/* ── Department filter bar ─────────────────── */
+.catalog-dept-filter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-surface-2);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  border-bottom: none;
+}
+.catalog-dept-filter__label {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.catalog-dept-filter__select {
+  width: auto;
+  min-width: 180px;
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-3);
+}
 
 /* ── Inactive row ─────────────────────────── */
 .catalog-row--inactive { opacity: .55; }

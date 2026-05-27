@@ -8,6 +8,7 @@ import { can, P } from '../utils/permissions.js';
 import {
   formatDate, resultBand, scoreColor, scoreColorHex, getInitials,
 } from '../utils/formatters.js';
+import { CalPicker, calTriggerHtml } from '../components/cal-picker.js';
 
 const PAGE_SIZE = 20;
 
@@ -27,6 +28,7 @@ let _expandedId       = null;
 let _pendingDelete    = null;  // {id, number, empName}
 let _editableRefData  = null;  // { obsTypeMap, evalCriteria, errorTypes } — lazily loaded
 let _filters          = { collabId: '', supId: '', dateFrom: '', dateTo: '', band: '' };
+let _calPicker        = null;
 
 /* ── Row processor ────────────────────────── */
 function processRow(mon) {
@@ -167,11 +169,7 @@ export function render() {
               </div>
             </div>`}
           <select class="form-select" id="filter-collab" style="max-width:220px">${collabOpts}</select>
-          <div style="display:flex;gap:var(--space-2);align-items:center">
-            <input class="form-input" type="date" id="filter-from" value="${_filters.dateFrom}" style="width:150px">
-            <span style="color:var(--text-tertiary);font-size:var(--text-xs)">até</span>
-            <input class="form-input" type="date" id="filter-to"   value="${_filters.dateTo}"   style="width:150px">
-          </div>
+          ${calTriggerHtml('filter-date-trigger', _filters.dateFrom, _filters.dateTo)}
           <select class="form-select" id="filter-band" style="max-width:160px">
             <option value="">Todos os resultados</option>
             <option value="excellent">Excelente (≥95%)</option>
@@ -569,17 +567,25 @@ function bindFilters() {
     _page = 1;
     refreshTable();
   });
-  document.getElementById('filter-from')?.addEventListener('change', async e => {
-    _filters.dateFrom = e.target.value;
-    await fetchMonitorings();
-    _page = 1;
-    refreshTable();
-  });
-  document.getElementById('filter-to')?.addEventListener('change', async e => {
-    _filters.dateTo = e.target.value;
-    await fetchMonitorings();
-    _page = 1;
-    refreshTable();
+  _calPicker?.destroy();
+  _calPicker = new CalPicker({
+    triggerEl: document.getElementById('filter-date-trigger'),
+    from: _filters.dateFrom,
+    to:   _filters.dateTo,
+    onApply: async (from, to) => {
+      _filters.dateFrom = from;
+      _filters.dateTo   = to;
+      await fetchMonitorings();
+      _page = 1;
+      refreshTable();
+    },
+    onClear: async () => {
+      _filters.dateFrom = '';
+      _filters.dateTo   = '';
+      await fetchMonitorings();
+      _page = 1;
+      refreshTable();
+    },
   });
 
   /* Modal de exclusão — vinculado uma vez, persiste entre refreshes */
@@ -885,16 +891,9 @@ export async function init() {
   _expandedId  = null;
   _page        = 1;
 
-  _filters.supId = '';
-
-  if (!_filters.dateFrom) {
-    const now     = new Date();
-    const y       = now.getFullYear();
-    const m       = String(now.getMonth() + 1).padStart(2, '0');
-    const lastDay = new Date(y, now.getMonth() + 1, 0).getDate();
-    _filters.dateFrom = `${y}-${m}-01`;
-    _filters.dateTo   = `${y}-${m}-${lastDay}`;
-  }
+  _filters.supId    = '';
+  _filters.dateFrom = '';
+  _filters.dateTo   = '';
 
   const main = document.getElementById('main-content');
   if (main) main.innerHTML = render(); // mostra spinner imediatamente

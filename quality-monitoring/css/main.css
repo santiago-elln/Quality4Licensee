@@ -20,6 +20,7 @@
 @import './components/badges.css';
 @import './components/charts.css';
 @import './components/toast.css';
+@import './components/cal-picker.css';
 
 /* Pages */
 @import './pages/auth.css';

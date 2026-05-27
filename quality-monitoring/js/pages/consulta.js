@@ -19,7 +19,7 @@ let _employees          = [];
 let _evalCriteria       = [];
 let _topicMap           = {};
 let _monStats           = {};
-let _filters            = { supId: '', collabId: '', dateFrom: '', dateTo: '' };
+let _filters            = { supId: '', collabId: '' };
 let _employeeActionPlans = {};  // { empId: [plans] }
 let _dataLoaded         = false;
 let _fetchedGlobalScope = null;
@@ -192,16 +192,13 @@ async function fetchData() {
 }
 
 async function fetchMonitoringData() {
-  if (!_filters.dateFrom || !_filters.dateTo) return;
   const { data, error } = await supabase
     .from('monitoring')
     .select(`
       id, employee_id, date, zeroed,
       topic_approval(topic_id, obtained),
       service_chat(service_time, first_response_time, max_response_time, csat)
-    `)
-    .gte('date', _filters.dateFrom)
-    .lte('date', _filters.dateTo);
+    `);
   if (error) { console.error('[consulta] monitoring:', error); return; }
   _monStats = computeMonStats(data ?? []);
 }
@@ -238,15 +235,6 @@ async function fetchEmployeeActionPlans() {
 
 /* ── render() ─────────────────────────────── */
 export function render() {
-  if (!_filters.dateFrom) {
-    const now  = new Date();
-    const y    = now.getFullYear();
-    const m    = String(now.getMonth() + 1).padStart(2, '0');
-    const last = new Date(y, now.getMonth() + 1, 0).getDate();
-    _filters.dateFrom = `${y}-${m}-01`;
-    _filters.dateTo   = `${y}-${m}-${last}`;
-  }
-
   if (!_dataLoaded) {
     return `
       <div class="page-enter">
@@ -262,9 +250,6 @@ export function render() {
 
   const canFilterSup = can(_currentUser, P.GLOBAL_VIEW_DEPT);
   const dept         = myDept();
-  const daysDiff     = _filters.dateFrom && _filters.dateTo
-    ? Math.round((new Date(_filters.dateTo) - new Date(_filters.dateFrom)) / 86400000) + 1
-    : 0;
 
   const deptInfoHtml = `
     <div class="form-group" style="margin-bottom:0">
@@ -321,23 +306,6 @@ export function render() {
             </select>
           </div>
         </div>
-        <div class="consulta-filters__date-row">
-          <div class="form-group" style="margin-bottom:0">
-            <label class="form-label">Data inicial</label>
-            <input class="form-input" type="date" id="f-date-from" value="${_filters.dateFrom}">
-          </div>
-          <div class="form-group" style="margin-bottom:0">
-            <label class="form-label">Data final</label>
-            <input class="form-input" type="date" id="f-date-to" value="${_filters.dateTo}">
-          </div>
-          <div class="date-range-info">
-            <span id="date-range-days">
-              ${daysDiff ? `<strong>${daysDiff}</strong> dias selecionados` : '—'}
-            </span>
-            ${daysDiff > 90 ? `<span class="warn">⚠ Máximo: 90 dias</span>` : ''}
-          </div>
-          <button class="btn btn--ghost btn--sm" id="btn-clear-filters">Limpar filtros</button>
-        </div>
       </div>
 
       <div class="consulta-summary-bar">
@@ -353,11 +321,6 @@ export function render() {
         </div>
         <div class="consulta-summary-bar__stat">
           <span>⚠ Zeradas:</span><strong>0</strong>
-        </div>
-        <div style="margin-left:auto">
-          <span style="font-size:var(--text-xs);color:var(--text-tertiary)">
-            ${_filters.dateFrom} → ${_filters.dateTo}
-          </span>
         </div>
       </div>
 
@@ -628,27 +591,6 @@ function reloadPage() {
   applyCardVisibility();
 }
 
-/* ── Date range validation ────────────────── */
-function enforceDateRange() {
-  const fromEl = document.getElementById('f-date-from');
-  const toEl   = document.getElementById('f-date-to');
-  const infoEl = document.getElementById('date-range-days');
-  if (!fromEl || !toEl || !infoEl) return;
-
-  const from = new Date(fromEl.value);
-  const to   = new Date(toEl.value);
-  if (!fromEl.value || !toEl.value) return;
-
-  const days = Math.round((to - from) / 86400000) + 1;
-  if (days > 90) {
-    const capped = new Date(from);
-    capped.setDate(capped.getDate() + 89);
-    toEl.value = capped.toISOString().split('T')[0];
-    infoEl.innerHTML = `<strong>90</strong> dias (máx. atingido)`;
-  } else if (days > 0) {
-    infoEl.innerHTML = `<strong>${days}</strong> dias selecionados`;
-  }
-}
 
 /* ── New plan modal ───────────────────────── */
 function openNewPlanModal(empId) {
@@ -1021,19 +963,6 @@ async function saveNewPlan() {
 function bindEvents() {
   initCharts();
 
-  document.getElementById('f-date-from')?.addEventListener('change', async e => {
-    _filters.dateFrom = e.target.value;
-    enforceDateRange();
-    await fetchMonitoringData();
-    reloadPage();
-  });
-  document.getElementById('f-date-to')?.addEventListener('change', async e => {
-    _filters.dateTo = e.target.value;
-    enforceDateRange();
-    await fetchMonitoringData();
-    reloadPage();
-  });
-
   document.getElementById('f-sup')?.addEventListener('change', e => {
     _filters.supId    = e.target.value;
     _filters.collabId = '';
@@ -1048,7 +977,7 @@ function bindEvents() {
   });
 
   document.getElementById('btn-clear-filters')?.addEventListener('click', () => {
-    _filters = { supId: '', collabId: '', dateFrom: '', dateTo: '' };
+    _filters = { supId: '', collabId: '' };
     reloadPage();
   });
 

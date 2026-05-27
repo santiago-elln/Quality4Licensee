@@ -9,9 +9,10 @@ import { supabase } from '../supabase.js';
 import { can, P } from '../utils/permissions.js';
 
 /* ── Module state ─────────────────────────── */
-let _activeTab   = 'org';
-let _catalogTab  = 'eval_criteria';
-let _catalogData = null;
+let _activeTab        = 'org';
+let _catalogTab       = 'eval_criteria';
+let _catalogData      = null;
+let _catalogDeptFilter = null;  // null=all, 'global'=no dept, uuid=specific dept
 let _editState   = null;   // { table, row } — row=null means new
 let _deactState  = null;   // { table, id, name }
 let _donutChart  = null;
@@ -37,11 +38,18 @@ const EC_COLORS = [
 ];
 
 /* ── Catalog table config ─────────────────── */
+const DEPT_COL = {
+  key: 'department_id', label: 'Departamento', type: 'select',
+  options:  () => _catalogData?.departments ?? [],
+  optLabel: d  => d.name,
+};
+
 const CATALOG = {
   eval_criteria: {
     label:   'Critérios de Avaliação',
     columns: [
       { key: 'name',   label: 'Nome',  type: 'text',    required: true },
+      DEPT_COL,
       { key: 'active', label: 'Ativo', type: 'boolean', default: true },
     ],
     display:   r => r.name,
@@ -59,6 +67,7 @@ const CATALOG = {
       { key: 'eval_criteria_id', label: 'Critério',  type: 'select', required: true,
         options:  () => _catalogData?.eval_criteria ?? [],
         optLabel: r  => r.name },
+      DEPT_COL,
       { key: 'active', label: 'Ativo', type: 'boolean', default: true },
     ],
     display: r => r.item,
@@ -73,6 +82,7 @@ const CATALOG = {
     columns: [
       { key: 'code',         label: 'Código',           type: 'text', required: true, editReadonly: true },
       { key: 'display_name', label: 'Nome de exibição', type: 'text', required: true },
+      DEPT_COL,
       { key: 'active',       label: 'Ativo',            type: 'boolean', default: true },
     ],
     display:   r => r.display_name,
@@ -86,6 +96,7 @@ const CATALOG = {
     columns: [
       { key: 'name',     label: 'Nome',    type: 'text',    required: true },
       { key: 'critical', label: 'Crítico', type: 'boolean', default: false },
+      DEPT_COL,
       { key: 'active',   label: 'Ativo',   type: 'boolean', default: true },
     ],
     display:   r => r.name,
@@ -98,6 +109,7 @@ const CATALOG = {
     label:   'Critérios Analíticos',
     columns: [
       { key: 'name',   label: 'Nome',  type: 'text',    required: true },
+      DEPT_COL,
       { key: 'active', label: 'Ativo', type: 'boolean', default: true },
     ],
     display:   r => r.name,
@@ -213,7 +225,15 @@ function renderCatalogContent() {
   const user    = getCurrentUser();
   const canEdit = can(user, P.ADMIN_UPDATE_CRITERIA);
   const cfg     = CATALOG[_catalogTab];
-  const rows    = _catalogData?.[_catalogTab] ?? [];
+  const allRows = _catalogData?.[_catalogTab] ?? [];
+
+  /* Department filter */
+  let displayRows = allRows;
+  if (_catalogDeptFilter === 'global') {
+    displayRows = allRows.filter(r => !r.department_id);
+  } else if (_catalogDeptFilter) {
+    displayRows = allRows.filter(r => r.department_id === _catalogDeptFilter);
+  }
 
   /* Effective permissions: table config AND user permission */
   const eff = {
@@ -223,23 +243,31 @@ function renderCatalogContent() {
   };
 
   /* ── eval_criteria: enrich rows with active topic pts ── */
-  let displayRows  = rows;
-  let headerExtra  = '';
-
+  let headerExtra = '';
   if (_catalogTab === 'eval_criteria') {
     const ptMap    = ecPointsMap();
-    displayRows    = rows.map(r => ({ ...r, points: ptMap[r.id] ?? 0 }));
-    const totalPts = displayRows
-      .filter(r => r.active !== false)
-      .reduce((s, r) => s + r.points, 0);
-    headerExtra = `<span class="catalog-pts-total">${totalPts} pts total</span>`;
+    displayRows    = displayRows.map(r => ({ ...r, points: ptMap[r.id] ?? 0 }));
+    const totalPts = displayRows.filter(r => r.active !== false).reduce((s, r) => s + r.points, 0);
+    headerExtra    = `<span class="catalog-pts-total">${totalPts} pts total</span>`;
   }
 
   const rowsHtml = displayRows.length
     ? displayRows.map(r => renderCatalogRow({ ...cfg, ...eff }, r)).join('')
     : `<div class="catalog-empty">Nenhum registro encontrado.</div>`;
 
+  const depts = _catalogData?.departments ?? [];
+  const filterBar = `
+    <div class="catalog-dept-filter">
+      <span class="catalog-dept-filter__label">Departamento</span>
+      <select class="form-select catalog-dept-filter__select" id="catalog-dept-filter">
+        <option value="">Todos</option>
+        <option value="global" ${_catalogDeptFilter === 'global' ? 'selected' : ''}>Global</option>
+        ${depts.map(d => `<option value="${d.id}" ${_catalogDeptFilter === d.id ? 'selected' : ''}>${d.name}</option>`).join('')}
+      </select>
+    </div>`;
+
   return `
+    ${filterBar}
     <div class="panel catalog-panel">
       <div class="panel__header">
         <div class="panel__title">${cfg.label}</div>
@@ -253,8 +281,10 @@ function renderCatalogContent() {
 }
 
 function renderCatalogRow(cfg, row) {
-  const isActive   = row.active !== false;
-  const meta       = cfg.meta(row);
+  const isActive = row.active !== false;
+  const meta     = cfg.meta(row);
+  const depts    = _catalogData?.departments ?? [];
+  const deptName = row.department_id ? (depts.find(d => d.id === row.department_id)?.name ?? '?') : null;
 
   /* Badges */
   const activeBadge   = isActive
@@ -264,6 +294,9 @@ function renderCatalogRow(cfg, row) {
     ? `<span class="badge badge--critical">Crítico</span>` : '';
   const pointsBadge   = row.points != null
     ? `<span class="catalog-pts-badge">${row.points}pts</span>` : '';
+  const deptBadge     = deptName
+    ? `<span class="badge catalog-badge--dept">${deptName}</span>`
+    : `<span class="badge catalog-badge--global">Global</span>`;
 
   /* Action buttons */
   const editBtn = cfg.canEdit
@@ -284,7 +317,7 @@ function renderCatalogRow(cfg, row) {
         <div class="catalog-row__name">${cfg.display(row)}</div>
         ${meta ? `<div class="catalog-row__meta">${meta}</div>` : ''}
       </div>
-      <div class="catalog-row__badges">${pointsBadge}${criticalBadge}${activeBadge}</div>
+      <div class="catalog-row__badges">${pointsBadge}${criticalBadge}${deptBadge}${activeBadge}</div>
       <div class="catalog-row__actions">${editBtn}${toggleBtn}</div>
     </div>
   `;
@@ -295,6 +328,8 @@ function ecPointsMap() {
   const map = {};
   for (const t of _catalogData?.topic ?? []) {
     if (!t.active) continue;
+    if (_catalogDeptFilter === 'global' && t.department_id) continue;
+    if (_catalogDeptFilter && _catalogDeptFilter !== 'global' && t.department_id !== _catalogDeptFilter) continue;
     map[t.eval_criteria_id] = (map[t.eval_criteria_id] ?? 0) + (t.points ?? 0);
   }
   return map;
@@ -302,12 +337,13 @@ function ecPointsMap() {
 
 /* ── Catalog data ─────────────────────────── */
 async function fetchCatalog() {
-  const [ecRes, topicRes, obsRes, errRes, analRes] = await Promise.all([
-    supabase.from('eval_criteria').select('id, name, active').order('name'),
-    supabase.from('topic').select('id, item, description, points, eval_criteria_id, active').order('item'),
-    supabase.from('observation_type').select('id, code, display_name, active').order('display_name'),
-    supabase.from('error_type').select('id, name, critical, active').order('name'),
-    supabase.from('analytical_note_type').select('id, name, active').order('name'),
+  const [ecRes, topicRes, obsRes, errRes, analRes, deptRes] = await Promise.all([
+    supabase.from('eval_criteria').select('id, name, active, department_id').order('name'),
+    supabase.from('topic').select('id, item, description, points, eval_criteria_id, active, department_id').order('item'),
+    supabase.from('observation_type').select('id, code, display_name, active, department_id').order('display_name'),
+    supabase.from('error_type').select('id, name, critical, active, department_id').order('name'),
+    supabase.from('analytical_note_type').select('id, name, active, department_id').order('name'),
+    supabase.from('departments').select('id, name').eq('active', true).order('name'),
   ]);
   _catalogData = {
     eval_criteria:        ecRes.data    ?? [],
@@ -315,6 +351,7 @@ async function fetchCatalog() {
     observation_type:     obsRes.data   ?? [],
     error_type:           errRes.data   ?? [],
     analytical_note_type: analRes.data  ?? [],
+    departments:          deptRes.data  ?? [],
   };
 }
 
@@ -370,8 +407,12 @@ function updatePageDonutSlot() {
     return;
   }
 
+  const deptMatch = item =>
+    !_catalogDeptFilter ||
+    (_catalogDeptFilter === 'global' ? !item.department_id : item.department_id === _catalogDeptFilter);
+
   const totalPts = (_catalogData?.topic ?? [])
-    .filter(t => t.active)
+    .filter(t => t.active && deptMatch(t))
     .reduce((s, t) => s + (t.points ?? 0), 0);
 
   slot.innerHTML = `
@@ -385,7 +426,7 @@ function updatePageDonutSlot() {
   if (typeof Chart === 'undefined') return;
 
   const ptMap          = ecPointsMap();
-  const activeCriteria = (_catalogData?.eval_criteria ?? []).filter(ec => ec.active);
+  const activeCriteria = (_catalogData?.eval_criteria ?? []).filter(ec => ec.active && deptMatch(ec));
   const labels         = activeCriteria.map(ec => ec.name);
   const data           = activeCriteria.map(ec => ptMap[ec.id] ?? 0);
   const colors         = activeCriteria.map((_, i) => EC_COLORS[i % EC_COLORS.length]);
@@ -431,6 +472,12 @@ function openEdit(table, row = null) {
     isNew ? `Adicionar — ${cfg.label}` : `Editar — ${cfg.label}`;
   document.getElementById('catalog-modal-body').innerHTML = buildEditForm(cfg, row);
   document.getElementById('catalog-edit-modal').classList.remove('modal-overlay--hidden');
+
+  /* Pre-fill department when adding under a specific dept filter */
+  if (isNew && _catalogDeptFilter && _catalogDeptFilter !== 'global') {
+    const deptSel = document.getElementById('ef-department_id');
+    if (deptSel) deptSel.value = _catalogDeptFilter;
+  }
 }
 
 function buildEditForm(cfg, row) {
@@ -570,6 +617,11 @@ function closeDeactivateModal() {
 
 /* ── Event binding ─────────────────────────── */
 function bindCatalogContentEvents() {
+  document.getElementById('catalog-dept-filter')?.addEventListener('change', e => {
+    _catalogDeptFilter = e.target.value || null;
+    refreshCatalogContent();
+  });
+
   document.getElementById('catalog-add-btn')?.addEventListener('click', () => openEdit(_catalogTab, null));
 
   document.querySelectorAll('.catalog-edit-btn').forEach(btn =>
@@ -1005,6 +1057,22 @@ async function absorbUser() {
     if (btn) { btn.disabled = false; btn.textContent = 'Absorver'; }
     return;
   }
+
+  // Insert unvalidated default shift (9h–18h, break 13h–14h)
+  const user = getCurrentUser();
+  await supabase.from('shifts').insert({
+    id:                      crypto.randomUUID(),
+    employee_id:             profile.id,
+    is_default:              true,
+    date:                    null,
+    validated:               false,
+    start_time:              '09:00:00',
+    end_time:                '18:00:00',
+    break_start:             '13:00:00',
+    break_duration_minutes:  60,
+    updated_by:              user?.id ?? profile.id,
+    updated_at:              new Date().toISOString(),
+  });
 
   closeAbsorbModal();
   toast.success(`${profile.name} absorvido com sucesso`);

@@ -1,7 +1,7 @@
 /* ============================================================
    LOGIN PAGE
    ============================================================ */
-import { login } from '../auth.js';
+import { login, loginWithMicrosoft } from '../auth.js';
 import { navigate } from '../router.js';
 import { toast } from '../components/toast.js';
 import { supabase } from '../supabase.js';
@@ -66,6 +66,20 @@ export function render() {
             <button type="submit" class="btn btn--primary btn--lg btn--block" id="btn-login">
               Entrar
             </button>
+
+            <div class="auth-divider">
+              <span>ou</span>
+            </div>
+
+            <button type="button" class="btn btn--microsoft btn--lg btn--block" id="btn-microsoft">
+              <svg class="btn-microsoft__icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 21 21" width="20" height="20">
+                <rect x="1"  y="1"  width="9" height="9" fill="#f25022"/>
+                <rect x="11" y="1"  width="9" height="9" fill="#7fba00"/>
+                <rect x="1"  y="11" width="9" height="9" fill="#00a4ef"/>
+                <rect x="11" y="11" width="9" height="9" fill="#ffb900"/>
+              </svg>
+              Entrar com Microsoft
+            </button>
           </form>
         </div>
       </div>
@@ -98,6 +112,20 @@ export function init() {
     } finally {
       btn.disabled    = false;
       btn.textContent = 'Entrar';
+    }
+  });
+
+  document.getElementById('btn-microsoft')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btn-microsoft');
+    btn.disabled = true;
+    btn.querySelector('span') ?? (btn.lastChild.textContent = ' Redirecionando…');
+    errorEl.classList.add('hidden');
+    try {
+      await loginWithMicrosoft();
+    } catch (err) {
+      errorEl.classList.remove('hidden');
+      errorMsg.textContent = 'Erro ao iniciar login com Microsoft. Tente novamente.';
+      btn.disabled = false;
     }
   });
 }

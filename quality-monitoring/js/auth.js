@@ -97,6 +97,18 @@ export async function login(email, password) {
   return _currentUser;
 }
 
+export async function loginWithMicrosoft() {
+  const { error } = await supabase.auth.signInWithOAuth({
+    provider: 'azure',
+    options: {
+      scopes: 'email profile openid',
+      redirectTo: window.location.origin + window.location.pathname,
+    },
+  });
+  if (error) throw error;
+  // Browser will redirect to Microsoft — no further action here
+}
+
 export async function logout() {
   await supabase.auth.signOut();
   _currentUser = null;

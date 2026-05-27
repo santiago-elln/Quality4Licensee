@@ -356,16 +356,7 @@ export function render() {
 
   const categorySections = _EVAL_CATEGORIES.map(cat => renderCategory(cat)).join('');
 
-  const analyticalRows = _ANALYTICAL_CRITERIA.map(c => `
-    <div class="analytical-item">
-      <div class="analytical-item__name">${c.name}</div>
-      <div class="analytical-item__check-wrap">
-        <input type="checkbox" class="eval-item__check analytical-check"
-          id="an-${c.id}" data-id="${c.id}" checked>
-      </div>
-      <textarea class="analytical-item__justification" id="an-just-${c.id}" placeholder="Justificativa (opcional)"></textarea>
-    </div>
-  `).join('');
+  const analyticalRows = _ANALYTICAL_CRITERIA.map(renderAnalyticalRow).join('');
 
   return `
     <div class="monitoring-page page-enter">
@@ -430,7 +421,7 @@ export function render() {
               <div class="attendance-field">
                 <div class="attendance-field__label">Data e hora do início <span class="required">*</span></div>
                 <div class="time-input-wrap">
-                  <input class="attendance-field__input" id="att-date" type="datetime-local">
+                  <input class="attendance-field__input" id="att-date" type="datetime-local" max="2099-12-31T23:59">
                   <button type="button" class="time-input-wrap__btn" tabindex="-1" data-for="att-date">
                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
                   </button>
@@ -493,7 +484,7 @@ export function render() {
               <div class="score-summary__title">Pontuação Total</div>
               <div style="display:flex;align-items:baseline;gap:8px">
                 <div class="score-summary__value" id="score-total">0</div>
-                <div class="score-summary__max">/ ${_TOTAL_MAX_PTS}</div>
+                <div class="score-summary__max" id="score-max">/ ${_TOTAL_MAX_PTS}</div>
               </div>
             </div>
             <div style="flex:1;margin:0 var(--space-5)">
@@ -513,7 +504,7 @@ export function render() {
           </div>
 
           <!-- Evaluation criteria -->
-          ${categorySections}
+          <div id="nm-eval-categories">${categorySections}</div>
 
           <!-- Analytical criteria -->
           <div class="analytical-section">
@@ -525,7 +516,7 @@ export function render() {
               <div style="font-size:var(--text-xs);font-weight:600;text-transform:uppercase;text-align:center;color:var(--text-secondary)">✓</div>
               <div style="font-size:var(--text-xs);font-weight:600;text-transform:uppercase;color:var(--text-secondary)">Justificativa</div>
             </div>
-            ${analyticalRows}
+            <div id="nm-analytical-rows">${analyticalRows}</div>
           </div>
 
           <div style="display:flex;justify-content:space-between;align-items:center;gap:var(--space-3);margin-top:var(--space-4)">
@@ -638,7 +629,7 @@ export function render() {
             </div>
             <div class="form-group">
               <label class="form-label">Data e Horário da Violação</label>
-              <input class="form-input" id="reset-datetime" type="datetime-local">
+              <input class="form-input" id="reset-datetime" type="datetime-local" max="2099-12-31T23:59">
             </div>
             <div class="form-group">
               <label class="form-label">Justificativa <span class="required">*</span></label>
@@ -653,6 +644,68 @@ export function render() {
       </div>
     </div>
   `;
+}
+
+/* ── Department-aware catalog rebuild ───────── */
+function rebuildCatalogForDept(deptId) {
+  // deptId undefined = no filter (show all); null = employee has no dept (global only)
+  const fit = deptId === undefined
+    ? () => true
+    : item => !item.department_id || item.department_id === deptId;
+
+  const filteredEc     = _evalCriteria.filter(fit);
+  const filteredTopics = _topics.filter(fit);
+  const filteredAnal   = _analyticalTypes.filter(fit);
+  const filteredErrors = _errorTypes.filter(fit);
+
+  _EVAL_CATEGORIES = filteredEc.map(ec => {
+    const items = filteredTopics
+      .filter(t => t.eval_criteria_id === ec.id)
+      .map(t => ({ id: t.id, name: t.item, pts: t.points ?? 0, description: t.description ?? '' }));
+    return { id: ec.id, name: ec.name, items, totalPts: items.reduce((s, i) => s + i.pts, 0) };
+  });
+  _TOTAL_MAX_PTS       = _EVAL_CATEGORIES.reduce((s, c) => s + c.totalPts, 0);
+  _ANALYTICAL_CRITERIA = filteredAnal.map(t => ({ id: t.id, name: t.name }));
+
+  return filteredErrors;
+}
+
+/* ── Analytical row HTML ─────────────────────── */
+function renderAnalyticalRow(c) {
+  return `
+    <div class="analytical-item">
+      <div class="analytical-item__name">${c.name}</div>
+      <div class="analytical-item__check-wrap">
+        <input type="checkbox" class="eval-item__check analytical-check"
+          id="an-${c.id}" data-id="${c.id}" checked>
+      </div>
+      <textarea class="analytical-item__justification" id="an-just-${c.id}" placeholder="Justificativa (opcional)"></textarea>
+    </div>`;
+}
+
+/* ── Eval section events (called on init and on dept rebuild) ─ */
+function bindEvalSectionEvents() {
+  document.querySelectorAll('.eval-item__check:not(.analytical-check)').forEach(chk => {
+    chk.addEventListener('change', () => { recalcScores(); saveDraft(); });
+  });
+  document.querySelectorAll('.analytical-check').forEach(chk => {
+    chk.addEventListener('change', () => {
+      const justEl = document.getElementById(`an-just-${chk.dataset.id}`);
+      if (justEl) justEl.placeholder = chk.checked ? 'Justificativa (opcional)' : 'Justificativa obrigatória…';
+      saveDraft();
+    });
+  });
+  _ANALYTICAL_CRITERIA.forEach(c => {
+    const el = document.getElementById(`an-just-${c.id}`);
+    if (!el) return;
+    el.addEventListener('input', () => { autoResize(el); saveDraft(); });
+  });
+  document.querySelectorAll('.eval-section__header').forEach(hdr => {
+    hdr.addEventListener('click', e => {
+      if (e.target.closest('.eval-item__check, label')) return;
+      hdr.closest('.eval-section')?.classList.toggle('collapsed');
+    });
+  });
 }
 
 /* ── Category section HTML ─────────────────── */
@@ -827,12 +880,12 @@ export async function init() {
 
   /* ── Fetch ref data on every visit — guarantees active topics/criteria are current ── */
   const [empRes, topicRes, obsTypeRes, evalCrRes, analTypeRes, errTypeRes] = await Promise.all([
-    supabase.from('employees').select('id, name').eq('active', true).order('name'),
-    supabase.from('topic').select('id, item, eval_criteria_id, points, description').eq('active', true),
-    supabase.from('observation_type').select('id, code').eq('active', true),
-    supabase.from('eval_criteria').select('id, name').eq('active', true).order('name'),
-    supabase.from('analytical_note_type').select('id, name').eq('active', true),
-    supabase.from('error_type').select('id, name, critical').eq('active', true).order('name'),
+    supabase.from('employees').select('id, name, department_id').eq('active', true).order('name'),
+    supabase.from('topic').select('id, item, eval_criteria_id, points, description, department_id').eq('active', true),
+    supabase.from('observation_type').select('id, code, department_id').eq('active', true),
+    supabase.from('eval_criteria').select('id, name, department_id').eq('active', true).order('name'),
+    supabase.from('analytical_note_type').select('id, name, department_id').eq('active', true),
+    supabase.from('error_type').select('id, name, critical, department_id').eq('active', true).order('name'),
   ]);
 
   _employees       = empRes.data        ?? [];
@@ -1081,6 +1134,20 @@ export async function init() {
   document.getElementById('timer-msg1')?.addEventListener('input', calcDelta);
   document.getElementById('timer-msg2')?.addEventListener('input', calcDelta);
 
+  /* ── datetime-local year clamp (prevent 5+ digit years) ── */
+  const clampYear = e => {
+    const v = e.target.value;
+    if (!v) return;
+    const [date, time] = v.split('T');
+    const parts = (date ?? '').split('-');
+    if (parts[0]?.length > 4) {
+      parts[0] = parts[0].slice(0, 4);
+      e.target.value = parts.join('-') + (time ? 'T' + time : '');
+    }
+  };
+  document.getElementById('att-date')?.addEventListener('input', clampYear);
+  document.getElementById('reset-datetime')?.addEventListener('input', clampYear);
+
   /* ── Collaborator → avatar ──────────────── */
   document.getElementById('collab-select')?.addEventListener('change', async e => {
     const av  = document.getElementById('collab-avatar');
@@ -1091,10 +1158,47 @@ export async function init() {
         : '?';
     }
 
+    const collabId = e.target.value;
+
+    /* ── Rebuild catalog for this employee's department ── */
+    const emp    = collabId ? _employees.find(em => em.id === collabId) : undefined;
+    const deptId = emp ? (emp.department_id ?? null) : undefined; // undefined = no filter
+    const filteredErrors = rebuildCatalogForDept(deptId);
+
+    const catEl = document.getElementById('nm-eval-categories');
+    if (catEl) catEl.innerHTML = _EVAL_CATEGORIES.map(renderCategory).join('');
+
+    const analEl = document.getElementById('nm-analytical-rows');
+    if (analEl) analEl.innerHTML = _ANALYTICAL_CRITERIA.map(renderAnalyticalRow).join('');
+
+    const scoreMaxEl = document.getElementById('score-max');
+    if (scoreMaxEl) scoreMaxEl.textContent = `/ ${_TOTAL_MAX_PTS}`;
+
+    /* Re-populate obs panel dropdowns */
+    const criteriaSel = document.getElementById('obs-criteria');
+    if (criteriaSel) {
+      criteriaSel.innerHTML = `<option value="">— nenhum —</option>` +
+        _EVAL_CATEGORIES.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+    }
+    const nonCritical = filteredErrors.filter(er => !er.critical);
+    const critical    = filteredErrors.filter(er => er.critical);
+    const obsErrSel   = document.getElementById('obs-error-type');
+    if (obsErrSel) {
+      obsErrSel.innerHTML = `<option value="">— selecione —</option>` +
+        nonCritical.map(er => `<option value="${er.id}">${er.name}</option>`).join('');
+    }
+    const resetErrSel = document.getElementById('reset-error-type');
+    if (resetErrSel) {
+      resetErrSel.innerHTML = `<option value="">— selecione —</option>` +
+        critical.map(er => `<option value="${er.id}">${er.name}</option>`).join('');
+    }
+
+    bindEvalSectionEvents();
+    recalcScores();
+
     const numInput = document.getElementById('monitoring-number');
     if (!numInput) return;
 
-    const collabId = e.target.value;
     if (!collabId) { numInput.value = 1; return; }
 
     const { data } = await supabase
@@ -1111,38 +1215,12 @@ export async function init() {
 
   document.getElementById('monitoring-number')?.addEventListener('change', saveDraft);
 
-  /* ── Eval checkboxes ────────────────────── */
-  document.querySelectorAll('.eval-item__check').forEach(chk => {
-    chk.addEventListener('change', () => { recalcScores(); saveDraft(); });
-  });
-
-  /* ── Analytical: justification required when unchecked ── */
-  document.querySelectorAll('.analytical-check').forEach(chk => {
-    chk.addEventListener('change', () => {
-      const justEl = document.getElementById(`an-just-${chk.dataset.id}`);
-      if (justEl) justEl.placeholder = chk.checked ? 'Justificativa (opcional)' : 'Justificativa obrigatória…';
-      saveDraft();
-    });
-  });
-
-  /* ── Analytical justifications — auto-resize + salvar ── */
-  _ANALYTICAL_CRITERIA.forEach(c => {
-    const el = document.getElementById(`an-just-${c.id}`);
-    if (!el) return;
-    el.addEventListener('input', () => { autoResize(el); saveDraft(); });
-  });
+  /* ── Eval checkboxes + section collapse ─── */
+  bindEvalSectionEvents();
 
   /* ── obs-text — auto-resize ── */
   const obsTextEl = document.getElementById('obs-text');
   if (obsTextEl) obsTextEl.addEventListener('input', () => autoResize(obsTextEl));
-
-  /* ── Section collapse ───────────────────── */
-  document.querySelectorAll('.eval-section__header').forEach(hdr => {
-    hdr.addEventListener('click', e => {
-      if (e.target.closest('.eval-item__check, label')) return;
-      hdr.closest('.eval-section')?.classList.toggle('collapsed');
-    });
-  });
 
   /* ── Obs type → show/hide error field ───── */
   document.getElementById('obs-type')?.addEventListener('change', e => {

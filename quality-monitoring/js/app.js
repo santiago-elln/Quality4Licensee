@@ -55,6 +55,14 @@ async function mountPage(page) {
   await page.init?.();
 }
 
+/* ── Default landing page by access level ───── */
+function defaultPageFor(user) {
+  const lvl = user?.accessLevel;
+  if (lvl === 2) return 'perfil';
+  if (lvl === 4) return 'nova-monitoria';
+  return 'consulta';
+}
+
 /* ── Routes ─────────────────────────────────── */
 function registerRoutes() {
   setDefaultRoute('login');
@@ -63,7 +71,7 @@ function registerRoutes() {
   registerRoute('login', async () => {
     if (isAuthenticated()) {
       const u = getCurrentUser();
-      navigate(u.isClaimed ? 'nova-monitoria' : 'nao-autorizado');
+      navigate(u.isClaimed ? defaultPageFor(u) : 'nao-autorizado');
       return;
     }
     app.innerHTML = LoginPage.render();
@@ -74,7 +82,7 @@ function registerRoutes() {
   protectRoute('nao-autorizado');
   registerRoute('nao-autorizado', async () => {
     const u = getCurrentUser();
-    if (u?.isClaimed) { navigate('nova-monitoria'); return; }
+    if (u?.isClaimed) { navigate(defaultPageFor(u)); return; }
     mountShell();
     renderShell();
     await mountPage(NaoAutorizadoPage);

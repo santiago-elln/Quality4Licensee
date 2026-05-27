@@ -345,7 +345,7 @@ async function loadData() {
   _shifts = {}; _origShifts = {}
 
   const EMP_COLS   = `id, name, team_id, sector_id, sector_group_id, sector_groups(id, name)`
-  const SHIFT_COLS = 'id, employee_id, start_time, end_time, break_start, break_duration_minutes, is_default, updated_by, updated_at'
+  const SHIFT_COLS = 'id, employee_id, start_time, end_time, break_start, break_duration_minutes, is_default, validated, updated_by, updated_at'
 
   let empQuery = supabase.from('employees').select(EMP_COLS).eq('active', true).order('name')
 
@@ -391,12 +391,13 @@ async function loadData() {
   /* Merge: date-specific takes priority, default is fallback */
   const parseShift = (s, fromDefault) => ({
     ...s,
-    start_min:       timeToMin(s.start_time),
-    end_min:         timeToMin(s.end_time),
-    break_start_min: timeToMin(s.break_start),
-    is_from_default: fromDefault,
-    date_shift_id:   fromDefault ? null : s.id,
+    start_min:        timeToMin(s.start_time),
+    end_min:          timeToMin(s.end_time),
+    break_start_min:  timeToMin(s.break_start),
+    is_from_default:  fromDefault,
+    date_shift_id:    fromDefault ? null : s.id,
     default_shift_id: fromDefault ? s.id : null,
+    validated:        s.validated ?? false,
   })
 
   for (const s of (dateShifts ?? [])) {
@@ -789,8 +790,10 @@ function buildEmpRow(emp) {
     const brkLeft=(((shift.break_start_min-shift.start_min)/shiftDur)*100).toFixed(4)
     const brkWidth=((shift.break_duration_minutes/shiftDur)*100).toFixed(4)
     const brkLeftF=parseFloat(brkLeft),brkWidthF=parseFloat(brkWidth)
+    const unvalidated = shift.validated === false
     gridContent=`
-      <div class="esc-shift-bar ${canEdit?'esc-can-edit':'esc-read-only'}"
+      ${unvalidated ? `<div class="esc-unvalidated-tooltip">Este horário pode estar incorreto</div>` : ''}
+      <div class="esc-shift-bar ${canEdit?'esc-can-edit':'esc-read-only'}${unvalidated?' esc-shift-bar--unvalidated':''}"
            data-drag="${canEdit?'bar':''}" data-eid="${emp.id}"
            style="left:${barLeft}%;width:${barWidth}%">
         <span class="esc-sh-time esc-start-time">${minToTime(shift.start_min)}</span>
@@ -982,6 +985,7 @@ async function saveOneEmployee(eid) {
     start_time:  minToTime(s.start_min)+':00',
     end_time:    minToTime(s.end_min)+':00',
     break_start: minToTime(s.break_start_min)+':00',
+    validated:   true,
     updated_by: _user.id, updated_at: new Date().toISOString(),
   }
   let error
@@ -1012,8 +1016,13 @@ async function saveOneEmployee(eid) {
     }
   }
   if (error) { toast.error('Erro ao salvar', error.message); return }
+  _shifts[eid] = { ..._shifts[eid], validated: true }
   _origShifts[eid] = { ..._shifts[eid] }
   _dirty.delete(eid); markRowClean(eid)
+  // Remove unvalidated glow/tooltip from DOM immediately
+  const bar = document.querySelector(`.esc-shift-bar[data-eid="${eid}"]`)
+  bar?.classList.remove('esc-shift-bar--unvalidated')
+  bar?.closest('.esc-emp-grid')?.querySelector('.esc-unvalidated-tooltip')?.remove()
   if (_dirty.size === 0) hideSaveBar()
   toast.success('Escala salva!')
 }
@@ -1039,6 +1048,7 @@ async function saveChanges() {
         start_time:  minToTime(s.start_min)+':00',
         end_time:    minToTime(s.end_min)+':00',
         break_start: minToTime(s.break_start_min)+':00',
+        validated:   true,
         updated_by: _user.id, updated_at: new Date().toISOString(),
       }
       if (setAsDefault) {
