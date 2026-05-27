@@ -20,7 +20,9 @@ let _mouseX      = 0;
 let _mouseY      = 0;
 
 /* ── Org tab state ────────────────────────── */
-let _orgData = null;   // { department, teams:[{id,name,supervisorName,supervisorRole,members}], managers }
+let _orgData           = null;   // { department, teams, managers, emailMap, transfers }
+let _transferDragState = null;   // { empId, empName, fromTeamId, fromTeamName, toTeamId, toTeamName }
+let _transferResolveId = null;   // transfer id being reviewed in resolve modal
 
 /* ── Users tab state ──────────────────────── */
 let _unclaimedProfiles = [];  // profiles with no employee record
@@ -738,11 +740,29 @@ async function loadOrgTabData() {
     teamMap[emp.team_id].members.push(emp);
   }
 
-  _orgData = {
-    department: deptRes.data,
-    teams:      Object.values(teamMap).sort((a, b) => a.name.localeCompare(b.name)),
-    managers:   managersRes.data ?? [],
-  };
+  const teams    = Object.values(teamMap).sort((a, b) => a.name.localeCompare(b.name));
+  const managers = managersRes.data ?? [];
+
+  const allIds = [
+    ...managers.map(m => m.id),
+    ...(employeesRes.data ?? []).map(e => e.id),
+  ];
+  const teamIds = teams.map(t => t.id);
+
+  const [emailResult, transferResult] = await Promise.all([
+    allIds.length
+      ? supabase.rpc('get_user_emails', { user_ids: allIds })
+      : Promise.resolve({ data: [] }),
+    teamIds.length
+      ? supabase.from('team_transfers').select('*').eq('status', 'pending')
+          .or(`from_team_id.in.(${teamIds.join(',')}),to_team_id.in.(${teamIds.join(',')})`)
+      : Promise.resolve({ data: [] }),
+  ]);
+
+  const emailMap = Object.fromEntries((emailResult.data ?? []).map(r => [r.id, r.email]));
+  const transfers = transferResult.data ?? [];
+
+  _orgData = { department: deptRes.data, teams, managers, emailMap, transfers };
 }
 
 /* ── Level stepper helper ─────────────────────── */
@@ -785,12 +805,32 @@ function renderOrgTab(user) {
       </div>`;
   }
 
-  const { department, teams, managers } = _orgData;
+  const { department, teams, managers, emailMap, transfers = [] } = _orgData;
   const canSetLevel = can(currentUser, P.ADMIN_SET_ACCESS_LEVEL);
   const myId        = currentUser?.id;
+  const myLevel     = currentUser?.accessLevel ?? 0;
+  const myTeams     = currentUser?.supervisedTeamIds ?? [];
 
   const pendingCount = Object.keys(_pendingLevelChanges).length;
 
+  /* ── Transfer helpers ── */
+  const transferByEmp = {};
+  for (const t of transfers) transferByEmp[t.employee_id] = t;
+
+  const ghostsByTeam = {};
+  const empById = {};
+  for (const team of teams) {
+    for (const emp of team.members) empById[emp.id] = { ...emp, teamName: team.name };
+  }
+  for (const t of transfers) {
+    const emp      = empById[t.employee_id];
+    const fromTeam = teams.find(tt => tt.id === t.from_team_id);
+    if (!emp || !fromTeam) continue;
+    if (!ghostsByTeam[t.to_team_id]) ghostsByTeam[t.to_team_id] = [];
+    ghostsByTeam[t.to_team_id].push({ transfer: t, emp, fromTeam });
+  }
+
+  /* ── Manager nodes ── */
   const managerNodes = managers.map(u => {
     const isSelf    = u.id === myId;
     const showStep  = canSetLevel && !isSelf;
@@ -800,32 +840,53 @@ function renderOrgTab(user) {
         <div class="org-node__avatar">${getInitials(u.name)}</div>
         <div class="org-node__info">
           <div class="org-node__name">${u.name}</div>
-          <div class="org-node__meta">${u.role ?? '—'}${isSelf ? ' (você)' : ''}</div>
+          <div class="org-node__meta">${u.role ?? '—'}${isSelf ? ' (você)' : ''}${emailMap[u.id] ? `<span class="org-node__email">${emailMap[u.id]}</span>` : ''}</div>
         </div>
         <span class="role-badge role-badge--${roleClass(u.role)}">${u.role ?? '—'}</span>
         ${showStep ? levelStepper(u.id, u.access_level, u.name, false) : ''}
       </div></div>`;
   }).join('');
 
+  /* ── Team blocks ── */
   const teamBlocks = teams.map(team => {
+    const canDragFrom  = myLevel >= 5 || myTeams.includes(team.id);
+    const canResolve   = myLevel >= 5 || myTeams.includes(team.id);
+
     const memberNodes = team.members.map(emp => {
-      const isSelf   = emp.id === myId;
-      const showStep = canSetLevel && !isSelf;
-      const isPending = !!_pendingLevelChanges[emp.id];
+      const isSelf          = emp.id === myId;
+      const showStep        = canSetLevel && !isSelf;
+      const isPending       = !!_pendingLevelChanges[emp.id];
+      const hasTransfer     = !!transferByEmp[emp.id];
+      const draggable       = canDragFrom && !hasTransfer ? 'draggable="true"' : '';
       return `
-        <div class="org-node org-node--user"><div class="org-node__content${isPending ? ' org-node--pending' : ''}">
-          <div class="org-node__avatar">${getInitials(emp.name)}</div>
-          <div class="org-node__info">
-            <div class="org-node__name">${emp.name}</div>
-            <div class="org-node__meta">colaborador</div>
+        <div class="org-node org-node--user${hasTransfer ? ' org-node--transferring' : ''}"
+             data-emp-id="${emp.id}" data-team-id="${team.id}" ${draggable}>
+          <div class="org-node__content${isPending ? ' org-node--pending' : ''}">
+            <div class="org-node__avatar">${getInitials(emp.name)}</div>
+            <div class="org-node__info">
+              <div class="org-node__name">${emp.name}</div>
+              <div class="org-node__meta">colaborador${emailMap[emp.id] ? `<span class="org-node__email">${emailMap[emp.id]}</span>` : ''}</div>
+            </div>
+            ${hasTransfer ? '<span class="org-transfer-badge">Transferência pendente</span>' : '<span class="role-badge role-badge--colaborador">colaborador</span>'}
+            ${showStep && !hasTransfer ? levelStepper(emp.id, 2, emp.name, true) : ''}
           </div>
-          <span class="role-badge role-badge--colaborador">colaborador</span>
-          ${showStep ? levelStepper(emp.id, 2, emp.name, true) : ''}
-        </div></div>`;
+        </div>`;
     }).join('');
 
+    const ghostNodes = (ghostsByTeam[team.id] ?? []).map(g => `
+      <div class="org-node org-node--user org-node--ghost" data-transfer-id="${g.transfer.id}">
+        <div class="org-node__content">
+          <div class="org-node__avatar org-node__avatar--ghost">${getInitials(g.emp.name)}</div>
+          <div class="org-node__info">
+            <div class="org-node__name">${g.emp.name}</div>
+            <div class="org-node__meta">Aguardando alocação · de: ${g.fromTeam.name}</div>
+          </div>
+          ${canResolve ? `<button class="btn btn--sm btn--ghost org-ghost-review-btn" data-transfer-id="${g.transfer.id}" type="button">Revisar</button>` : ''}
+        </div>
+      </div>`).join('');
+
     return `
-      <div class="org-team-block">
+      <div class="org-team-block" id="org-team-${team.id}" data-drop-team-id="${team.id}">
         <div class="org-node org-node--team"><div class="org-node__content">
           <div class="org-node__avatar org-node__avatar--team">👥</div>
           <div class="org-node__info">
@@ -835,13 +896,18 @@ function renderOrgTab(user) {
               · Supervisor: ${team.supervisorName}
             </div>
           </div>
+          <button class="org-team-toggle" data-team="${team.id}" title="Expandir/recolher" type="button">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9"/>
+            </svg>
+          </button>
         </div></div>
-        <div class="org-children">${memberNodes}</div>
+        <div class="org-children">${memberNodes}${ghostNodes}</div>
       </div>`;
   }).join('');
 
   return `
-    <div class="panel">
+    <div class="panel panel--dark">
       <div class="panel__header">
         <div class="panel__title">Estrutura — ${department?.name ?? 'Departamento'}</div>
       </div>
@@ -864,6 +930,52 @@ function renderOrgTab(user) {
         </div>
         <div class="org-children org-children--top">${managerNodes}</div>
         ${teamBlocks}
+      </div>
+    </div>
+
+    <!-- Transfer request modal -->
+    <div id="transfer-req-modal" class="modal-overlay modal-overlay--hidden">
+      <div class="modal modal--sm">
+        <div class="modal__header">
+          <div class="modal__title">Confirmar transferência</div>
+          <button class="modal__close" id="transfer-req-close" type="button">✕</button>
+        </div>
+        <div class="modal__body">
+          <p id="transfer-req-msg" style="font-size:var(--text-sm);color:var(--text-secondary);margin-bottom:var(--space-4)"></p>
+          <div style="background:#fefce8;border:1px solid #fde68a;border-radius:var(--radius-sm);padding:var(--space-3) var(--space-4);font-size:var(--text-sm);color:#92400e;display:flex;gap:var(--space-2);align-items:flex-start">
+            <span>⚠</span>
+            <span>A transferência não será concluída até que o supervisor de destino a aceite.</span>
+          </div>
+        </div>
+        <div class="modal__footer">
+          <button class="btn btn--ghost" id="transfer-req-cancel" type="button">Cancelar</button>
+          <button class="btn btn--primary" id="transfer-req-confirm" type="button">Solicitar transferência</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Transfer resolve modal -->
+    <div id="transfer-resolve-modal" class="modal-overlay modal-overlay--hidden">
+      <div class="modal modal--sm">
+        <div class="modal__header">
+          <div class="modal__title">Revisão de transferência</div>
+          <button class="modal__close" id="transfer-resolve-close" type="button">✕</button>
+        </div>
+        <div class="modal__body">
+          <p id="transfer-resolve-msg" style="font-size:var(--text-sm);color:var(--text-secondary);margin-bottom:var(--space-4)"></p>
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Alocar em qual setor?</label>
+            <select class="form-select" id="transfer-sector-select">
+              <option value="">— carregando —</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal__footer">
+          <button class="btn btn--ghost btn--danger-text" id="transfer-deny-btn" type="button">Recusar</button>
+          <div style="flex:1"></div>
+          <button class="btn btn--ghost" id="transfer-resolve-cancel" type="button">Fechar</button>
+          <button class="btn btn--primary" id="transfer-approve-btn" type="button">Confirmar alocação</button>
+        </div>
       </div>
     </div>`;
 }
@@ -1112,6 +1224,147 @@ export async function init() {
   if (_activeTab === 'catalog') await initCatalogData();
 }
 
+/* ── Team transfer functions ──────────────────── */
+function openTransferRequestModal({ empId, empName, fromTeamId, fromTeamName, toTeamId, toTeamName }) {
+  _transferDragState = { empId, empName, fromTeamId, fromTeamName, toTeamId, toTeamName };
+  const msg = document.getElementById('transfer-req-msg');
+  if (msg) msg.innerHTML = `Deseja transferir <strong>${empName}</strong> da equipe <strong>${fromTeamName}</strong> para <strong>${toTeamName}</strong>?`;
+  document.getElementById('transfer-req-modal')?.classList.remove('modal-overlay--hidden');
+}
+
+function closeTransferRequestModal() {
+  _transferDragState = null;
+  document.getElementById('transfer-req-modal')?.classList.add('modal-overlay--hidden');
+}
+
+async function confirmTransferRequest() {
+  if (!_transferDragState) return;
+  const { empId, fromTeamId, toTeamId } = _transferDragState;
+  const user = getCurrentUser();
+  const btn  = document.getElementById('transfer-req-confirm');
+  if (btn) { btn.disabled = true; btn.textContent = 'Solicitando…'; }
+  try {
+    const { error } = await supabase.from('team_transfers').insert({
+      id:           crypto.randomUUID(),
+      employee_id:  empId,
+      from_team_id: fromTeamId,
+      to_team_id:   toTeamId,
+      requested_by: user.id,
+    });
+    if (error) throw error;
+    closeTransferRequestModal();
+    _orgData = null;
+    await loadOrgTabData();
+    document.getElementById('admin-tab-content').innerHTML = renderTab('org', getCurrentUser());
+    bindTabEvents();
+  } catch (err) {
+    console.error('[admin] transfer request:', err);
+    toast.error('Erro', err.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Solicitar transferência'; }
+  }
+}
+
+async function openTransferResolveModal(transferId) {
+  _transferResolveId = transferId;
+  const transfer = (_orgData?.transfers ?? []).find(t => t.id === transferId);
+  if (!transfer) return;
+
+  const empById = {};
+  for (const team of (_orgData?.teams ?? [])) {
+    for (const emp of team.members) empById[emp.id] = emp;
+  }
+  const emp      = empById[transfer.employee_id];
+  const fromTeam = (_orgData?.teams ?? []).find(t => t.id === transfer.from_team_id);
+  const toTeam   = (_orgData?.teams ?? []).find(t => t.id === transfer.to_team_id);
+
+  const msg = document.getElementById('transfer-resolve-msg');
+  if (msg) msg.innerHTML = `O supervisor <strong>${fromTeam?.supervisorName ?? '—'}</strong> deseja transferir <strong>${emp?.name ?? '—'}</strong> para a equipe <strong>${toTeam?.name ?? '—'}</strong>.`;
+
+  const sectorSel = document.getElementById('transfer-sector-select');
+  if (sectorSel) {
+    sectorSel.innerHTML = '<option value="">— carregando —</option>';
+    const { data: sectors } = await supabase
+      .from('sectors').select('id, name')
+      .eq('team_id', transfer.to_team_id).eq('active', true).order('name');
+    sectorSel.innerHTML = '<option value="">— Selecionar setor —</option>' +
+      (sectors ?? []).map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+  }
+
+  document.getElementById('transfer-resolve-modal')?.classList.remove('modal-overlay--hidden');
+}
+
+function closeTransferResolveModal() {
+  _transferResolveId = null;
+  document.getElementById('transfer-resolve-modal')?.classList.add('modal-overlay--hidden');
+}
+
+async function approveTransfer() {
+  const sectorId = document.getElementById('transfer-sector-select')?.value;
+  if (!sectorId) { toast.error('Selecione um setor', 'É necessário escolher um setor para concluir a alocação.'); return; }
+  const transfer = (_orgData?.transfers ?? []).find(t => t.id === _transferResolveId);
+  if (!transfer) return;
+
+  const user = getCurrentUser();
+  const btn  = document.getElementById('transfer-approve-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Processando…'; }
+  try {
+    const { data: toTeamData } = await supabase
+      .from('teams').select('sector_group_id').eq('id', transfer.to_team_id).single();
+
+    const { error: e1 } = await supabase.from('employees').update({
+      team_id:         transfer.to_team_id,
+      sector_id:       sectorId,
+      sector_group_id: toTeamData?.sector_group_id ?? null,
+    }).eq('id', transfer.employee_id);
+    if (e1) throw e1;
+
+    const { error: e2 } = await supabase.from('team_transfers').update({
+      status:           'approved',
+      resolved_by:      user.id,
+      resolved_at:      new Date().toISOString(),
+      target_sector_id: sectorId,
+    }).eq('id', _transferResolveId);
+    if (e2) throw e2;
+
+    toast.success('Transferência aprovada', 'O colaborador foi alocado na nova equipe.');
+    closeTransferResolveModal();
+    _orgData = null;
+    await loadOrgTabData();
+    document.getElementById('admin-tab-content').innerHTML = renderTab('org', getCurrentUser());
+    bindTabEvents();
+  } catch (err) {
+    console.error('[admin] approve transfer:', err);
+    toast.error('Erro', err.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Confirmar alocação'; }
+  }
+}
+
+async function denyTransfer() {
+  if (!_transferResolveId) return;
+  const user = getCurrentUser();
+  const btn  = document.getElementById('transfer-deny-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Recusando…'; }
+  try {
+    const { error } = await supabase.from('team_transfers').update({
+      status:      'denied',
+      resolved_by: user.id,
+      resolved_at: new Date().toISOString(),
+    }).eq('id', _transferResolveId);
+    if (error) throw error;
+
+    toast.success('Transferência recusada', 'O colaborador permanece na equipe atual.');
+    closeTransferResolveModal();
+    _orgData = null;
+    await loadOrgTabData();
+    document.getElementById('admin-tab-content').innerHTML = renderTab('org', getCurrentUser());
+    bindTabEvents();
+  } catch (err) {
+    console.error('[admin] deny transfer:', err);
+    toast.error('Erro', err.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Recusar'; }
+  }
+}
+
 function bindTabEvents() {
   /* ── Users tab ── */
   document.querySelectorAll('.btn-absorb').forEach(btn => {
@@ -1122,6 +1375,102 @@ function bindTabEvents() {
   document.getElementById('absorb-modal')?.addEventListener('click',
     e => { if (e.target.id === 'absorb-modal') closeAbsorbModal(); });
   document.getElementById('absorb-confirm')?.addEventListener('click', absorbUser);
+
+  /* ── Org tab — team collapse toggles ── */
+  document.querySelectorAll('.org-team-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      btn.closest('.org-team-block')?.classList.toggle('org-team-block--collapsed');
+    });
+  });
+
+  /* ── Org tab — drag & drop transfers ── */
+  document.querySelectorAll('.org-node--user[draggable="true"]').forEach(card => {
+    card.addEventListener('dragstart', e => {
+      const empId    = card.dataset.empId;
+      const teamId   = card.dataset.teamId;
+      const empName  = card.querySelector('.org-node__name')?.textContent?.trim() ?? '';
+      const teamName = card.closest('.org-team-block')
+        ?.querySelector('.org-node--team .org-node__name')?.textContent?.trim() ?? '';
+      _transferDragState = { empId, empName, fromTeamId: teamId, fromTeamName: teamName };
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', empId);
+
+      // Browser snapshots the card at full opacity here (before rAF),
+      // then we hide the origin so it vanishes from its starting position.
+      requestAnimationFrame(() => {
+        card.classList.add('org-node--dragging');
+        // Inject drop placeholders into every eligible team
+        document.querySelectorAll('.org-team-block[data-drop-team-id]').forEach(block => {
+          if (block.dataset.dropTeamId === teamId) return;
+          const children = block.querySelector('.org-children');
+          if (!children) return;
+          const ph = document.createElement('div');
+          ph.className = 'org-drop-placeholder';
+          ph.dataset.phTeam = block.dataset.dropTeamId;
+          ph.textContent = 'Soltar aqui';
+          children.appendChild(ph);
+        });
+      });
+    });
+
+    card.addEventListener('dragend', () => {
+      card.classList.remove('org-node--dragging');
+      document.querySelectorAll('.org-drop-placeholder').forEach(ph => ph.remove());
+      document.querySelectorAll('.org-drop-active').forEach(el => el.classList.remove('org-drop-active'));
+      // Do NOT clear _transferDragState here — drop fires before dragend, so the
+      // modal may already be open and waiting for the user to confirm.
+      // State is cleared by confirmTransferRequest() or closeTransferRequestModal().
+    });
+  });
+
+  document.querySelectorAll('.org-team-block[data-drop-team-id]').forEach(block => {
+    block.addEventListener('dragover', e => {
+      if (!_transferDragState) return;
+      if (block.dataset.dropTeamId === _transferDragState.fromTeamId) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      block.classList.add('org-drop-active');
+      document.querySelectorAll('.org-drop-placeholder').forEach(ph => {
+        ph.classList.toggle('org-drop-placeholder--active', ph.dataset.phTeam === block.dataset.dropTeamId);
+      });
+    });
+    block.addEventListener('dragleave', e => {
+      if (!block.contains(e.relatedTarget)) {
+        block.classList.remove('org-drop-active');
+        document.querySelectorAll('.org-drop-placeholder').forEach(ph =>
+          ph.classList.remove('org-drop-placeholder--active'));
+      }
+    });
+    block.addEventListener('drop', e => {
+      e.preventDefault();
+      block.classList.remove('org-drop-active');
+      if (!_transferDragState) return;
+      const toTeamId = block.dataset.dropTeamId;
+      if (toTeamId === _transferDragState.fromTeamId) return;
+      const toTeamName = block.querySelector('.org-node--team .org-node__name')?.textContent?.trim() ?? '';
+      openTransferRequestModal({ ..._transferDragState, toTeamId, toTeamName });
+    });
+  });
+
+  /* ── Org tab — ghost review ── */
+  document.querySelectorAll('.org-ghost-review-btn').forEach(btn => {
+    btn.addEventListener('click', () => openTransferResolveModal(btn.dataset.transferId));
+  });
+
+  /* ── Org tab — transfer request modal ── */
+  document.getElementById('transfer-req-confirm')?.addEventListener('click', confirmTransferRequest);
+  document.getElementById('transfer-req-cancel')?.addEventListener('click', closeTransferRequestModal);
+  document.getElementById('transfer-req-close')?.addEventListener('click', closeTransferRequestModal);
+  document.getElementById('transfer-req-modal')?.addEventListener('click',
+    e => { if (e.target.id === 'transfer-req-modal') closeTransferRequestModal(); });
+
+  /* ── Org tab — transfer resolve modal ── */
+  document.getElementById('transfer-approve-btn')?.addEventListener('click', approveTransfer);
+  document.getElementById('transfer-deny-btn')?.addEventListener('click', denyTransfer);
+  document.getElementById('transfer-resolve-cancel')?.addEventListener('click', closeTransferResolveModal);
+  document.getElementById('transfer-resolve-close')?.addEventListener('click', closeTransferResolveModal);
+  document.getElementById('transfer-resolve-modal')?.addEventListener('click',
+    e => { if (e.target.id === 'transfer-resolve-modal') closeTransferResolveModal(); });
 
   /* ── Org tab — level steppers ── */
   document.querySelectorAll('.level-stepper__btn').forEach(btn => {

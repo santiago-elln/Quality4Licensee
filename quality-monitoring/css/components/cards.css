@@ -41,6 +41,15 @@
 .panel__body { padding: var(--space-5); }
 .panel__body--flush { padding: 0; }
 .panel__body--compact { padding: var(--space-3) var(--space-4); }
+.panel--dark {
+  background: var(--brand-dark);
+  border-color: transparent;
+}
+.panel--dark .panel__header {
+  background: var(--brand-dark);
+  border-bottom-color: rgba(255,255,255,.08);
+}
+.panel--dark .panel__title { color: rgba(255,255,255,.9); }
 
 .panel__footer {
   padding: var(--space-3) var(--space-5);
