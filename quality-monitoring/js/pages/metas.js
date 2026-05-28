@@ -333,6 +333,17 @@ function planIsDone(plan) {
   return _pendingFinished !== null ? _pendingFinished : plan.finished_at != null;
 }
 
+function parseStepLinks(text) {
+  const escaped = (text ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  return escaped.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (_, label, url) =>
+    `<a href="${url.replace(/"/g, '%22')}" target="_blank" rel="noopener noreferrer"
+        style="color:var(--brand-green);text-decoration:underline">${label}</a>`
+  );
+}
+
 function targetLabel(t) {
   if (t.target_type === 'eval_criteria') return t.eval_criteria?.name ?? '—';
   if (t.target_type === 'custom')        return t.custom_label ?? '—';
@@ -878,7 +889,7 @@ function renderPlanDetail(plan) {
                               border:1px solid var(--brand-green);display:flex;flex-direction:column;gap:var(--space-2)">
                     <input type="text" id="edit-step-desc-${step.id}" class="form-input"
                            value="${(displayDesc ?? '').replace(/"/g,'&quot;')}"
-                           placeholder="Descrição do passo" style="font-size:var(--text-sm)">
+                           placeholder="Descrição do passo — use [texto](https://url) para links" style="font-size:var(--text-sm)">
                     <div style="display:flex;gap:var(--space-2);align-items:flex-end">
                       <div class="form-group" style="flex:1;margin-bottom:0">
                         <label class="form-label" style="font-size:10px">Data de início</label>
@@ -906,7 +917,7 @@ function renderPlanDetail(plan) {
                         <div style="font-size:var(--text-sm);
                                     color:${done ? 'var(--text-tertiary)' : 'var(--text-primary)'};
                                     ${done ? 'text-decoration:line-through;' : ''}">
-                          ${displayDesc}
+                          ${parseStepLinks(displayDesc)}
                           ${isEditPend ? '<span style="color:var(--color-warning);font-size:10px;margin-left:2px">●</span>' : ''}
                         </div>
                         ${displayDate || step.finished_at ? `
@@ -1019,7 +1030,7 @@ function renderNewStepForm(plan) {
                 border:1px solid var(--brand-green);
                 display:flex;flex-direction:column;gap:var(--space-2)">
       <input type="text" id="ns-desc" class="form-input"
-             placeholder="Descrição do passo…" style="font-size:var(--text-sm)">
+             placeholder="Descrição do passo… — use [texto](https://url) para links" style="font-size:var(--text-sm)">
       <div style="display:flex;gap:var(--space-2);align-items:flex-end">
         <div class="form-group" style="flex:1;margin-bottom:0">
           <label class="form-label" style="font-size:10px">Data de início (opcional)</label>
