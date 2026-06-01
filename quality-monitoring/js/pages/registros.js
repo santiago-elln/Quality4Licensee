@@ -8,6 +8,7 @@ import { can, P } from '../utils/permissions.js';
 import {
   formatDate, resultBand, scoreColor, scoreColorHex, getInitials,
 } from '../utils/formatters.js';
+import { renderRadarChart } from '../components/charts.js';
 import { CalPicker, calTriggerHtml } from '../components/cal-picker.js';
 
 const PAGE_SIZE = 20;
@@ -33,11 +34,16 @@ let _calPicker        = null;
 /* ── Row processor ────────────────────────── */
 function processRow(mon) {
   let score = 0, total = 0;
+  const radarSum = {};
   for (const ta of (mon.topic_approval ?? [])) {
     const t = _topicMap[ta.topic_id];
     if (!t) continue;
     total += t.points;
     if (ta.obtained) score += t.points;
+    const cid = t.eval_criteria_id;
+    if (!radarSum[cid]) radarSum[cid] = { e: 0, m: 0 };
+    radarSum[cid].m += t.points;
+    if (ta.obtained) radarSum[cid].e += t.points;
   }
   const pct = total > 0 ? Math.round(score / total * 100) : 0;
 
@@ -60,6 +66,7 @@ function processRow(mon) {
     supId:   emp?.team_id ?? null,
     score, total, pct, avgCsat,
     band: resultBand(pct),
+    radarSum,
   };
 }
 
@@ -119,6 +126,25 @@ function applyClientFilters() {
   _rows = rows;
 }
 
+/* ── Radar chart ──────────────────────────── */
+function computeRadarPcts() {
+  const sum = {};
+  for (const row of _rows) {
+    for (const [cid, { e, m }] of Object.entries(row.radarSum ?? {})) {
+      if (!sum[cid]) sum[cid] = { e: 0, m: 0 };
+      sum[cid].e += e;
+      sum[cid].m += m;
+    }
+  }
+  return _evalCriteria.map(ec => sum[ec.id]?.m > 0 ? Math.round(sum[ec.id].e / sum[ec.id].m * 100) : 0);
+}
+
+function refreshRadarChart() {
+  if (!_evalCriteria.length) return;
+  const labels = _evalCriteria.map(ec => ec.name.split(' ')[0]);
+  renderRadarChart('reg-radar-chart', labels, [{ label: 'Média', data: computeRadarPcts() }]);
+}
+
 /* ── render() ─────────────────────────────── */
 export function render() {
   if (!_dataLoaded) {
@@ -156,6 +182,16 @@ export function render() {
       <div class="page-header">
         <div class="page-title">Registros</div>
         <div class="page-subtitle">Histórico de monitorias realizadas</div>
+      </div>
+
+      <div class="panel" style="margin-bottom:var(--space-4)">
+        <div style="text-align:center;font-size:var(--text-xs);font-weight:700;text-transform:uppercase;
+                    letter-spacing:.05em;color:var(--text-secondary);margin-bottom:var(--space-1)">
+          Desempenho por Critério
+        </div>
+        <div style="max-width:280px;margin:0 auto">
+          <canvas id="reg-radar-chart" width="280" height="280"></canvas>
+        </div>
       </div>
 
       <div class="panel">
@@ -272,6 +308,7 @@ function refreshTable() {
   document.getElementById('pag-controls').innerHTML  = renderPagination();
   _expandedId = null;
   bindTableEvents();
+  refreshRadarChart();
 }
 
 /* ── Detail panel ─────────────────────────── */
@@ -905,4 +942,5 @@ export async function init() {
   main.innerHTML = render();
   bindFilters();
   bindTableEvents();
+  refreshRadarChart();
 }

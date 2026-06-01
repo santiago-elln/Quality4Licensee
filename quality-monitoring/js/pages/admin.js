@@ -10,9 +10,10 @@ import { can, P } from '../utils/permissions.js';
 
 /* ── Module state ─────────────────────────── */
 let _activeTab        = 'org';
-let _catalogTab       = 'eval_criteria';
-let _catalogData      = null;
-let _catalogDeptFilter = null;  // null=all, 'global'=no dept, uuid=specific dept
+let _catalogTab          = 'eval_criteria';
+let _catalogData         = null;
+let _catalogSgFilter     = null;  // selected sector_group id (null = show all)
+let _copyFromSourceSgId  = null;
 let _editState   = null;   // { table, row } — row=null means new
 let _deactState  = null;   // { table, id, name }
 let _donutChart  = null;
@@ -51,7 +52,6 @@ const CATALOG = {
     label:   'Critérios de Avaliação',
     columns: [
       { key: 'name',   label: 'Nome',  type: 'text',    required: true },
-      DEPT_COL,
       { key: 'active', label: 'Ativo', type: 'boolean', default: true },
     ],
     display:   r => r.name,
@@ -69,7 +69,6 @@ const CATALOG = {
       { key: 'eval_criteria_id', label: 'Critério',  type: 'select', required: true,
         options:  () => _catalogData?.eval_criteria ?? [],
         optLabel: r  => r.name },
-      DEPT_COL,
       { key: 'active', label: 'Ativo', type: 'boolean', default: true },
     ],
     display: r => r.item,
@@ -98,7 +97,6 @@ const CATALOG = {
     columns: [
       { key: 'name',     label: 'Nome',    type: 'text',    required: true },
       { key: 'critical', label: 'Crítico', type: 'boolean', default: false },
-      DEPT_COL,
       { key: 'active',   label: 'Ativo',   type: 'boolean', default: true },
     ],
     display:   r => r.name,
@@ -111,7 +109,6 @@ const CATALOG = {
     label:   'Critérios Analíticos',
     columns: [
       { key: 'name',   label: 'Nome',  type: 'text',    required: true },
-      DEPT_COL,
       { key: 'active', label: 'Ativo', type: 'boolean', default: true },
     ],
     display:   r => r.name,
@@ -129,6 +126,34 @@ const CATALOG_SUBTAB_LABELS = {
   error_type:           'Erros',
   analytical_note_type: 'Analíticos',
 };
+
+/* junction table metadata for the 4 sector-group-scoped tables */
+const SG_JUNCTION = {
+  eval_criteria:        { table: 'sector_group_eval_criteria',        col: 'eval_criteria_id',        editManual: true  },
+  topic:                { table: 'sector_group_topic',                 col: 'topic_id',                editManual: false },
+  error_type:           { table: 'sector_group_error_type',            col: 'error_type_id',           editManual: true  },
+  analytical_note_type: { table: 'sector_group_analytical_note_type',  col: 'analytical_note_type_id', editManual: true  },
+};
+
+/* sector-group link helpers */
+function _sgLinksOf(table, itemId) {
+  const junc = SG_JUNCTION[table];
+  if (!junc) return [];
+  return (_catalogData?.sg_links?.[table] ?? [])
+    .filter(l => l[junc.col] === itemId)
+    .map(l => l.sector_group_id);
+}
+
+function _sgMatchFn(table) {
+  const junc = SG_JUNCTION[table];
+  if (!junc || !_catalogSgFilter) return () => true;
+  const linked = new Set(
+    (_catalogData?.sg_links?.[table] ?? [])
+      .filter(l => l.sector_group_id === _catalogSgFilter)
+      .map(l => l[junc.col])
+  );
+  return item => linked.has(item.id);
+}
 
 /* ── render() ─────────────────────────────── */
 export function render() {
@@ -179,6 +204,29 @@ export function render() {
       </div>
     </div>
 
+    <!-- Copy-from modal -->
+    <div id="copy-from-modal" class="modal-overlay modal-overlay--hidden">
+      <div class="modal modal--lg" style="max-height:90vh;display:flex;flex-direction:column">
+        <div class="modal__header" style="flex-shrink:0">
+          <div class="modal__title">Copiar itens para <span id="copy-from-target-name"></span></div>
+          <button class="modal__close" id="copy-from-close" type="button">✕</button>
+        </div>
+        <div class="modal__body" style="display:flex;flex-direction:column;gap:var(--space-4);flex:1;overflow-y:auto;min-height:0">
+          <div class="form-group" style="margin:0;flex-shrink:0">
+            <label class="form-label">Copiar de</label>
+            <select class="form-select" id="copy-from-source-sg">
+              <option value="">— selecione um grupo —</option>
+            </select>
+          </div>
+          <div id="copy-from-items" style="display:flex;flex-direction:column;gap:var(--space-3)"></div>
+        </div>
+        <div class="modal__footer" style="flex-shrink:0">
+          <button class="btn btn--ghost" id="copy-from-cancel" type="button">Cancelar</button>
+          <button class="btn btn--primary" id="copy-from-confirm" type="button">Copiar selecionados</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Deactivate confirm modal -->
     <div id="catalog-deact-modal" class="modal-overlay modal-overlay--hidden">
       <div class="modal modal--sm">
@@ -224,33 +272,23 @@ function renderCatalogTab() {
 }
 
 function renderCatalogContent() {
-  const user      = getCurrentUser();
-  const canEdit       = can(user, P.ADMIN_UPDATE_CRITERIA);
-  const isSysOwner    = can(user, P.CROSS_DEPT_VIEW);
-  const cfg       = CATALOG[_catalogTab];
-  const allRows   = _catalogData?.[_catalogTab] ?? [];
+  const user    = getCurrentUser();
+  const canEdit = can(user, P.ADMIN_UPDATE_CRITERIA);
+  const cfg     = CATALOG[_catalogTab];
+  const allRows = _catalogData?.[_catalogTab] ?? [];
+  const sgs     = _catalogData?.sector_groups ?? [];
+  const hasSgScope = !!SG_JUNCTION[_catalogTab];
 
-  /* Department filter — sysowner uses _catalogDeptFilter; others are locked to own dept */
-  let displayRows = allRows;
-  if (isSysOwner) {
-    if (_catalogDeptFilter === 'global') {
-      displayRows = allRows.filter(r => !r.department_id);
-    } else if (_catalogDeptFilter) {
-      displayRows = allRows.filter(r => r.department_id === _catalogDeptFilter);
-    }
-  } else {
-    const myDeptId = user?.departmentId ?? null;
-    displayRows = allRows.filter(r => !r.department_id || r.department_id === myDeptId);
-  }
+  /* Filter rows by selected sector_group (for junction-scoped tables) */
+  let displayRows = hasSgScope ? allRows.filter(_sgMatchFn(_catalogTab)) : allRows;
 
-  /* Effective permissions: table config AND user permission */
   const eff = {
     canAdd:    cfg.canAdd    && canEdit,
     canEdit:   cfg.canEdit   && canEdit,
     canDelete: cfg.canDelete && canEdit,
   };
 
-  /* ── eval_criteria: enrich rows with active topic pts ── */
+  /* eval_criteria: enrich with topic point totals for selected sg */
   let headerExtra = '';
   if (_catalogTab === 'eval_criteria') {
     const ptMap    = ecPointsMap();
@@ -261,21 +299,23 @@ function renderCatalogContent() {
 
   const rowsHtml = displayRows.length
     ? displayRows.map(r => renderCatalogRow({ ...cfg, ...eff }, r)).join('')
-    : `<div class="catalog-empty">Nenhum registro encontrado.</div>`;
+    : `<div class="catalog-empty">Nenhum registro encontrado${_catalogSgFilter ? ' para este grupo' : ''}.</div>`;
 
-  const depts = _catalogData?.departments ?? [];
-  const filterBar = isSysOwner ? `
+  const sgFilterBar = hasSgScope ? `
     <div class="catalog-dept-filter">
-      <span class="catalog-dept-filter__label">Departamento</span>
-      <select class="form-select catalog-dept-filter__select" id="catalog-dept-filter">
-        <option value="">Todos</option>
-        <option value="global" ${_catalogDeptFilter === 'global' ? 'selected' : ''}>Global</option>
-        ${depts.map(d => `<option value="${d.id}" ${_catalogDeptFilter === d.id ? 'selected' : ''}>${d.name}</option>`).join('')}
+      <span class="catalog-dept-filter__label">Grupo de Setor</span>
+      <select class="form-select catalog-dept-filter__select" id="catalog-sg-filter">
+        <option value="">Todos os grupos</option>
+        ${sgs.map(sg => `<option value="${sg.id}" ${sg.id === _catalogSgFilter ? 'selected' : ''}>${sg.name}</option>`).join('')}
       </select>
+      ${canEdit && _catalogSgFilter ? `
+        <button class="btn btn--ghost btn--sm" id="catalog-copy-from-btn" title="Copiar itens de outro grupo">
+          Copiar de…
+        </button>` : ''}
     </div>` : '';
 
   return `
-    ${filterBar}
+    ${sgFilterBar}
     <div class="panel catalog-panel">
       <div class="panel__header">
         <div class="panel__title">${cfg.label}</div>
@@ -291,8 +331,26 @@ function renderCatalogContent() {
 function renderCatalogRow(cfg, row) {
   const isActive = row.active !== false;
   const meta     = cfg.meta(row);
-  const depts    = _catalogData?.departments ?? [];
-  const deptName = row.department_id ? (depts.find(d => d.id === row.department_id)?.name ?? '?') : null;
+
+  /* Sector-group badges (for junction-scoped tables) */
+  const junc = SG_JUNCTION[_catalogTab];
+  let scopeBadges = '';
+  if (junc) {
+    const sgIds  = _sgLinksOf(_catalogTab, row.id);
+    const sgs    = _catalogData?.sector_groups ?? [];
+    scopeBadges  = sgIds.length
+      ? sgIds.map(id => {
+          const sg = sgs.find(s => s.id === id);
+          return sg ? `<span class="badge catalog-badge--dept">${sg.name}</span>` : '';
+        }).join('')
+      : `<span class="badge catalog-badge--global">Sem grupo</span>`;
+  } else {
+    const depts    = _catalogData?.departments ?? [];
+    const deptName = row.department_id ? (depts.find(d => d.id === row.department_id)?.name ?? '?') : null;
+    scopeBadges    = deptName
+      ? `<span class="badge catalog-badge--dept">${deptName}</span>`
+      : `<span class="badge catalog-badge--global">Global</span>`;
+  }
 
   /* Badges */
   const activeBadge   = isActive
@@ -302,9 +360,6 @@ function renderCatalogRow(cfg, row) {
     ? `<span class="badge badge--critical">Crítico</span>` : '';
   const pointsBadge   = row.points != null
     ? `<span class="catalog-pts-badge">${row.points}pts</span>` : '';
-  const deptBadge     = deptName
-    ? `<span class="badge catalog-badge--dept">${deptName}</span>`
-    : `<span class="badge catalog-badge--global">Global</span>`;
 
   /* Action buttons */
   const editBtn = cfg.canEdit
@@ -325,27 +380,15 @@ function renderCatalogRow(cfg, row) {
         <div class="catalog-row__name">${cfg.display(row)}</div>
         ${meta ? `<div class="catalog-row__meta">${meta}</div>` : ''}
       </div>
-      <div class="catalog-row__badges">${pointsBadge}${criticalBadge}${deptBadge}${activeBadge}</div>
+      <div class="catalog-row__badges">${pointsBadge}${criticalBadge}${scopeBadges}${activeBadge}</div>
       <div class="catalog-row__actions">${editBtn}${toggleBtn}</div>
     </div>
   `;
 }
 
 /* ── Points helpers ───────────────────────── */
-function _deptMatchFn() {
-  const user       = getCurrentUser();
-  const isSysOwner = can(user, P.CROSS_DEPT_VIEW);
-  if (isSysOwner) {
-    if (_catalogDeptFilter === 'global') return item => !item.department_id;
-    if (_catalogDeptFilter)             return item => item.department_id === _catalogDeptFilter;
-    return () => true;
-  }
-  const myDeptId = user?.departmentId ?? null;
-  return item => !item.department_id || item.department_id === myDeptId;
-}
-
 function ecPointsMap() {
-  const match = _deptMatchFn();
+  const match = _sgMatchFn('topic');
   const map = {};
   for (const t of _catalogData?.topic ?? []) {
     if (!t.active || !match(t)) continue;
@@ -356,13 +399,19 @@ function ecPointsMap() {
 
 /* ── Catalog data ─────────────────────────── */
 async function fetchCatalog() {
-  const [ecRes, topicRes, obsRes, errRes, analRes, deptRes] = await Promise.all([
-    supabase.from('eval_criteria').select('id, name, active, department_id').order('name'),
-    supabase.from('topic').select('id, item, description, points, eval_criteria_id, active, department_id').order('item'),
+  const [ecRes, topicRes, obsRes, errRes, analRes, deptRes, sgRes,
+         sgEcRes, sgTopicRes, sgErrRes, sgAnalRes] = await Promise.all([
+    supabase.from('eval_criteria').select('id, name, active').order('name'),
+    supabase.from('topic').select('id, item, description, points, eval_criteria_id, active').order('item'),
     supabase.from('observation_type').select('id, code, display_name, active, department_id').order('display_name'),
-    supabase.from('error_type').select('id, name, critical, active, department_id').order('name'),
-    supabase.from('analytical_note_type').select('id, name, active, department_id').order('name'),
+    supabase.from('error_type').select('id, name, critical, active').order('name'),
+    supabase.from('analytical_note_type').select('id, name, active').order('name'),
     supabase.from('departments').select('id, name').eq('active', true).order('name'),
+    supabase.from('sector_groups').select('id, name').order('name'),
+    supabase.from('sector_group_eval_criteria').select('sector_group_id, eval_criteria_id'),
+    supabase.from('sector_group_topic').select('sector_group_id, topic_id'),
+    supabase.from('sector_group_error_type').select('sector_group_id, error_type_id'),
+    supabase.from('sector_group_analytical_note_type').select('sector_group_id, analytical_note_type_id'),
   ]);
   _catalogData = {
     eval_criteria:        ecRes.data    ?? [],
@@ -371,6 +420,13 @@ async function fetchCatalog() {
     error_type:           errRes.data   ?? [],
     analytical_note_type: analRes.data  ?? [],
     departments:          deptRes.data  ?? [],
+    sector_groups:        sgRes.data    ?? [],
+    sg_links: {
+      eval_criteria:        sgEcRes.data    ?? [],
+      topic:                sgTopicRes.data ?? [],
+      error_type:           sgErrRes.data   ?? [],
+      analytical_note_type: sgAnalRes.data  ?? [],
+    },
   };
 }
 
@@ -426,10 +482,10 @@ function updatePageDonutSlot() {
     return;
   }
 
-  const deptMatch = _deptMatchFn();
+  const sgMatch = _sgMatchFn('topic');
 
   const totalPts = (_catalogData?.topic ?? [])
-    .filter(t => t.active && deptMatch(t))
+    .filter(t => t.active && sgMatch(t))
     .reduce((s, t) => s + (t.points ?? 0), 0);
 
   slot.innerHTML = `
@@ -443,7 +499,8 @@ function updatePageDonutSlot() {
   if (typeof Chart === 'undefined') return;
 
   const ptMap          = ecPointsMap();
-  const activeCriteria = (_catalogData?.eval_criteria ?? []).filter(ec => ec.active && deptMatch(ec));
+  const ecMatch        = _sgMatchFn('eval_criteria');
+  const activeCriteria = (_catalogData?.eval_criteria ?? []).filter(ec => ec.active && ecMatch(ec));
   const labels         = activeCriteria.map(ec => ec.name);
   const data           = activeCriteria.map(ec => ptMap[ec.id] ?? 0);
   const colors         = activeCriteria.map((_, i) => EC_COLORS[i % EC_COLORS.length]);
@@ -489,17 +546,11 @@ function openEdit(table, row = null) {
     isNew ? `Adicionar — ${cfg.label}` : `Editar — ${cfg.label}`;
   document.getElementById('catalog-modal-body').innerHTML = buildEditForm(cfg, row);
   document.getElementById('catalog-edit-modal').classList.remove('modal-overlay--hidden');
-
-  /* Pre-fill department when adding under a specific dept filter */
-  if (isNew && _catalogDeptFilter && _catalogDeptFilter !== 'global') {
-    const deptSel = document.getElementById('ef-department_id');
-    if (deptSel) deptSel.value = _catalogDeptFilter;
-  }
 }
 
 function buildEditForm(cfg, row) {
   const isNew = row === null;
-  return cfg.columns.filter(c => !c.readonly).map(col => {
+  const colsHtml = cfg.columns.filter(c => !c.readonly).map(col => {
     const val        = row?.[col.key] ?? col.default ?? '';
     const isDisabled = !isNew && col.editReadonly;
 
@@ -533,6 +584,29 @@ function buildEditForm(cfg, row) {
                ${col.min != null && !isDisabled ? `min="${col.min}" type="${col.type}"` : ''}>
       </div>`;
   }).join('');
+
+  /* Sector-group multi-select for manually-managed junction tables */
+  const junc = SG_JUNCTION[_editState?.table];
+  let sgHtml = '';
+  if (junc?.editManual) {
+    const sgs    = _catalogData?.sector_groups ?? [];
+    const linked = row ? new Set(_sgLinksOf(_editState.table, row.id)) : new Set();
+    const opts   = sgs.map(sg => `
+      <label class="check-item" style="display:flex;align-items:center;gap:var(--space-2);padding:3px 0">
+        <input type="checkbox" name="ef-sg-link" value="${sg.id}" ${linked.has(sg.id) ? 'checked' : ''}>
+        <span>${sg.name}</span>
+      </label>`).join('');
+    sgHtml = `
+      <div class="form-group">
+        <label class="form-label">Grupos de Setor</label>
+        <div id="ef-sg-links" style="border:1px solid var(--border);border-radius:var(--radius-sm);
+             padding:var(--space-2);max-height:160px;overflow-y:auto">
+          ${opts || '<span style="color:var(--text-tertiary);font-size:var(--text-sm)">Nenhum grupo cadastrado</span>'}
+        </div>
+      </div>`;
+  }
+
+  return colsHtml + sgHtml;
 }
 
 async function saveEdit() {
@@ -559,6 +633,7 @@ async function saveEdit() {
   btn.disabled = true; btn.textContent = 'Salvando…';
 
   try {
+    let itemId = row?.id;
     if (row) {
       const { error } = await supabase.from(table).update(data).eq('id', row.id);
       if (error) throw error;
@@ -567,9 +642,58 @@ async function saveEdit() {
     } else {
       const { data: inserted, error } = await supabase.from(table).insert(data).select().single();
       if (error) throw error;
+      itemId = inserted.id;
       _catalogData[table].push(inserted);
       _catalogData[table].sort((a, b) => (cfg.display(a) ?? '').localeCompare(cfg.display(b) ?? ''));
     }
+
+    /* Sync sector-group junction rows */
+    const junc = SG_JUNCTION[table];
+    if (junc && itemId) {
+      if (junc.editManual) {
+        /* Manual: read checkboxes and diff against current links */
+        const checked  = [...document.querySelectorAll('#ef-sg-links input[name="ef-sg-link"]:checked')];
+        const newSgIds = new Set(checked.map(cb => cb.value));
+        const oldSgIds = new Set(row ? _sgLinksOf(table, itemId) : []);
+
+        const toAdd    = [...newSgIds].filter(id => !oldSgIds.has(id));
+        const toRemove = [...oldSgIds].filter(id => !newSgIds.has(id));
+
+        if (toAdd.length) {
+          await supabase.from(junc.table).insert(toAdd.map(sgId => ({ sector_group_id: sgId, [junc.col]: itemId })));
+          for (const sgId of toAdd) _catalogData.sg_links[table].push({ sector_group_id: sgId, [junc.col]: itemId });
+        }
+        for (const sgId of toRemove) {
+          await supabase.from(junc.table).delete().eq('sector_group_id', sgId).eq(junc.col, itemId);
+        }
+        if (toRemove.length) {
+          _catalogData.sg_links[table] = _catalogData.sg_links[table]
+            .filter(l => !(l[junc.col] === itemId && toRemove.includes(l.sector_group_id)));
+        }
+      } else {
+        /* Auto-inherit: derive sector groups from parent (topic → eval_criteria) */
+        const criteriaId  = data.eval_criteria_id ?? row?.eval_criteria_id;
+        const parentSgIds = (_catalogData?.sg_links?.eval_criteria ?? [])
+          .filter(l => l.eval_criteria_id === criteriaId)
+          .map(l => l.sector_group_id);
+        const existing    = new Set(_sgLinksOf(table, itemId));
+        const toAdd       = parentSgIds.filter(id => !existing.has(id));
+        const toRemove    = [...existing].filter(id => !parentSgIds.includes(id));
+
+        if (toAdd.length) {
+          await supabase.from(junc.table).insert(toAdd.map(sgId => ({ sector_group_id: sgId, [junc.col]: itemId })));
+          for (const sgId of toAdd) _catalogData.sg_links[table].push({ sector_group_id: sgId, [junc.col]: itemId });
+        }
+        for (const sgId of toRemove) {
+          await supabase.from(junc.table).delete().eq('sector_group_id', sgId).eq(junc.col, itemId);
+        }
+        if (toRemove.length) {
+          _catalogData.sg_links[table] = _catalogData.sg_links[table]
+            .filter(l => !(l[junc.col] === itemId && toRemove.includes(l.sector_group_id)));
+        }
+      }
+    }
+
     closeEditModal();
     refreshCatalogContent();
     toast.success(row ? 'Atualizado' : 'Adicionado');
@@ -629,15 +753,19 @@ async function activateItem(table, id) {
 
 function closeDeactivateModal() {
   document.getElementById('catalog-deact-modal')?.classList.add('modal-overlay--hidden');
+  const btn = document.getElementById('catalog-deact-confirm');
+  if (btn) { btn.disabled = false; btn.textContent = 'Desativar'; }
   _deactState = null;
 }
 
 /* ── Event binding ─────────────────────────── */
 function bindCatalogContentEvents() {
-  document.getElementById('catalog-dept-filter')?.addEventListener('change', e => {
-    _catalogDeptFilter = e.target.value || null;
+  document.getElementById('catalog-sg-filter')?.addEventListener('change', e => {
+    _catalogSgFilter = e.target.value || null;
     refreshCatalogContent();
   });
+
+  document.getElementById('catalog-copy-from-btn')?.addEventListener('click', openCopyFromModal);
 
   document.getElementById('catalog-add-btn')?.addEventListener('click', () => openEdit(_catalogTab, null));
 
@@ -668,6 +796,136 @@ function bindCatalogContentEvents() {
   );
 }
 
+/* ── Copy-from modal ──────────────────────── */
+function openCopyFromModal() {
+  if (!_catalogSgFilter) return;
+  _copyFromSourceSgId = null;
+  const targetSg = (_catalogData?.sector_groups ?? []).find(sg => sg.id === _catalogSgFilter);
+  const modal    = document.getElementById('copy-from-modal');
+  if (!modal) return;
+
+  modal.querySelector('#copy-from-target-name').textContent = targetSg?.name ?? '—';
+
+  const sgs  = (_catalogData?.sector_groups ?? []).filter(sg => sg.id !== _catalogSgFilter);
+  const opts = sgs.map(sg => `<option value="${sg.id}">${sg.name}</option>`).join('');
+  const sel  = modal.querySelector('#copy-from-source-sg');
+  if (sel) sel.innerHTML = `<option value="">— selecione —</option>${opts}`;
+
+  modal.querySelector('#copy-from-items').innerHTML = '';
+  modal.classList.remove('modal-overlay--hidden');
+}
+
+function closeCopyFromModal() {
+  document.getElementById('copy-from-modal')?.classList.add('modal-overlay--hidden');
+  _copyFromSourceSgId = null;
+}
+
+function renderCopyFromItems(sourceSgId) {
+  const container = document.getElementById('copy-from-items');
+  if (!container) return;
+  if (!sourceSgId) { container.innerHTML = ''; return; }
+
+  const tables = [
+    { key: 'eval_criteria',        label: 'Critérios de Avaliação', display: r => r.name },
+    { key: 'topic',                label: 'Tópicos',                display: r => `${r.item} — ${(_catalogData?.eval_criteria.find(c => c.id === r.eval_criteria_id))?.name ?? '?'}` },
+    { key: 'error_type',           label: 'Tipos de Erro',          display: r => r.name },
+    { key: 'analytical_note_type', label: 'Critérios Analíticos',   display: r => r.name },
+  ];
+
+  const targetLinked = {}; // table → Set of item ids already in target group
+  for (const { key } of tables) {
+    const junc = SG_JUNCTION[key];
+    targetLinked[key] = new Set(
+      (_catalogData?.sg_links?.[key] ?? [])
+        .filter(l => l.sector_group_id === _catalogSgFilter)
+        .map(l => l[junc.col])
+    );
+  }
+
+  const sectionsHtml = tables.map(({ key, label, display }) => {
+    const junc        = SG_JUNCTION[key];
+    const sourceItems = (_catalogData?.sg_links?.[key] ?? [])
+      .filter(l => l.sector_group_id === sourceSgId)
+      .map(l => (_catalogData?.[key] ?? []).find(r => r.id === l[junc.col]))
+      .filter(Boolean);
+
+    if (!sourceItems.length) return '';
+
+    const rows = sourceItems.map(r => {
+      const already = targetLinked[key].has(r.id);
+      return `
+        <label class="check-item" style="display:flex;align-items:flex-start;gap:var(--space-2);padding:3px 0;
+               ${already ? 'opacity:.45' : ''}">
+          <input type="checkbox" data-table="${key}" data-id="${r.id}" style="flex-shrink:0;margin-top:2px"
+                 ${already ? 'disabled checked' : 'checked'}>
+          <span style="font-size:var(--text-sm);min-width:0;word-break:break-word">${display(r)}</span>
+          ${already ? '<span style="font-size:10px;color:var(--text-tertiary);white-space:nowrap;margin-left:auto;padding-left:var(--space-2)">já existe</span>' : ''}
+        </label>`;
+    }).join('');
+
+    return `
+      <div class="copy-from-section">
+        <div class="copy-from-section__header">
+          <span>${label} (${sourceItems.length})</span>
+          <button class="btn btn--ghost btn--sm copy-from-toggle-all" data-table="${key}" type="button">Desmarcar todos</button>
+        </div>
+        <div class="copy-from-section__rows">${rows}</div>
+      </div>`;
+  }).join('');
+
+  container.innerHTML = sectionsHtml || '<p style="color:var(--text-tertiary);font-size:var(--text-sm)">Nenhum item encontrado neste grupo.</p>';
+
+  /* Toggle-all buttons */
+  container.querySelectorAll('.copy-from-toggle-all').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const tbl      = btn.dataset.table;
+      const boxes    = [...container.querySelectorAll(`input[data-table="${tbl}"]:not(:disabled)`)];
+      const allCheck = boxes.every(cb => cb.checked);
+      boxes.forEach(cb => { cb.checked = !allCheck; });
+      btn.textContent = allCheck ? 'Marcar todos' : 'Desmarcar todos';
+    });
+  });
+}
+
+async function confirmCopyFrom() {
+  if (!_catalogSgFilter || !_copyFromSourceSgId) return;
+  const btn = document.getElementById('copy-from-confirm');
+  if (btn) { btn.disabled = true; btn.textContent = 'Copiando…'; }
+
+  try {
+    const container = document.getElementById('copy-from-items');
+    const checked   = [...(container?.querySelectorAll('input[type="checkbox"]:checked:not(:disabled)') ?? [])];
+
+    /* Group by table */
+    const byTable = {};
+    for (const cb of checked) {
+      const t = cb.dataset.table;
+      if (!byTable[t]) byTable[t] = [];
+      byTable[t].push(cb.dataset.id);
+    }
+
+    for (const [table, ids] of Object.entries(byTable)) {
+      const junc = SG_JUNCTION[table];
+      if (!junc || !ids.length) continue;
+      const rows = ids.map(id => ({ sector_group_id: _catalogSgFilter, [junc.col]: id }));
+      const { error } = await supabase.from(junc.table).insert(rows).select();
+      if (error) throw error;
+      for (const id of ids) {
+        _catalogData.sg_links[table].push({ sector_group_id: _catalogSgFilter, [junc.col]: id });
+      }
+    }
+
+    const total = Object.values(byTable).reduce((s, arr) => s + arr.length, 0);
+    toast.success('Itens copiados', `${total} item(ns) adicionado(s) ao grupo.`);
+    closeCopyFromModal();
+    refreshCatalogContent();
+  } catch (err) {
+    toast.error('Erro ao copiar', err.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Copiar selecionados'; }
+  }
+}
+
 function bindModalEvents() {
   document.getElementById('catalog-modal-close')?.addEventListener('click',  closeEditModal);
   document.getElementById('catalog-modal-cancel')?.addEventListener('click', closeEditModal);
@@ -678,6 +936,16 @@ function bindModalEvents() {
     e => { if (e.target.id === 'catalog-edit-modal') closeEditModal(); });
   document.getElementById('catalog-deact-modal')?.addEventListener('click',
     e => { if (e.target.id === 'catalog-deact-modal') closeDeactivateModal(); });
+
+  document.getElementById('copy-from-close')?.addEventListener('click',   closeCopyFromModal);
+  document.getElementById('copy-from-cancel')?.addEventListener('click',  closeCopyFromModal);
+  document.getElementById('copy-from-confirm')?.addEventListener('click', confirmCopyFrom);
+  document.getElementById('copy-from-modal')?.addEventListener('click',
+    e => { if (e.target.id === 'copy-from-modal') closeCopyFromModal(); });
+  document.getElementById('copy-from-source-sg')?.addEventListener('change', e => {
+    _copyFromSourceSgId = e.target.value || null;
+    renderCopyFromItems(_copyFromSourceSgId);
+  });
 }
 
 /* ── Org tab data load ────────────────────── */
@@ -704,11 +972,18 @@ async function loadOrgTabData() {
         .in('sector_group_id', sgIds).eq('active', true).order('name');
       allTeams = tRows ?? [];
     }
-  } else if (!isGlobal && supervisedTeamIds.length) {
-    const { data: tRows } = await supabase
-      .from('teams').select('id, name, supervisor_id')
-      .in('id', supervisedTeamIds).eq('active', true).order('name');
-    allTeams = tRows ?? [];
+  } else if (!isGlobal) {
+    if (user.sectorGroupId) {
+      const { data: tRows } = await supabase
+        .from('teams').select('id, name, supervisor_id')
+        .eq('sector_group_id', user.sectorGroupId).eq('active', true).order('name');
+      allTeams = tRows ?? [];
+    } else if (supervisedTeamIds.length) {
+      const { data: tRows } = await supabase
+        .from('teams').select('id, name, supervisor_id')
+        .in('id', supervisedTeamIds).eq('active', true).order('name');
+      allTeams = tRows ?? [];
+    }
   }
 
   /* ── Step 2: fetch employees and managers in parallel */
@@ -725,11 +1000,11 @@ async function loadOrgTabData() {
     deptId
       ? supabase.from('departments').select('id, name').eq('id', deptId).single()
       : { data: null },
-    isGlobal
+    deptId
       ? supabase.from('profiles')
           .select('id, name, role, access_level')
           .eq('department_id', deptId)
-          .gte('access_level', 3)
+          .gte('access_level', isGlobal ? 3 : 4)
           .order('access_level', { ascending: false })
       : { data: [] },
     empQuery,
@@ -852,9 +1127,11 @@ function renderOrgTab(user) {
   for (const t of transfers) {
     const emp      = empById[t.employee_id];
     const fromTeam = teams.find(tt => tt.id === t.from_team_id);
-    if (!emp || !fromTeam) continue;
+    if (!fromTeam) continue;
     if (!ghostsByTeam[t.to_team_id]) ghostsByTeam[t.to_team_id] = [];
-    ghostsByTeam[t.to_team_id].push({ transfer: t, emp, fromTeam });
+    // emp may be null for the receiving supervisor (RLS hides source-team employees)
+    const empResolved = emp ?? { id: t.employee_id, name: t.employee_name ?? '?' };
+    ghostsByTeam[t.to_team_id].push({ transfer: t, emp: empResolved, fromTeam });
   }
 
   /* ── Manager nodes ── */
@@ -1353,11 +1630,12 @@ async function confirmTransferRequest() {
   if (btn) { btn.disabled = true; btn.textContent = 'Solicitando…'; }
   try {
     const { error } = await supabase.from('team_transfers').insert({
-      id:           crypto.randomUUID(),
-      employee_id:  empId,
-      from_team_id: fromTeamId,
-      to_team_id:   toTeamId,
-      requested_by: user.id,
+      id:            crypto.randomUUID(),
+      employee_id:   empId,
+      employee_name: _transferDragState.empName,
+      from_team_id:  fromTeamId,
+      to_team_id:    toTeamId,
+      requested_by:  user.id,
     });
     if (error) throw error;
     closeTransferRequestModal();
@@ -1384,9 +1662,10 @@ async function openTransferResolveModal(transferId) {
   const emp      = empById[transfer.employee_id];
   const fromTeam = (_orgData?.teams ?? []).find(t => t.id === transfer.from_team_id);
   const toTeam   = (_orgData?.teams ?? []).find(t => t.id === transfer.to_team_id);
+  const empName  = emp?.name ?? transfer.employee_name ?? '—';
 
   const msg = document.getElementById('transfer-resolve-msg');
-  if (msg) msg.innerHTML = `O supervisor <strong>${fromTeam?.supervisorName ?? '—'}</strong> deseja transferir <strong>${emp?.name ?? '—'}</strong> para a equipe <strong>${toTeam?.name ?? '—'}</strong>.`;
+  if (msg) msg.innerHTML = `O supervisor <strong>${fromTeam?.supervisorName ?? '—'}</strong> deseja transferir <strong>${empName}</strong> para a equipe <strong>${toTeam?.name ?? '—'}</strong>.`;
 
   const sectorSel = document.getElementById('transfer-sector-select');
   if (sectorSel) {

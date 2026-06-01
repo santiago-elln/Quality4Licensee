@@ -22,7 +22,8 @@ let _obsTypeMap      = {};   // {G: uuid, O: uuid, A: uuid, E: uuid}
 let _evalCriteria    = [];   // [{id, name}]
 let _analyticalTypes = [];   // [{id, name}]
 let _errorTypes      = [];   // [{id, name, critical}]
-let _employees       = [];   // [{id, name}]
+let _employees       = [];   // [{id, name, sector_group_id}]
+let _sgLinks         = { eval_criteria: new Map(), topic: new Map(), analytical_note_type: new Map(), error_type: new Map() };
 
 /* Built from DB data after first fetch */
 let _EVAL_CATEGORIES    = [];  // [{id, name, items:[{id,name,pts,description}], totalPts}]
@@ -646,17 +647,29 @@ export function render() {
   `;
 }
 
-/* ── Department-aware catalog rebuild ───────── */
-function rebuildCatalogForDept(deptId) {
-  // deptId undefined = no filter (show all); null = employee has no dept (global only)
-  const fit = deptId === undefined
-    ? () => true
-    : item => !item.department_id || item.department_id === deptId;
+/* ── Sector-group-aware catalog rebuild ─────── */
+function rebuildCatalogForSg(sgId) {
+  // sgId undefined = no employee selected, show all items
+  // sgId null      = employee has no sector_group, show nothing
+  let filteredEc, filteredTopics, filteredAnal, filteredErrors;
 
-  const filteredEc     = _evalCriteria.filter(fit);
-  const filteredTopics = _topics.filter(fit);
-  const filteredAnal   = _analyticalTypes.filter(fit);
-  const filteredErrors = _errorTypes.filter(fit);
+  if (sgId === undefined) {
+    filteredEc     = _evalCriteria;
+    filteredTopics = _topics;
+    filteredAnal   = _analyticalTypes;
+    filteredErrors = _errorTypes;
+  } else if (!sgId) {
+    filteredEc = filteredTopics = filteredAnal = filteredErrors = [];
+  } else {
+    const ecIds   = _sgLinks.eval_criteria.get(sgId)        ?? new Set();
+    const topIds  = _sgLinks.topic.get(sgId)                ?? new Set();
+    const analIds = _sgLinks.analytical_note_type.get(sgId) ?? new Set();
+    const errIds  = _sgLinks.error_type.get(sgId)           ?? new Set();
+    filteredEc     = _evalCriteria.filter(ec => ecIds.has(ec.id));
+    filteredTopics = _topics.filter(t => topIds.has(t.id));
+    filteredAnal   = _analyticalTypes.filter(a => analIds.has(a.id));
+    filteredErrors = _errorTypes.filter(e => errIds.has(e.id));
+  }
 
   _EVAL_CATEGORIES = filteredEc.map(ec => {
     const items = filteredTopics
@@ -879,13 +892,18 @@ export async function init() {
   _observations = _draft?.observations ?? [];
 
   /* ── Fetch ref data on every visit — guarantees active topics/criteria are current ── */
-  const [empRes, topicRes, obsTypeRes, evalCrRes, analTypeRes, errTypeRes] = await Promise.all([
-    supabase.from('employees').select('id, name, department_id').eq('active', true).order('name'),
-    supabase.from('topic').select('id, item, eval_criteria_id, points, description, department_id').eq('active', true),
-    supabase.from('observation_type').select('id, code, department_id').eq('active', true),
-    supabase.from('eval_criteria').select('id, name, department_id').eq('active', true).order('name'),
-    supabase.from('analytical_note_type').select('id, name, department_id').eq('active', true),
-    supabase.from('error_type').select('id, name, critical, department_id').eq('active', true).order('name'),
+  const [empRes, topicRes, obsTypeRes, evalCrRes, analTypeRes, errTypeRes,
+         sgEcRes, sgTopicRes, sgAnalRes, sgErrRes] = await Promise.all([
+    supabase.from('employees').select('id, name, sector_group_id').eq('active', true).order('name'),
+    supabase.from('topic').select('id, item, eval_criteria_id, points, description').eq('active', true),
+    supabase.from('observation_type').select('id, code').eq('active', true),
+    supabase.from('eval_criteria').select('id, name').eq('active', true).order('name'),
+    supabase.from('analytical_note_type').select('id, name').eq('active', true),
+    supabase.from('error_type').select('id, name, critical').eq('active', true).order('name'),
+    supabase.from('sector_group_eval_criteria').select('sector_group_id, eval_criteria_id'),
+    supabase.from('sector_group_topic').select('sector_group_id, topic_id'),
+    supabase.from('sector_group_analytical_note_type').select('sector_group_id, analytical_note_type_id'),
+    supabase.from('sector_group_error_type').select('sector_group_id, error_type_id'),
   ]);
 
   _employees       = empRes.data        ?? [];
@@ -894,6 +912,22 @@ export async function init() {
   _analyticalTypes = analTypeRes.data   ?? [];
   _errorTypes      = errTypeRes.data    ?? [];
 
+  /* Build sector-group → item-id lookup maps */
+  function _buildSgMap(rows, col) {
+    const map = new Map();
+    for (const r of rows) {
+      if (!map.has(r.sector_group_id)) map.set(r.sector_group_id, new Set());
+      map.get(r.sector_group_id).add(r[col]);
+    }
+    return map;
+  }
+  _sgLinks = {
+    eval_criteria:        _buildSgMap(sgEcRes.data    ?? [], 'eval_criteria_id'),
+    topic:                _buildSgMap(sgTopicRes.data ?? [], 'topic_id'),
+    analytical_note_type: _buildSgMap(sgAnalRes.data  ?? [], 'analytical_note_type_id'),
+    error_type:           _buildSgMap(sgErrRes.data   ?? [], 'error_type_id'),
+  };
+
   const codeToKey = { default: 'G', improvable_by: 'O', excelled_by: 'A', failed_by: 'E' };
   _obsTypeMap = {};
   for (const row of (obsTypeRes.data ?? [])) {
@@ -901,14 +935,8 @@ export async function init() {
     if (key) _obsTypeMap[key] = row.id;
   }
 
-  _EVAL_CATEGORIES = _evalCriteria.map(ec => {
-    const items = _topics
-      .filter(t => t.eval_criteria_id === ec.id)
-      .map(t => ({ id: t.id, name: t.item, pts: t.points ?? 0, description: t.description ?? '' }));
-    return { id: ec.id, name: ec.name, items, totalPts: items.reduce((s, i) => s + i.pts, 0) };
-  });
-  _TOTAL_MAX_PTS       = _EVAL_CATEGORIES.reduce((s, c) => s + c.totalPts, 0);
-  _ANALYTICAL_CRITERIA = _analyticalTypes.map(t => ({ id: t.id, name: t.name }));
+  /* Initial build — no employee selected yet, show everything */
+  rebuildCatalogForSg(undefined);
 
   /* Re-render now that fresh data is available */
   const main = document.getElementById('main-content');
@@ -1160,10 +1188,10 @@ export async function init() {
 
     const collabId = e.target.value;
 
-    /* ── Rebuild catalog for this employee's department ── */
+    /* ── Rebuild catalog for this employee's sector group ── */
     const emp    = collabId ? _employees.find(em => em.id === collabId) : undefined;
-    const deptId = emp ? (emp.department_id ?? null) : undefined; // undefined = no filter
-    const filteredErrors = rebuildCatalogForDept(deptId);
+    const sgId   = emp ? (emp.sector_group_id ?? null) : undefined; // undefined = no filter
+    const filteredErrors = rebuildCatalogForSg(sgId);
 
     const catEl = document.getElementById('nm-eval-categories');
     if (catEl) catEl.innerHTML = _EVAL_CATEGORIES.map(renderCategory).join('');

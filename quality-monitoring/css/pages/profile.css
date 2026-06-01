@@ -32,7 +32,43 @@
   color: #fff;
   flex-shrink: 0;
   border: 3px solid rgba(255,255,255,0.15);
+  position: relative;
+  overflow: hidden;
 }
+.profile-hero__avatar-img {
+  position: absolute;
+  inset: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+}
+.profile-hero__avatar--editable { cursor: pointer; }
+.profile-hero__avatar-overlay {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(0,0,0,0);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: transparent;
+  transition: background .18s, color .18s;
+  pointer-events: none;
+}
+.profile-hero__avatar--editable:hover .profile-hero__avatar-overlay {
+  background: rgba(0,0,0,0.5);
+  color: #fff;
+}
+.avatar-crop-container {
+  width: 240px; height: 240px;
+  border-radius: 50%;
+  overflow: hidden;
+  cursor: grab;
+  border: 3px solid var(--brand-green);
+  background: #111;
+  flex-shrink: 0;
+}
+.avatar-crop-container:active { cursor: grabbing; }
 .profile-hero__info {}
 .profile-hero__name-row {
   display: flex;
