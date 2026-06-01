@@ -352,8 +352,14 @@ async function loadData() {
   if (can(_user, P.GLOBAL_VIEW_DEPT)) {
     if (!_user.departmentId) { showStatus('Departamento não configurado para este usuário.', true); return }
     empQuery = empQuery.eq('department_id', _user.departmentId)
+  } else if (_user.shiftsFilterBy === 'group') {
+    if (!_user.sectorGroupId) { showStatus('Grupo de setores não configurado para este usuário.', true); return }
+    empQuery = empQuery.eq('sector_group_id', _user.sectorGroupId)
+  } else if (_user.shiftsFilterBy === 'sector') {
+    if (!_user.sectorId) { showStatus('Setor não configurado para este usuário.', true); return }
+    empQuery = empQuery.eq('sector_id', _user.sectorId)
   }
-  // Non-global: RLS scopes the result automatically
+  // shifts_filter_by='supervisor': RLS scopes to own employees automatically
 
   const { data: rows, error } = await empQuery
   if (error) { showStatus('Erro ao carregar colaboradores.', true); return }

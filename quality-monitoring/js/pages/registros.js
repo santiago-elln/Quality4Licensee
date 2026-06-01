@@ -163,7 +163,6 @@ export function render() {
           ${canSup ?
             `<select class="form-select" id="filter-sup" style="max-width:200px">${supOpts}</select>` :
             `<div class="form-group" style="margin-bottom:0">
-              <label class="form-label">Supervisor</label>
               <div class="form-input" style="opacity:.75;cursor:default">
               ${_currentUser?.name ?? '—'}
               </div>
