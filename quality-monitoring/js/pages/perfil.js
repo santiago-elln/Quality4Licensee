@@ -139,9 +139,9 @@ export function render() {
                   <circle cx="12" cy="13" r="4"/>
                 </svg>
               </div>
-              <input type="file" id="avatar-file-input" accept="image/*" style="position:absolute;inset:0;opacity:0;cursor:pointer;border-radius:50%;width:100%;height:100%">
             ` : ''}
           </div>
+          ${isSelf ? `<input type="file" id="avatar-file-input" accept="image/*" style="position:fixed;opacity:0;pointer-events:none;left:-9999px;top:-9999px">` : ''}
           <div class="profile-hero__info">
             <div class="profile-hero__name-row">
               <div class="profile-hero__name" id="profile-name-display">${_employee.name}</div>
@@ -230,6 +230,26 @@ export function render() {
     </div>
 
     ${isSelf ? `
+    <!-- Avatar options modal -->
+    <div id="avatar-options-modal" class="modal-overlay modal-overlay--hidden">
+      <div class="modal" style="max-width:260px">
+        <div class="modal__header">
+          <div class="modal__title">Foto de perfil</div>
+          <button class="modal__close" id="avatar-options-close" type="button">✕</button>
+        </div>
+        <div class="modal__body" style="display:flex;flex-direction:column;gap:var(--space-2)">
+          <button class="btn btn--secondary" id="avatar-options-change" type="button"
+                  style="width:100%;justify-content:center">
+            Alterar foto
+          </button>
+          <button class="btn btn--ghost" id="avatar-options-remove" type="button"
+                  style="width:100%;justify-content:center;color:var(--color-danger)${avatarUrl ? '' : ';display:none'}">
+            Remover foto
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- Avatar crop modal -->
     <div id="avatar-crop-modal" class="modal-overlay modal-overlay--hidden">
       <div class="modal" style="max-width:340px">
@@ -404,6 +424,8 @@ async function confirmCrop() {
       if (!avatarEl.contains(img)) avatarEl.prepend(img);
       document.getElementById('avatar-initials-span').style.display = 'none';
     }
+    const removeBtn = document.getElementById('avatar-options-remove');
+    if (removeBtn) removeBtn.style.display = '';
     closeCropModal();
     toast.success('Foto atualizada');
   } catch (err) {
@@ -413,11 +435,55 @@ async function confirmCrop() {
   }
 }
 
+function openAvatarOptionsModal() {
+  document.getElementById('avatar-options-modal')?.classList.remove('modal-overlay--hidden');
+}
+
+function closeAvatarOptionsModal() {
+  document.getElementById('avatar-options-modal')?.classList.add('modal-overlay--hidden');
+}
+
+async function removeAvatar() {
+  const btn = document.getElementById('avatar-options-remove');
+  if (btn) { btn.disabled = true; btn.textContent = 'Removendo…'; }
+  try {
+    const path = `employees/${_employee.id}.jpg`;
+    await supabase.storage.from('avatars').remove([path]);
+    await supabase.from('employees').update({ avatar_url: null }).eq('id', _employee.id);
+    _employee = { ..._employee, avatar_url: null };
+
+    const avatarEl = document.getElementById('profile-avatar');
+    if (avatarEl) {
+      avatarEl.querySelector('.profile-hero__avatar-img')?.remove();
+      document.getElementById('avatar-initials-span').style.display = '';
+    }
+    closeAvatarOptionsModal();
+    toast.success('Foto removida');
+  } catch (err) {
+    console.error('[perfil] avatar remove:', err);
+    toast.error('Erro ao remover foto', err.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Remover foto'; }
+  }
+}
+
 function bindAvatarUpload() {
   const fileInput = document.getElementById('avatar-file-input');
   const container = document.getElementById('avatar-crop-container');
   const slider    = document.getElementById('avatar-zoom-slider');
   if (!fileInput) return;
+
+  /* Avatar click → open options menu */
+  document.getElementById('profile-avatar')?.addEventListener('click', openAvatarOptionsModal);
+
+  /* Options modal */
+  document.getElementById('avatar-options-close')?.addEventListener('click',  closeAvatarOptionsModal);
+  document.getElementById('avatar-options-modal')?.addEventListener('click',
+    e => { if (e.target.id === 'avatar-options-modal') closeAvatarOptionsModal(); });
+  document.getElementById('avatar-options-change')?.addEventListener('click', () => {
+    closeAvatarOptionsModal();
+    fileInput.click();
+  });
+  document.getElementById('avatar-options-remove')?.addEventListener('click', removeAvatar);
 
   fileInput.addEventListener('change', e => {
     const file = e.target.files?.[0];

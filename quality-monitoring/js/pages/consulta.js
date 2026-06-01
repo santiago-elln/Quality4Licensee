@@ -169,7 +169,7 @@ function computeMonStats(monitorings) {
 /* ── Data fetch ───────────────────────────── */
 async function fetchData() {
   const globalScope = can(_currentUser, P.GLOBAL_VIEW_DEPT);
-  const empQuery = supabase.from('employees').select('id, name, team_id').eq('active', true).order('name');
+  const empQuery = supabase.from('employees').select('id, name, team_id, avatar_url').eq('active', true).order('name');
 
   const [deptRes, teamsRes, empRes, ecRes, topicRes] = await Promise.all([
     supabase.from('departments').select('id, name').eq('active', true).order('name'),
@@ -476,7 +476,12 @@ function renderCard(collab) {
     <div class="cc-card" data-collab="${collab.id}" data-sup-id="${collab.team_id ?? ''}">
 
       <div class="cc-card__header">
-        <div class="cc-card__avatar">${getInitials(collab.name)}</div>
+        <div class="cc-card__avatar">
+          ${collab.avatar_url
+            ? `<img src="${collab.avatar_url}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:50%;display:block" onerror="this.style.display='none'">`
+            : ''}
+          <span style="${collab.avatar_url ? 'display:none' : ''}">${getInitials(collab.name)}</span>
+        </div>
         <div class="cc-card__info">
           <div class="cc-card__name">
             <a href="#perfil?id=${collab.id}">${collab.name}</a>
