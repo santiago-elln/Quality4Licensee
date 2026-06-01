@@ -30,6 +30,8 @@ let _pendingDelete    = null;  // {id, number, empName}
 let _editableRefData  = null;  // { obsTypeMap, evalCriteria, errorTypes } — lazily loaded
 let _filters          = { collabId: '', supId: '', dateFrom: '', dateTo: '', band: '' };
 let _calPicker        = null;
+let _allObservations    = [];  // [{monId, typeCode, ecId, ecName, errorTypeId, errorTypeName, content}]
+let _pendingTopicChanges = {}; // { [monId]: { [topicId]: { newObtained, points } } }
 
 /* ── Row processor ────────────────────────── */
 function processRow(mon) {
@@ -126,6 +128,33 @@ function applyClientFilters() {
   _rows = rows;
 }
 
+async function fetchObservations() {
+  const monIds = _allRows.map(r => r.id);
+  if (!monIds.length) { _allObservations = []; return; }
+  const { data, error } = await supabase
+    .from('monitoring_observation')
+    .select(`
+      monitoring_id, content, eval_criteria_id,
+      observation_type(code),
+      eval_criteria(name),
+      error:error_id(error_type:error_type_id(id, name))
+    `)
+    .in('monitoring_id', monIds);
+  if (error) { console.error('[registros] obs:', error); _allObservations = []; return; }
+  const RELEVANT = new Set(['excelled_by', 'improvable_by', 'failed_by']);
+  _allObservations = (data ?? [])
+    .filter(o => RELEVANT.has(o.observation_type?.code))
+    .map(o => ({
+      monId:         o.monitoring_id,
+      typeCode:      o.observation_type.code,
+      ecId:          o.eval_criteria_id,
+      ecName:        o.eval_criteria?.name ?? null,
+      errorTypeId:   o.error?.error_type?.id   ?? null,
+      errorTypeName: o.error?.error_type?.name ?? null,
+      content:       o.content,
+    }));
+}
+
 /* ── Radar chart ──────────────────────────── */
 function computeRadarPcts() {
   const sum = {};
@@ -143,6 +172,72 @@ function refreshRadarChart() {
   if (!_evalCriteria.length) return;
   const labels = _evalCriteria.map(ec => ec.name.split(' ')[0]);
   renderRadarChart('reg-radar-chart', labels, [{ label: 'Média', data: computeRadarPcts() }]);
+}
+
+/* ── Observation stats ────────────────────── */
+function computeObsStats() {
+  const monIdSet = new Set(_rows.map(r => r.id));
+  const obs = _allObservations.filter(o => monIdSet.has(o.monId));
+  const result = {};
+  for (const typeCode of ['excelled_by', 'improvable_by', 'failed_by']) {
+    const isFailed = typeCode === 'failed_by';
+    const groups = {};
+    for (const o of obs.filter(o => o.typeCode === typeCode)) {
+      const key  = isFailed ? o.errorTypeId  : o.ecId;
+      const name = isFailed ? o.errorTypeName : o.ecName;
+      if (!key || !name) continue;
+      if (!groups[key]) groups[key] = { name, count: 0, items: [] };
+      groups[key].count++;
+      groups[key].items.push(o.content);
+    }
+    result[typeCode] = Object.values(groups)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 3)
+      .map(g => ({ name: g.name, count: g.count, samples: g.items.slice(0, 2) }));
+  }
+  return result;
+}
+
+function renderObsPanel() {
+  const stats = computeObsStats();
+  const TYPES = [
+    { code: 'excelled_by',   label: 'Acertos',       color: 'var(--brand-green-dark)' },
+    { code: 'improvable_by', label: 'Oportunidades',  color: '#2563eb'                  },
+    { code: 'failed_by',     label: 'Erros',          color: 'var(--color-danger)'      },
+  ];
+
+  /* Build only non-empty sections first, then assign column breaks */
+  const populated = TYPES.map(({ code, label, color }) => {
+    const groups = stats[code] ?? [];
+    if (!groups.length) return null;
+    const groupsHtml = groups.map(g => `
+      <div style="break-inside:avoid;margin-bottom:var(--space-3)">
+        <div style="display:flex;align-items:center;gap:var(--space-2);margin-bottom:3px">
+          <span style="font-size:var(--text-xs);font-weight:700;color:${color}">${g.name}</span>
+          <span style="font-size:10px;color:var(--text-tertiary)">${g.count}×</span>
+        </div>
+        ${g.samples.map(s => `
+          <div style="font-size:var(--text-xs);color:var(--text-secondary);padding:2px var(--space-2);
+                      border-left:2px solid ${color};margin-bottom:2px;line-height:1.4">${s}</div>
+        `).join('')}
+      </div>`).join('');
+    return { label, color, groupsHtml };
+  }).filter(Boolean);
+
+  if (!populated.length) return `<div style="color:var(--text-tertiary);font-size:var(--text-sm)">Sem observações no período.</div>`;
+
+  return populated.map(({ label, color, groupsHtml }, i) => `
+    <div style="${i > 0 ? 'break-before:column;' : ''}margin-bottom:var(--space-4)">
+      <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+                  color:${color};margin-bottom:var(--space-2)">${label}</div>
+      ${groupsHtml}
+    </div>`).join('');
+}
+
+function refreshInsightsPanel() {
+  refreshRadarChart();
+  const obsEl = document.getElementById('reg-obs-panel');
+  if (obsEl) obsEl.innerHTML = renderObsPanel();
 }
 
 /* ── render() ─────────────────────────────── */
@@ -184,16 +279,6 @@ export function render() {
         <div class="page-subtitle">Histórico de monitorias realizadas</div>
       </div>
 
-      <div class="panel" style="margin-bottom:var(--space-4)">
-        <div style="text-align:center;font-size:var(--text-xs);font-weight:700;text-transform:uppercase;
-                    letter-spacing:.05em;color:var(--text-secondary);margin-bottom:var(--space-1)">
-          Desempenho por Critério
-        </div>
-        <div style="max-width:280px;margin:0 auto">
-          <canvas id="reg-radar-chart" width="280" height="280"></canvas>
-        </div>
-      </div>
-
       <div class="panel">
         <div class="table-filters">
           ${canSup ?
@@ -213,6 +298,20 @@ export function render() {
             <option value="critical">Crítico (1–49%)</option>
             <option value="zero">Zerada (0%)</option>
           </select>
+        </div>
+
+        <!-- Insights row: radar + observation summary -->
+        <div style="display:grid;grid-template-columns:230px 1fr;gap:var(--space-5);
+                    padding:var(--space-4) var(--space-5);border-top:1px solid var(--border-light)">
+          <div>
+            <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+                        color:var(--text-secondary);margin-bottom:var(--space-2);text-align:center">
+              Desempenho por Critério
+            </div>
+            <canvas id="reg-radar-chart" width="230" height="230"></canvas>
+          </div>
+          <div id="reg-obs-panel" style="overflow-y:auto;max-height:260px;
+               column-count:3;column-gap:var(--space-5);column-fill:balance"></div>
         </div>
 
         <div class="table-wrap">
@@ -308,7 +407,7 @@ function refreshTable() {
   document.getElementById('pag-controls').innerHTML  = renderPagination();
   _expandedId = null;
   bindTableEvents();
-  refreshRadarChart();
+  refreshInsightsPanel();
 }
 
 /* ── Detail panel ─────────────────────────── */
@@ -337,6 +436,9 @@ async function fetchDetail(monId) {
 }
 
 function renderDetail(data, rowData) {
+  const canEditObs = can(_currentUser, P.RECORD_EDITABLE_OBS);
+  const monId      = data.id;
+
   /* Service chats */
   const scHtml = (data.service_chat ?? []).map(sc => `
     <tr>
@@ -362,12 +464,27 @@ function renderDetail(data, rowData) {
     return `
       <div style="margin-bottom:var(--space-3)">
         <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--text-secondary);margin-bottom:var(--space-1)">${ec.name}</div>
-        ${items.map(ta => `
+        ${items.map(ta => {
+          const obt = ta.obtained;
+          const pts = ta.topic.points;
+          const checkSpan = canEditObs
+            ? `<span class="ro-topic-toggle"
+                    data-topic-id="${ta.topic.id}"
+                    data-obtained-orig="${obt ? '1' : '0'}"
+                    data-points="${pts}"
+                    style="color:${obt ? 'var(--brand-green-dark)' : 'var(--color-danger)'};font-weight:700;cursor:pointer;user-select:none"
+                    title="Clique para alterar">${obt ? '✓' : '✗'}</span>`
+            : `<span style="color:${obt ? 'var(--brand-green-dark)' : 'var(--color-danger)'};font-weight:700">${obt ? '✓' : '✗'}</span>`;
+          const ptsSpan = canEditObs
+            ? `<span id="ro-topic-pts-${monId}-${ta.topic.id}" style="margin-left:auto;color:var(--text-tertiary);font-family:var(--font-mono)">${obt ? pts : 0}/${pts}</span>`
+            : `<span style="margin-left:auto;color:var(--text-tertiary);font-family:var(--font-mono)">${obt ? pts : 0}/${pts}</span>`;
+          return `
           <div style="display:flex;align-items:center;gap:var(--space-2);padding:3px 0;font-size:var(--text-xs)">
-            <span style="color:${ta.obtained ? 'var(--brand-green-dark)' : 'var(--color-danger)'};font-weight:700">${ta.obtained ? '✓' : '✗'}</span>
-            <span style="color:${ta.obtained ? 'var(--text-primary)' : 'var(--text-secondary)'}">${ta.topic.item}</span>
-            <span style="margin-left:auto;color:var(--text-tertiary);font-family:var(--font-mono)">${ta.obtained ? ta.topic.points : 0}/${ta.topic.points}</span>
-          </div>`).join('')}
+            ${checkSpan}
+            <span style="color:${obt ? 'var(--text-primary)' : 'var(--text-secondary)'}">${ta.topic.item}</span>
+            ${ptsSpan}
+          </div>`;
+        }).join('')}
       </div>`;
   }).join('') || `<div style="color:var(--text-tertiary);font-size:var(--text-xs)">—</div>`;
 
@@ -403,6 +520,17 @@ function renderDetail(data, rowData) {
 
   return `
     <div style="background:var(--bg-surface-2);border-top:2px solid var(--brand-green)">
+      ${canEditObs ? `
+        <div id="ro-topic-pending-bar-${monId}"
+             style="display:none;align-items:center;justify-content:space-between;
+                    padding:var(--space-2) var(--space-5);
+                    border-bottom:1px solid var(--border);background:rgba(245,158,11,.08)">
+          <span style="font-size:var(--text-xs);color:var(--text-secondary)">Tópicos com alterações pendentes</span>
+          <div style="display:flex;gap:var(--space-2)">
+            <button class="btn btn--ghost btn--sm" id="ro-topic-discard-${monId}" type="button">Descartar</button>
+            <button class="btn btn--primary btn--sm" id="ro-topic-confirm-${monId}" type="button">Confirmar</button>
+          </div>
+        </div>` : ''}
       ${can(_currentUser, P.RECORD_DELETE) ? `
         <div style="display:flex;justify-content:flex-end;gap:var(--space-2);
                     padding:var(--space-3) var(--space-5);border-bottom:1px solid var(--border-light)">
@@ -447,6 +575,7 @@ async function toggleDetail(monId, btn) {
   if (existing) {
     existing.remove();
     document.getElementById('ro-sc-modal')?.remove();
+    delete _pendingTopicChanges[monId];
     btn.textContent = 'Ver';
     _expandedId = null;
     return;
@@ -477,6 +606,11 @@ async function toggleDetail(monId, btn) {
   const rowData  = _rows.find(r => r.id === monId);
   detailTr.innerHTML = `<td colspan="${cols}" style="padding:0">${renderDetail(data, rowData)}</td>`;
   row.after(detailTr);
+
+  /* Bind topic toggles */
+  if (can(_currentUser, P.RECORD_EDITABLE_OBS)) {
+    bindTopicToggles(monId, detailTr);
+  }
 
   /* Bind editable obs + SC for users with permission */
   if (can(_currentUser, P.RECORD_EDITABLE_OBS)) {
@@ -525,6 +659,146 @@ async function toggleDetail(monId, btn) {
 
   btn.textContent = 'Fechar';
   btn.disabled    = false;
+}
+
+/* ── Topic toggle ─────────────────────────── */
+function bindTopicToggles(monId, detailTr) {
+  if (!_pendingTopicChanges[monId]) _pendingTopicChanges[monId] = {};
+  const pending = _pendingTopicChanges[monId];
+
+  detailTr.querySelectorAll('.ro-topic-toggle').forEach(span => {
+    span.addEventListener('click', () => {
+      const topicId = span.dataset.topicId;
+      const origObt = span.dataset.obtainedOrig === '1';
+      const pts     = Number(span.dataset.points);
+      const curObt  = topicId in pending ? pending[topicId].newObtained : origObt;
+      const newObt  = !curObt;
+
+      if (newObt === origObt) {
+        delete pending[topicId];
+      } else {
+        pending[topicId] = { newObtained: newObt, points: pts };
+      }
+
+      const color = newObt ? 'var(--brand-green-dark)' : 'var(--color-danger)';
+      span.textContent  = newObt ? '✓' : '✗';
+      span.style.color  = color;
+      span.style.outline = newObt !== origObt ? '2px solid var(--color-warning)' : '';
+      const itemSpan = span.nextElementSibling;
+      if (itemSpan) itemSpan.style.color = newObt ? 'var(--text-primary)' : 'var(--text-secondary)';
+      const ptsEl = document.getElementById(`ro-topic-pts-${monId}-${topicId}`);
+      if (ptsEl) ptsEl.textContent = `${newObt ? pts : 0}/${pts}`;
+
+      const bar = document.getElementById(`ro-topic-pending-bar-${monId}`);
+      if (bar) bar.style.display = Object.keys(pending).length ? 'flex' : 'none';
+    });
+  });
+
+  document.getElementById(`ro-topic-confirm-${monId}`)?.addEventListener('click', () =>
+    confirmTopicChanges(monId, detailTr));
+  document.getElementById(`ro-topic-discard-${monId}`)?.addEventListener('click', () =>
+    discardTopicChanges(monId, detailTr));
+}
+
+async function confirmTopicChanges(monId, detailTr) {
+  const pending = _pendingTopicChanges[monId] ?? {};
+  if (!Object.keys(pending).length) return;
+  const btn = document.getElementById(`ro-topic-confirm-${monId}`);
+  if (btn) { btn.disabled = true; btn.textContent = 'Salvando…'; }
+  try {
+    /* Snapshot original states before mutating */
+    const origStates = {};
+    detailTr.querySelectorAll('.ro-topic-toggle').forEach(s => {
+      origStates[s.dataset.topicId] = s.dataset.obtainedOrig === '1';
+    });
+
+    for (const [topicId, { newObtained }] of Object.entries(pending)) {
+      const { error } = await supabase
+        .from('topic_approval')
+        .update({ obtained: newObtained })
+        .eq('monitoring_id', monId)
+        .eq('topic_id', topicId);
+      if (error) throw error;
+    }
+
+    /* Recalculate score + radarSum from all spans */
+    let earned = 0, total = 0;
+    const newRadarSum = {};
+    detailTr.querySelectorAll('.ro-topic-toggle').forEach(s => {
+      const tid  = s.dataset.topicId;
+      const pts  = Number(s.dataset.points);
+      const obt  = tid in pending ? pending[tid].newObtained : origStates[tid];
+      const t    = _topicMap[tid];
+      total += pts;
+      if (obt) earned += pts;
+      if (t) {
+        const cid = t.eval_criteria_id;
+        if (!newRadarSum[cid]) newRadarSum[cid] = { e: 0, m: 0 };
+        newRadarSum[cid].m += pts;
+        if (obt) newRadarSum[cid].e += pts;
+      }
+    });
+    const pct = total > 0 ? Math.round(earned / total * 100) : 0;
+
+    const rowIdx = _allRows.findIndex(r => r.id === monId);
+    if (rowIdx !== -1) {
+      _allRows[rowIdx] = { ..._allRows[rowIdx], score: earned, total, pct,
+                           band: resultBand(pct), radarSum: newRadarSum };
+    }
+    applyClientFilters();
+
+    /* Patch table row in-place */
+    const tableRow = document.querySelector(`tr[data-mon="${monId}"]`);
+    if (tableRow && total) {
+      const sc = tableRow.querySelector('.score-cell');
+      if (sc) sc.innerHTML = `<span style="font-weight:700;color:${scoreColor(pct)}">${earned}</span><span style="color:var(--text-tertiary);font-size:var(--text-xs)">/${total}</span>`;
+      const badge = tableRow.querySelector('.badge');
+      if (badge) {
+        const b = resultBand(pct);
+        badge.className   = `badge badge--${b.cls}`;
+        badge.textContent = b.label;
+      }
+    }
+
+    /* Update orig states on spans & clear pending indicators */
+    detailTr.querySelectorAll('.ro-topic-toggle').forEach(s => {
+      if (s.dataset.topicId in pending) {
+        s.dataset.obtainedOrig = pending[s.dataset.topicId].newObtained ? '1' : '0';
+        s.style.outline = '';
+      }
+    });
+
+    delete _pendingTopicChanges[monId];
+    const bar = document.getElementById(`ro-topic-pending-bar-${monId}`);
+    if (bar) bar.style.display = 'none';
+
+    refreshInsightsPanel();
+    toast.success('Tópicos atualizados');
+  } catch (err) {
+    console.error('[registros] topic update:', err);
+    toast.error('Erro ao salvar', err.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Confirmar'; }
+  }
+}
+
+function discardTopicChanges(monId, detailTr) {
+  const pending = _pendingTopicChanges[monId] ?? {};
+  detailTr.querySelectorAll('.ro-topic-toggle').forEach(s => {
+    const tid  = s.dataset.topicId;
+    if (!(tid in pending)) return;
+    const obt = s.dataset.obtainedOrig === '1';
+    const pts = Number(s.dataset.points);
+    s.textContent  = obt ? '✓' : '✗';
+    s.style.color  = obt ? 'var(--brand-green-dark)' : 'var(--color-danger)';
+    s.style.outline = '';
+    const itemSpan = s.nextElementSibling;
+    if (itemSpan) itemSpan.style.color = obt ? 'var(--text-primary)' : 'var(--text-secondary)';
+    const ptsEl = document.getElementById(`ro-topic-pts-${monId}-${tid}`);
+    if (ptsEl) ptsEl.textContent = `${obt ? pts : 0}/${pts}`;
+  });
+  delete _pendingTopicChanges[monId];
+  const bar = document.getElementById(`ro-topic-pending-bar-${monId}`);
+  if (bar) bar.style.display = 'none';
 }
 
 /* ── Delete monitoring ────────────────────── */
@@ -612,6 +886,7 @@ function bindFilters() {
       _filters.dateFrom = from;
       _filters.dateTo   = to;
       await fetchMonitorings();
+      await fetchObservations();
       _page = 1;
       refreshTable();
     },
@@ -619,6 +894,7 @@ function bindFilters() {
       _filters.dateFrom = '';
       _filters.dateTo   = '';
       await fetchMonitorings();
+      await fetchObservations();
       _page = 1;
       refreshTable();
     },
@@ -936,11 +1212,12 @@ export async function init() {
 
   await fetchRefData();
   await fetchMonitorings();
+  await fetchObservations();
   _dataLoaded = true;
 
   if (!main) return;
   main.innerHTML = render();
   bindFilters();
   bindTableEvents();
-  refreshRadarChart();
+  refreshInsightsPanel();
 }
