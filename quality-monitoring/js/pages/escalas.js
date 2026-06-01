@@ -344,33 +344,18 @@ export async function init() {
 async function loadData() {
   _shifts = {}; _origShifts = {}
 
-  const EMP_COLS   = `id, name, team_id, sector_id, sector_group_id, sector_groups(id, name)`
   const SHIFT_COLS = 'id, employee_id, start_time, end_time, break_start, break_duration_minutes, is_default, validated, updated_by, updated_at'
 
-  let empQuery = supabase.from('employees').select(EMP_COLS).eq('active', true).order('name')
-
-  if (can(_user, P.GLOBAL_VIEW_DEPT)) {
-    if (!_user.departmentId) { showStatus('Departamento não configurado para este usuário.', true); return }
-    empQuery = empQuery.eq('department_id', _user.departmentId)
-  } else if (_user.shiftsFilterBy === 'group') {
-    if (!_user.sectorGroupId) { showStatus('Grupo de setores não configurado para este usuário.', true); return }
-    empQuery = empQuery.eq('sector_group_id', _user.sectorGroupId)
-  } else if (_user.shiftsFilterBy === 'sector') {
-    if (!_user.sectorId) { showStatus('Setor não configurado para este usuário.', true); return }
-    empQuery = empQuery.eq('sector_id', _user.sectorId)
-  }
-  // shifts_filter_by='supervisor': RLS scopes to own employees automatically
-
-  const { data: rows, error } = await empQuery
+  const { data: rows, error } = await supabase.rpc('get_employees_for_shifts')
   if (error) { showStatus('Erro ao carregar colaboradores.', true); return }
 
   /* Collect unique sector_groups from the result, preserving order */
   const seen = new Set()
   _sectorGroups = (rows ?? [])
     .filter(r => r.sector_group_id && !seen.has(r.sector_group_id) && seen.add(r.sector_group_id))
-    .map(r => ({ id: r.sector_group_id, name: r.sector_groups?.name ?? '—' }))
+    .map(r => ({ id: r.sector_group_id, name: r.sg_name ?? '—' }))
 
-  _employees = (rows ?? []).map(({ sector_groups: _, ...emp }) => emp)
+  _employees = (rows ?? []).map(({ sg_name: _, ...emp }) => emp)
 
   const empIds = _employees.map(e => e.id)
   if (!empIds.length) { _dirty.clear(); hideSaveBar(); updateStats(); return }
