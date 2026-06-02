@@ -139,7 +139,7 @@ export const DEFAULT_PERMISSIONS_BY_LEVEL = Object.freeze({
   ],
 
   // Nível 4.5 — Auxiliar Analista
-  4.5: [
+  6: [
     P.NEW_MONITORING_ACCESS,
     // P.NEW_MONITORING_SAVE,
     P.CONSULT_ACCESS,
