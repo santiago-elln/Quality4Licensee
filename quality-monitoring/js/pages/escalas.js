@@ -344,9 +344,11 @@ export async function init() {
 async function loadData() {
   _shifts = {}; _origShifts = {}
 
-  /* Fetch all sector-group shifts (bypasses RLS via SECURITY DEFINER function) */
+  /* Fetch shifts scoped to the user's sector_group (null = global view, no filter) */
+  const user     = getCurrentUser();
+  const sgFilter = can(user, P.GLOBAL_VIEW_DEPT) ? null : (user.sectorGroupId ?? null);
   const { data: shiftRows, error } = await supabase
-    .rpc('get_employees_for_shifts', { p_date: _selectedDate })
+    .rpc('get_employees_for_shifts', { p_date: _selectedDate, p_sector_group_id: sgFilter })
   if (error) { showStatus('Erro ao carregar escalas.', true); return }
 
   /* Fetch own-team employees (names) — RLS restricts this to the supervisor's scope */

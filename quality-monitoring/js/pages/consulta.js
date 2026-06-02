@@ -170,11 +170,21 @@ function computeMonStats(monitorings) {
 /* ── Data fetch ───────────────────────────── */
 async function fetchData() {
   const globalScope = can(_currentUser, P.GLOBAL_VIEW_DEPT);
-  const empQuery = supabase.from('employees').select('id, name, team_id, sector_group_id, avatar_url').eq('active', true).order('name');
+  const scopeIds    = globalScope ? null : (_currentUser.supervisedTeamIds ?? []);
+  const noAccess    = !globalScope && scopeIds.length === 0;
+  const EMPTY_GUID  = '00000000-0000-0000-0000-000000000000';
+
+  let empQuery   = supabase.from('employees').select('id, name, team_id, sector_group_id, avatar_url').eq('active', true).order('name');
+  let teamsQuery = supabase.from('teams').select('id, name').eq('active', true).order('name');
+  if (!globalScope) {
+    const ids = noAccess ? [EMPTY_GUID] : scopeIds;
+    empQuery   = empQuery.in('team_id', ids);
+    teamsQuery = teamsQuery.in('id', ids);
+  }
 
   const [deptRes, teamsRes, empRes, ecRes, topicRes, sgEcRes] = await Promise.all([
     supabase.from('departments').select('id, name').eq('active', true).order('name'),
-    supabase.from('teams').select('id, name').eq('active', true).order('name'),
+    teamsQuery,
     empQuery,
     supabase.from('eval_criteria').select('id, name').eq('active', true),
     supabase.from('topic').select('id, eval_criteria_id, points').eq('active', true),

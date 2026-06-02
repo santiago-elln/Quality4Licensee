@@ -62,6 +62,9 @@
 .va-item--own { color: var(--color-info); }
 .va-item--own:hover { background: var(--color-info-bg); }
 
+.va-item--emp-shortcut { color: var(--color-success); }
+.va-item--emp-shortcut:hover { background: var(--color-success-bg); }
+
 .va-item--loading { opacity: 0.5; pointer-events: none; cursor: wait; }
 
 .va-item__avatar {
@@ -82,6 +85,12 @@
   background: var(--color-info-bg);
   color: var(--color-info);
 }
+.va-item--emp-shortcut .va-item__avatar,
+.va-item__avatar--emp {
+  background: var(--color-success-bg);
+  color: var(--color-success);
+}
+.va-item--emp-shortcut .va-item__name { color: var(--color-success); font-weight: var(--weight-semibold); }
 
 .va-item__info {
   flex: 1;

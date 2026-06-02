@@ -990,7 +990,9 @@ async function loadOrgTabData() {
      Global: resolve sector_groups for the dept first, then fetch their teams.
      Non-global: fetch supervised teams directly by ID. */
   let allTeams = [];
-  if (isGlobal && deptId) {
+  if (deptId) {
+    /* Both global and non-global users with a deptId see all department teams.
+       This lets supervisors drag employees across sector_group boundaries. */
     const { data: sgs } = await supabase
       .from('sector_groups').select('id').eq('department_id', deptId);
     const sgIds = (sgs ?? []).map(sg => sg.id);
@@ -1000,18 +1002,12 @@ async function loadOrgTabData() {
         .in('sector_group_id', sgIds).eq('active', true).order('name');
       allTeams = tRows ?? [];
     }
-  } else if (!isGlobal) {
-    if (user.sectorGroupId) {
-      const { data: tRows } = await supabase
-        .from('teams').select('id, name, supervisor_id')
-        .eq('sector_group_id', user.sectorGroupId).eq('active', true).order('name');
-      allTeams = tRows ?? [];
-    } else if (supervisedTeamIds.length) {
-      const { data: tRows } = await supabase
-        .from('teams').select('id, name, supervisor_id')
-        .in('id', supervisedTeamIds).eq('active', true).order('name');
-      allTeams = tRows ?? [];
-    }
+  } else if (!isGlobal && supervisedTeamIds.length) {
+    /* Fallback for supervisors without a department_id: show supervised teams only. */
+    const { data: tRows } = await supabase
+      .from('teams').select('id, name, supervisor_id')
+      .in('id', supervisedTeamIds).eq('active', true).order('name');
+    allTeams = tRows ?? [];
   }
 
   /* ── Step 2: fetch employees and managers in parallel */

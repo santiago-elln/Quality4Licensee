@@ -2,22 +2,21 @@
    VIEW-AS MODAL — SysOwner employee impersonation selector
    ============================================================ */
 import { supabase }                       from '../supabase.js';
-import { isViewingAs, clearViewAs, setViewAs } from '../auth.js';
+import { getRealUser, isViewingAs, clearViewAs, setViewAs } from '../auth.js';
 import { getInitials }                    from '../utils/formatters.js';
 
 let _overlay = null;
 
 async function fetchEmployees() {
   const { data } = await supabase
-    .from('employees')
-    .select('id, name, profiles(role, access_level)')
+    .from('profiles')
+    .select('id, name, role, access_level')
     .order('name');
   return data ?? [];
 }
 
 function normalizeProfile(e) {
-  const p = Array.isArray(e.profiles) ? e.profiles[0] : e.profiles;
-  return { role: p?.role ?? '', level: p?.access_level ?? 2 };
+  return { role: e.role ?? '', level: e.access_level ?? 2 };
 }
 
 function levelLabel(n) {
@@ -92,9 +91,12 @@ export async function openViewAsModal() {
   const list = document.getElementById('va-list');
   if (!list) return;
 
+  const realUser    = getRealUser();
+  const ownEmpId    = realUser?.employeeId ?? null;
+
   function buildList(query = '') {
-    const ownHtml = isViewingAs() ? `
-      <button class="va-item va-item--own" id="va-own" type="button">
+    const returnHtml = isViewingAs() ? `
+      <button class="va-item va-item--own" type="button">
         <span class="va-item__avatar va-item__avatar--own">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
             <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
@@ -106,9 +108,26 @@ export async function openViewAsModal() {
           <span class="va-item__name">Retornar ao meu perfil</span>
           <span class="va-item__role">Sair da visualização</span>
         </span>
-      </button>
-      <div class="va-separator"></div>` : '';
-    list.innerHTML = ownHtml + renderItems(employees, query);
+      </button>` : '';
+
+    const empShortcutHtml = ownEmpId ? `
+      <button class="va-item va-item--emp-shortcut" data-id="${ownEmpId}" type="button">
+        <span class="va-item__avatar va-item__avatar--emp">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+            <circle cx="12" cy="7" r="4"/>
+          </svg>
+        </span>
+        <span class="va-item__info">
+          <span class="va-item__name">Ver como Colaborador</span>
+          <span class="va-item__role">Meu próprio perfil de colaborador</span>
+        </span>
+      </button>` : '';
+
+    const hasTop = returnHtml || empShortcutHtml;
+    const sepHtml = hasTop ? '<div class="va-separator"></div>' : '';
+
+    list.innerHTML = returnHtml + empShortcutHtml + sepHtml + renderItems(employees, query);
   }
 
   buildList();

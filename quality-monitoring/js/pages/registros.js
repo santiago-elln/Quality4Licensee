@@ -21,9 +21,11 @@ let _employees    = [];   // [{id, name, team_id}]
 let _teams        = [];   // [{id, name}]
 let _topicMap     = {};   // {topicId: {eval_criteria_id, points, item}}
 let _evalCriteria = [];   // [{id, name}]
+let _sgEcMap      = new Map(); // sector_group_id → Set<eval_criteria_id>
 let _currentUser      = null;
 let _refDataLoaded    = false;
 let _fetchedGlobalScope = null;
+let _fetchedUserId      = null;
 let _dataLoaded       = false;
 let _expandedId       = null;
 let _pendingDelete    = null;  // {id, number, empName}
@@ -75,22 +77,39 @@ function processRow(mon) {
 /* ── Data fetch ───────────────────────────── */
 async function fetchRefData() {
   const globalScope = can(_currentUser, P.GLOBAL_VIEW_DEPT);
-  if (_refDataLoaded && _fetchedGlobalScope === globalScope) return;
+  if (_refDataLoaded && _fetchedGlobalScope === globalScope && _fetchedUserId === _currentUser?.id) return;
 
-  const empQuery = supabase.from('employees').select('id, name, team_id').eq('active', true);
+  const scopeIds   = globalScope ? null : (_currentUser.supervisedTeamIds ?? []);
+  const noAccess   = !globalScope && scopeIds.length === 0;
+  const EMPTY_GUID = '00000000-0000-0000-0000-000000000000';
 
-  const [empRes, teamsRes, topicRes, ecRes] = await Promise.all([
+  let empQuery   = supabase.from('employees').select('id, name, team_id').eq('active', true);
+  let teamsQuery = supabase.from('teams').select('id, name, sector_group_id').eq('active', true).order('name');
+  if (!globalScope) {
+    const ids = noAccess ? [EMPTY_GUID] : scopeIds;
+    empQuery   = empQuery.in('team_id', ids);
+    teamsQuery = teamsQuery.in('id', ids);
+  }
+
+  const [empRes, teamsRes, topicRes, ecRes, sgEcRes] = await Promise.all([
     empQuery,
-    supabase.from('teams').select('id, name').eq('active', true).order('name'),
+    teamsQuery,
     supabase.from('topic').select('id, eval_criteria_id, points, item').eq('active', true),
     supabase.from('eval_criteria').select('id, name').eq('active', true),
+    supabase.from('sector_group_eval_criteria').select('sector_group_id, eval_criteria_id'),
   ]);
-  _employees          = empRes.data    ?? [];
-  _teams              = teamsRes.data  ?? [];
-  _topicMap           = Object.fromEntries((topicRes.data ?? []).map(t => [t.id, t]));
-  _evalCriteria       = ecRes.data    ?? [];
+  _employees    = empRes.data    ?? [];
+  _teams        = teamsRes.data  ?? [];
+  _topicMap     = Object.fromEntries((topicRes.data ?? []).map(t => [t.id, t]));
+  _evalCriteria = ecRes.data    ?? [];
+  _sgEcMap      = new Map();
+  for (const { sector_group_id, eval_criteria_id } of (sgEcRes.data ?? [])) {
+    if (!_sgEcMap.has(sector_group_id)) _sgEcMap.set(sector_group_id, new Set());
+    _sgEcMap.get(sector_group_id).add(eval_criteria_id);
+  }
   _refDataLoaded      = true;
   _fetchedGlobalScope = globalScope;
+  _fetchedUserId      = _currentUser?.id ?? null;
 }
 
 async function fetchMonitorings() {
@@ -156,7 +175,20 @@ async function fetchObservations() {
 }
 
 /* ── Radar chart ──────────────────────────── */
-function computeRadarPcts() {
+function scopedEvalCriteria() {
+  const sgIds = new Set(_teams.map(t => t.sector_group_id).filter(Boolean));
+  if (!sgIds.size || !_sgEcMap.size) return _evalCriteria;
+  const allowed = new Set();
+  for (const sgId of sgIds) {
+    for (const ecId of (_sgEcMap.get(sgId) ?? [])) allowed.add(ecId);
+  }
+  return _evalCriteria.filter(ec => allowed.has(ec.id));
+}
+
+function refreshRadarChart() {
+  const criteria = scopedEvalCriteria();
+  if (!criteria.length) return;
+  const labels = criteria.map(ec => ec.name.split(' ')[0]);
   const sum = {};
   for (const row of _rows) {
     for (const [cid, { e, m }] of Object.entries(row.radarSum ?? {})) {
@@ -165,13 +197,8 @@ function computeRadarPcts() {
       sum[cid].m += m;
     }
   }
-  return _evalCriteria.map(ec => sum[ec.id]?.m > 0 ? Math.round(sum[ec.id].e / sum[ec.id].m * 100) : 0);
-}
-
-function refreshRadarChart() {
-  if (!_evalCriteria.length) return;
-  const labels = _evalCriteria.map(ec => ec.name.split(' ')[0]);
-  renderRadarChart('reg-radar-chart', labels, [{ label: 'Média', data: computeRadarPcts() }]);
+  const data = criteria.map(ec => sum[ec.id]?.m > 0 ? Math.round(sum[ec.id].e / sum[ec.id].m * 100) : 0);
+  renderRadarChart('reg-radar-chart', labels, [{ label: 'Média', data }]);
 }
 
 /* ── Observation stats ────────────────────── */
