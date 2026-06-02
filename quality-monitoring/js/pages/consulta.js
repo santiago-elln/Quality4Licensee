@@ -18,6 +18,7 @@ let _teams              = [];
 let _employees          = [];
 let _evalCriteria       = [];
 let _topicMap           = {};
+let _sgEcMap            = new Map(); // Map<sector_group_id, Set<eval_criteria_id>>
 let _monStats           = {};
 let _filters            = { supId: '', collabId: '' };
 let _employeeActionPlans = {};  // { empId: [plans] }
@@ -169,25 +170,31 @@ function computeMonStats(monitorings) {
 /* ── Data fetch ───────────────────────────── */
 async function fetchData() {
   const globalScope = can(_currentUser, P.GLOBAL_VIEW_DEPT);
-  const empQuery = supabase.from('employees').select('id, name, team_id, avatar_url').eq('active', true).order('name');
+  const empQuery = supabase.from('employees').select('id, name, team_id, sector_group_id, avatar_url').eq('active', true).order('name');
 
-  const [deptRes, teamsRes, empRes, ecRes, topicRes] = await Promise.all([
+  const [deptRes, teamsRes, empRes, ecRes, topicRes, sgEcRes] = await Promise.all([
     supabase.from('departments').select('id, name').eq('active', true).order('name'),
     supabase.from('teams').select('id, name').eq('active', true).order('name'),
     empQuery,
     supabase.from('eval_criteria').select('id, name').eq('active', true),
     supabase.from('topic').select('id, eval_criteria_id, points').eq('active', true),
+    supabase.from('sector_group_eval_criteria').select('sector_group_id, eval_criteria_id'),
   ]);
   if (deptRes.error)  console.error('[consulta] departments:', deptRes.error);
   if (teamsRes.error) console.error('[consulta] teams:', teamsRes.error);
   if (empRes.error)   console.error('[consulta] employees:', empRes.error);
   if (ecRes.error)    console.error('[consulta] eval_criteria:', ecRes.error);
   if (topicRes.error) console.error('[consulta] topic:', topicRes.error);
-  _departments        = deptRes.data   ?? [];
-  _teams              = teamsRes.data  ?? [];
-  _employees          = empRes.data    ?? [];
-  _evalCriteria       = ecRes.data     ?? [];
-  _topicMap           = Object.fromEntries((topicRes.data ?? []).map(t => [t.id, t]));
+  _departments  = deptRes.data   ?? [];
+  _teams        = teamsRes.data  ?? [];
+  _employees    = empRes.data    ?? [];
+  _evalCriteria = ecRes.data     ?? [];
+  _topicMap     = Object.fromEntries((topicRes.data ?? []).map(t => [t.id, t]));
+  _sgEcMap      = new Map();
+  for (const { sector_group_id, eval_criteria_id } of (sgEcRes.data ?? [])) {
+    if (!_sgEcMap.has(sector_group_id)) _sgEcMap.set(sector_group_id, new Set());
+    _sgEcMap.get(sector_group_id).add(eval_criteria_id);
+  }
   _fetchedGlobalScope = globalScope;
 }
 
@@ -561,17 +568,24 @@ function renderCard(collab) {
     </div>`;
 }
 
+/* ── Sector-group criteria helper ─────────── */
+function evalCriteriaForSg(sgId) {
+  if (!sgId || !_sgEcMap.has(sgId)) return _evalCriteria;
+  const linked = _sgEcMap.get(sgId);
+  return _evalCriteria.filter(ec => linked.has(ec.id));
+}
+
 /* ── Charts ───────────────────────────────── */
 function initCharts() {
-  const radarLabels = _evalCriteria.map(ec => ec.name.split(' ')[0]);
-
   _employees.forEach(collab => {
-    const s = _monStats[collab.id];
+    const s          = _monStats[collab.id];
+    const sgCriteria = evalCriteriaForSg(collab.sector_group_id);
+    const radarLabels = sgCriteria.map(ec => ec.name.split(' ')[0]);
 
     renderRadarChart(
       `radar-cc-${collab.id}`,
       radarLabels,
-      [{ label: collab.name.split(' ')[0], data: _evalCriteria.map(ec => s?.radarPcts[ec.id] ?? 0) }]
+      [{ label: collab.name.split(' ')[0], data: sgCriteria.map(ec => s?.radarPcts[ec.id] ?? 0) }]
     );
 
     if (s?.history.length) {

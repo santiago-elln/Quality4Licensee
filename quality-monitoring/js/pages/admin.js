@@ -33,6 +33,7 @@ let _absorbTarget      = null; // profile id being absorbed
 /* ── Level change state ───────────────────── */
 let _pendingLevelChanges = {};
 // { [profileId]: { newLevel, originalLevel, name, isEmployee } }
+let _deactivationTarget  = null; // { profileId, name } — employee pending deactivation confirm
 
 /* ── Donut color palette ──────────────────── */
 const EC_COLORS = [
@@ -186,6 +187,22 @@ export function render() {
 
       <div id="admin-tab-content">
         ${renderTab(_activeTab, user)}
+      </div>
+    </div>
+
+    <!-- Employee deactivation confirm modal -->
+    <div id="deactivation-confirm-modal" class="modal-overlay modal-overlay--hidden">
+      <div class="modal modal--sm">
+        <div class="modal__header">
+          <div class="modal__title">Remover colaborador</div>
+        </div>
+        <div class="modal__body">
+          <p id="deactivation-confirm-msg" style="font-size:var(--text-sm);color:var(--text-secondary)"></p>
+        </div>
+        <div class="modal__footer">
+          <button class="btn btn--ghost" id="deactivation-cancel" type="button">Cancelar</button>
+          <button class="btn btn--danger" id="deactivation-confirm" type="button">Remover</button>
+        </div>
       </div>
     </div>
 
@@ -937,6 +954,17 @@ function bindModalEvents() {
   document.getElementById('catalog-deact-modal')?.addEventListener('click',
     e => { if (e.target.id === 'catalog-deact-modal') closeDeactivateModal(); });
 
+  document.getElementById('deactivation-cancel')?.addEventListener('click', () => {
+    _deactivationTarget = null;
+    document.getElementById('deactivation-confirm-modal')?.classList.add('modal-overlay--hidden');
+  });
+  document.getElementById('deactivation-confirm')?.addEventListener('click', confirmDeactivateEmployee);
+  document.getElementById('deactivation-confirm-modal')?.addEventListener('click',
+    e => { if (e.target.id === 'deactivation-confirm-modal') {
+      _deactivationTarget = null;
+      document.getElementById('deactivation-confirm-modal').classList.add('modal-overlay--hidden');
+    }});
+
   document.getElementById('copy-from-close')?.addEventListener('click',   closeCopyFromModal);
   document.getElementById('copy-from-cancel')?.addEventListener('click',  closeCopyFromModal);
   document.getElementById('copy-from-confirm')?.addEventListener('click', confirmCopyFrom);
@@ -1317,6 +1345,36 @@ async function checkDemotionAllowed(profileId) {
 }
 
 /* ── Level change application ─────────────────── */
+async function confirmDeactivateEmployee() {
+  if (!_deactivationTarget) return;
+  const { profileId, name } = _deactivationTarget;
+  const btn = document.getElementById('deactivation-confirm');
+  if (btn) { btn.disabled = true; btn.textContent = 'Removendo…'; }
+  try {
+    const { error: e1 } = await supabase.from('employees').update({
+      active:     false,
+      team_id:    null,
+      sector_id:  null,
+    }).eq('id', profileId);
+    if (e1) throw e1;
+
+    /* Remove profile so auth access is revoked */
+    await supabase.from('profiles').delete().eq('id', profileId);
+
+    _deactivationTarget = null;
+    document.getElementById('deactivation-confirm-modal')?.classList.add('modal-overlay--hidden');
+    toast.success('Colaborador removido', name);
+    _orgData = null;
+    await loadOrgTabData();
+    document.getElementById('admin-tab-content').innerHTML = renderTab('org', getCurrentUser());
+    bindTabEvents();
+  } catch (err) {
+    console.error('[admin] deactivate employee:', err);
+    toast.error('Erro ao remover colaborador', err.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Remover'; }
+  }
+}
+
 async function applyLevelChanges() {
   const changes = Object.entries(_pendingLevelChanges);
   if (!changes.length) return;
@@ -1903,7 +1961,17 @@ function bindTabEvents() {
         if (currentDisplayLevel >= maxLevel) return;
         currentDisplayLevel++;
       } else {
-        if (currentDisplayLevel <= 2) return;
+        if (currentDisplayLevel <= 2) {
+          /* Trying to go below level 2 — trigger deactivation flow */
+          if (!isEmployee) return; // only valid for employee rows
+          _deactivationTarget = { profileId, name };
+          const msg = document.getElementById('deactivation-confirm-msg');
+          if (msg) msg.innerHTML =
+            `Esta ação removerá <strong>${name}</strong> de todas as equipes e revogará o acesso à plataforma. ` +
+            `O registro do colaborador será inativado. Deseja continuar?`;
+          document.getElementById('deactivation-confirm-modal')?.classList.remove('modal-overlay--hidden');
+          return;
+        }
         if (currentDisplayLevel - 1 === 2) {
           const check = await checkDemotionAllowed(profileId);
           if (!check.allowed) {

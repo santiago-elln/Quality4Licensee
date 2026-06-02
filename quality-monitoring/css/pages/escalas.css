@@ -550,3 +550,12 @@
   cursor: pointer; transition: color .2s, border-color .2s;
 }
 .esc-cal-btn-cancel:hover { color: #f1f5f9; border-color: rgba(255,255,255,.25); }
+
+/* ── Ghost rows (other-team employees) ──────── */
+.esc-emp-row--ghost { opacity: .6; }
+.esc-emp-row--ghost .esc-emp-grid { pointer-events: none; }
+.esc-emp-name--ghost {
+  font-style: italic;
+  color: var(--text-tertiary, #9ca3af);
+  font-size: .75rem;
+}

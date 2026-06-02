@@ -202,7 +202,7 @@ const _dirty      = new Set()
 let _drag              = null
 let _abortCtrl         = null
 let _pendingSingleSave  = null  // eid awaiting confirmation via the row ✓ button
-let _defaultShiftCache = {}    // { [employee_id]: parsed shift } — survives date changes
+let _defaultShiftCache = {}    // kept for legacy save paths; no longer used for fetching
 
 // ─── render ───────────────────────────────────────────────────────────────────
 export function render() {
@@ -344,64 +344,67 @@ export async function init() {
 async function loadData() {
   _shifts = {}; _origShifts = {}
 
-  const SHIFT_COLS = 'id, employee_id, start_time, end_time, break_start, break_duration_minutes, is_default, validated, updated_by, updated_at'
+  /* Fetch all sector-group shifts (bypasses RLS via SECURITY DEFINER function) */
+  const { data: shiftRows, error } = await supabase
+    .rpc('get_employees_for_shifts', { p_date: _selectedDate })
+  if (error) { showStatus('Erro ao carregar escalas.', true); return }
 
-  const { data: rows, error } = await supabase.rpc('get_employees_for_shifts')
-  if (error) { showStatus('Erro ao carregar colaboradores.', true); return }
+  /* Fetch own-team employees (names) — RLS restricts this to the supervisor's scope */
+  const { data: ownEmps } = await supabase
+    .from('employees')
+    .select('id, name, team_id, sector_id, sector_group_id')
+    .eq('active', true)
+    .order('name')
+  const ownEmpMap = new Map((ownEmps ?? []).map(e => [e.id, e]))
 
-  /* Collect unique sector_groups from the result, preserving order */
-  const seen = new Set()
-  _sectorGroups = (rows ?? [])
-    .filter(r => r.sector_group_id && !seen.has(r.sector_group_id) && seen.add(r.sector_group_id))
-    .map(r => ({ id: r.sector_group_id, name: r.sg_name ?? '—' }))
+  /* Build employees list and sector-groups from the shift rows */
+  const seenEmps = new Set()
+  const seenSgs  = new Set()
+  _employees    = []
+  _sectorGroups = []
 
-  _employees = (rows ?? []).map(({ sg_name: _, ...emp }) => emp)
-
-  const empIds = _employees.map(e => e.id)
-  if (!empIds.length) { _dirty.clear(); hideSaveBar(); updateStats(); return }
-
-  /* Phase 1: date-specific shifts for the selected date */
-  const { data: dateShifts } = await supabase
-    .from('shifts').select(SHIFT_COLS)
-    .in('employee_id', empIds)
-    .eq('date', _selectedDate)
-    .eq('is_default', false)
-
-  /* Phase 2: default shifts for employees without a date-specific one (cache-first) */
-  const hasDateShift  = new Set((dateShifts ?? []).map(s => s.employee_id))
-  const missingIds    = empIds.filter(id => !hasDateShift.has(id))
-  const uncachedIds   = missingIds.filter(id => !_defaultShiftCache[id])
-  if (uncachedIds.length) {
-    const { data: fetched } = await supabase
-      .from('shifts').select(SHIFT_COLS).in('employee_id', uncachedIds).eq('is_default', true)
-    for (const s of (fetched ?? []))
-      _defaultShiftCache[s.employee_id] = s
+  for (const row of (shiftRows ?? [])) {
+    if (row.sector_group_id && !seenSgs.has(row.sector_group_id)) {
+      seenSgs.add(row.sector_group_id)
+      _sectorGroups.push({ id: row.sector_group_id, name: row.sg_name ?? '—' })
+    }
+    if (!seenEmps.has(row.employee_id)) {
+      seenEmps.add(row.employee_id)
+      const own = ownEmpMap.get(row.employee_id)
+      _employees.push({
+        id:              row.employee_id,
+        team_id:         row.team_id,
+        sector_id:       own?.sector_id   ?? null,
+        sector_group_id: row.sector_group_id,
+        name:            own?.name        ?? null,  // null = other team → ghost row
+      })
+    }
+    /* Populate shifts */
+    if (row.shift_id) {
+      const parsed = {
+        id:                    row.shift_id,
+        employee_id:           row.employee_id,
+        start_time:            row.start_time,
+        end_time:              row.end_time,
+        break_start:           row.break_start,
+        break_duration_minutes: row.break_duration_minutes,
+        is_default:            row.is_default,
+        validated:             row.validated ?? false,
+        updated_by:            row.updated_by,
+        updated_at:            row.updated_at,
+        start_min:             timeToMin(row.start_time),
+        end_min:               timeToMin(row.end_time),
+        break_start_min:       timeToMin(row.break_start),
+        is_from_default:       row.is_default ?? false,
+        date_shift_id:         row.is_default ? null : row.shift_id,
+        default_shift_id:      row.is_default ? row.shift_id : null,
+      }
+      _shifts[row.employee_id]     = parsed
+      _origShifts[row.employee_id] = { ...parsed }
+    }
   }
-  const defaultShifts = missingIds.map(id => _defaultShiftCache[id]).filter(Boolean)
 
-  /* Merge: date-specific takes priority, default is fallback */
-  const parseShift = (s, fromDefault) => ({
-    ...s,
-    start_min:        timeToMin(s.start_time),
-    end_min:          timeToMin(s.end_time),
-    break_start_min:  timeToMin(s.break_start),
-    is_from_default:  fromDefault,
-    date_shift_id:    fromDefault ? null : s.id,
-    default_shift_id: fromDefault ? s.id : null,
-    validated:        s.validated ?? false,
-  })
-
-  for (const s of (dateShifts ?? [])) {
-    const parsed = parseShift(s, false)
-    _shifts[s.employee_id]     = parsed
-    _origShifts[s.employee_id] = { ...parsed }
-  }
-  for (const s of (defaultShifts ?? [])) {
-    const parsed = parseShift(s, true)
-    _shifts[s.employee_id]     = parsed
-    _origShifts[s.employee_id] = { ...parsed }
-  }
-
+  if (!_employees.length) { _dirty.clear(); hideSaveBar(); updateStats(); return }
   _dirty.clear(); hideSaveBar(); updateStats()
 }
 
@@ -772,8 +775,9 @@ function hideMetricsWarn(){$e('esc-metrics-warn')?.classList.remove('visible')}
 
 // ─── Employee row ─────────────────────────────────────────────────────────────
 function buildEmpRow(emp) {
-  const shift=_shifts[emp.id]
-  const canEdit = can(_user, P.SHIFTS_EDIT) && (can(_user, P.GLOBAL_VIEW_DEPT) || (_user?.supervisedTeamIds ?? []).includes(emp.team_id))
+  const shift   = _shifts[emp.id]
+  const isGhost = !emp.name  // no name = employee from another team in the sector group
+  const canEdit = !isGhost && can(_user, P.SHIFTS_EDIT) && (can(_user, P.GLOBAL_VIEW_DEPT) || (_user?.supervisedTeamIds ?? []).includes(emp.team_id))
   let gridContent=''
   if(shift){
     const barLeft=minToPct(shift.start_min),barWidth=durToPct(shift.end_min-shift.start_min)
@@ -800,18 +804,21 @@ function buildEmpRow(emp) {
     gridContent=`<div class="esc-no-shift">Sem escala para esta data</div>`
   }
   return `
-    <div class="esc-srow esc-emp-row" data-eid="${emp.id}">
+    <div class="esc-srow esc-emp-row${isGhost?' esc-emp-row--ghost':''}" data-eid="${emp.id}">
       <div class="esc-name-cell${canEdit?' esc-my-team':''}">
-        <span class="esc-emp-name" title="${emp.name}">${emp.name}</span>
-        ${canEdit ? `
-        <div class="esc-row-actions">
-          <button class="esc-row-btn esc-row-save" data-eid="${emp.id}" title="Salvar">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-          </button>
-          <button class="esc-row-btn esc-row-discard" data-eid="${emp.id}" title="Descartar">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
-          </button>
-        </div>` : ''}
+        ${isGhost
+          ? `<span class="esc-emp-name esc-emp-name--ghost" title="Colaborador de outra equipe">— outra equipe —</span>`
+          : `<span class="esc-emp-name" title="${emp.name}">${emp.name}</span>
+            ${canEdit ? `
+            <div class="esc-row-actions">
+              <button class="esc-row-btn esc-row-save" data-eid="${emp.id}" title="Salvar">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              </button>
+              <button class="esc-row-btn esc-row-discard" data-eid="${emp.id}" title="Descartar">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+              </button>
+            </div>` : ''}`
+        }
       </div>
       <div class="esc-grid-cell esc-emp-grid" data-eid="${emp.id}" style="height:var(--esc-row-h)">
         ${buildGridLines()}${gridContent}

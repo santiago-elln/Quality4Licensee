@@ -16,9 +16,10 @@ let _employee    = null;   // {id, name, team_id, avatar_url}
 let _supervisor  = null;   // {id, name}
 let _monitorings = [];     // [{id, date, zeroed, pct, radarPcts, avgCsat}]
 let _obsLog      = [];     // [{typeCode, typeLabel, criteriaName, content, protocol, monDate}]
-let _evalCriteria = [];    // [{id, name}]  — cached across navigations
-let _topicMap    = {};     // {topicId: {eval_criteria_id, points}} — cached
-let _loadedEmpId = null;   // cache key
+let _evalCriteria  = [];    // [{id, name}]  — cached across navigations
+let _topicMap      = {};    // {topicId: {eval_criteria_id, points}} — cached
+let _sgEcMap       = new Map(); // Map<sector_group_id, Set<eval_criteria_id>> — cached
+let _loadedEmpId   = null;  // cache key
 
 /* ── Avatar crop state ────────────────────── */
 let _cropImg      = null;
@@ -93,8 +94,9 @@ export function render() {
     ? Math.round(csatVals.reduce((a, b) => a + b, 0) / csatVals.length * 10) / 10
     : null;
 
-  /* Category breakdown (avg per eval_criteria across all monitorings) */
-  const catBreakdown = _evalCriteria.map(ec => {
+  /* Category breakdown — filtered to employee's sector_group */
+  const sgCriteria   = evalCriteriaForSg(_employee.sector_group_id);
+  const catBreakdown = sgCriteria.map(ec => {
     const vals = _monitorings.map(m => m.radarPcts[ec.id] ?? 0);
     const avg  = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
     return { name: ec.name, pct: avg };
@@ -276,10 +278,18 @@ export function render() {
     </div>` : ''}`;
 }
 
+/* ── Sector-group criteria helper ─────────── */
+function evalCriteriaForSg(sgId) {
+  if (!sgId || !_sgEcMap.has(sgId)) return _evalCriteria;
+  const linked = _sgEcMap.get(sgId);
+  return _evalCriteria.filter(ec => linked.has(ec.id));
+}
+
 /* ── Charts ───────────────────────────────── */
 function initCharts() {
-  const radarLabels = _evalCriteria.map(ec => ec.name.split(' ')[0]);
-  const radarData   = _evalCriteria.map(ec => {
+  const sgCriteria  = evalCriteriaForSg(_employee.sector_group_id);
+  const radarLabels = sgCriteria.map(ec => ec.name.split(' ')[0]);
+  const radarData   = sgCriteria.map(ec => {
     const vals = _monitorings.map(m => m.radarPcts[ec.id] ?? 0);
     return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
   });
@@ -629,18 +639,24 @@ export async function init() {
 
   /* Static ref data (cached across navigations) */
   if (!_evalCriteria.length) {
-    const [ecRes, topicRes] = await Promise.all([
+    const [ecRes, topicRes, sgEcRes] = await Promise.all([
       supabase.from('eval_criteria').select('id, name').eq('active', true),
       supabase.from('topic').select('id, eval_criteria_id, points').eq('active', true),
+      supabase.from('sector_group_eval_criteria').select('sector_group_id, eval_criteria_id'),
     ]);
     _evalCriteria = ecRes.data ?? [];
     _topicMap     = Object.fromEntries((topicRes.data ?? []).map(t => [t.id, t]));
+    _sgEcMap      = new Map();
+    for (const { sector_group_id, eval_criteria_id } of (sgEcRes.data ?? [])) {
+      if (!_sgEcMap.has(sector_group_id)) _sgEcMap.set(sector_group_id, new Set());
+      _sgEcMap.get(sector_group_id).add(eval_criteria_id);
+    }
   }
 
   /* Employee + monitorings in parallel; supervisor resolved separately to avoid FK ambiguity */
   const [empRes, monsRes] = await Promise.all([
     supabase.from('employees')
-      .select('id, name, team_id, avatar_url, teams(supervisor_id)')
+      .select('id, name, team_id, sector_group_id, avatar_url, teams(supervisor_id)')
       .eq('id', empId)
       .single(),
     supabase.from('monitoring')
