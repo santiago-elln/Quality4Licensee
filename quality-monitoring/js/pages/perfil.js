@@ -29,6 +29,7 @@ let _sgEcMap             = new Map(); // sg_id → Set<ec_id>
 let _allAnalyticalTypes  = [];
 let _analyticalNoteTypes = []; // scoped to employees' sector groups
 let _sgAnMap             = new Map(); // sg_id → Set<analytical_note_type_id>
+let _refCacheUserId      = null; // user.id when ref data was last fetched
 
 /* ── Obs type codes ────────────────────────── */
 const OBS_TYPE = {
@@ -98,7 +99,7 @@ function buildCatBreakdown(mons, emps) {
     ? _evalCriteria.filter(ec => usedEcIds.has(ec.id))
     : _evalCriteria;
   return criteria.map(ec => {
-    const vals = mons.map(m => m.radarPcts[ec.id] ?? 0);
+    const vals = mons.filter(m => m.radarPcts[ec.id] !== undefined).map(m => m.radarPcts[ec.id]);
     const avg  = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
     return { id: ec.id, name: ec.name, pct: avg };
   });
@@ -402,8 +403,9 @@ export async function init() {
   _calPicker?.destroy();
   _calPicker = null;
 
-  /* ── Static ref data (cached after first load) */
-  if (!_evalCriteria.length) {
+  try {
+  /* ── Static ref data (cached; invalidated when viewed user changes) */
+  if (!_evalCriteria.length || _refCacheUserId !== user.id) {
     const [ecRes, topicRes, sgEcRes, anRes, sgAnRes] = await Promise.all([
       supabase.from('eval_criteria').select('id, name').eq('active', true),
       supabase.from('topic').select('id, eval_criteria_id, points').eq('active', true),
@@ -424,6 +426,7 @@ export async function init() {
       if (!_sgAnMap.has(sector_group_id)) _sgAnMap.set(sector_group_id, new Set());
       _sgAnMap.get(sector_group_id).add(analytical_note_type_id);
     }
+    _refCacheUserId = user.id;
   }
 
   /* ── Scope label + employees in parallel */
@@ -548,4 +551,18 @@ export async function init() {
   }
 
   reloadPage();
+  } catch (err) {
+    console.error('[perfil] init:', err);
+    const main = document.getElementById('main-content');
+    if (main?.isConnected) {
+      main.innerHTML = `
+        <div class="page-enter" style="padding:var(--space-8)">
+          <div class="empty-state">
+            <div class="empty-state__icon">⚠</div>
+            <div class="empty-state__title">Erro ao carregar dados</div>
+            <div class="empty-state__desc">Tente recarregar a página.</div>
+          </div>
+        </div>`;
+    }
+  }
 }

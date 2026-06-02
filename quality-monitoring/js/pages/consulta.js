@@ -1,7 +1,7 @@
 /* ============================================================
    CONSULTA POR ASSOCIADO — Painel de análise por colaborador
    ============================================================ */
-import { getCurrentUser } from '../auth.js';
+import { getCurrentUser, getRealUser } from '../auth.js';
 import { supabase } from '../supabase.js';
 import { navigate } from '../router.js';
 import { can, P } from '../utils/permissions.js';
@@ -24,6 +24,7 @@ let _filters            = { supId: '', collabId: '' };
 let _employeeActionPlans = {};  // { empId: [plans] }
 let _dataLoaded         = false;
 let _fetchedGlobalScope = null;
+let _fetchedUserId      = null;
 
 /* ── New plan modal state ─────────────────── */
 let _npEmpId     = null;   // employee the modal is targeting
@@ -206,6 +207,7 @@ async function fetchData() {
     _sgEcMap.get(sector_group_id).add(eval_criteria_id);
   }
   _fetchedGlobalScope = globalScope;
+  _fetchedUserId      = _currentUser?.id ?? null;
 }
 
 async function fetchMonitoringData() {
@@ -501,7 +503,7 @@ function renderCard(collab) {
         </div>
         <div class="cc-card__info">
           <div class="cc-card__name">
-            <a href="#perfil?id=${collab.id}">${collab.name}</a>
+            ${collab.name}
           </div>
           <div class="cc-card__last-mon">${lastMonHtml}</div>
           <div class="cc-card__badges">
@@ -954,7 +956,7 @@ async function saveNewPlan() {
     const { data: plan, error: planErr } = await supabase
       .from('action_plans')
       .insert({
-        created_by:  _currentUser.id,
+        created_by:  getRealUser().id,
         start_date:  startDate,
         emp_visible: empVisible,
         title,
@@ -1060,7 +1062,7 @@ export async function init() {
 
   try {
     const globalScope = can(_currentUser, P.GLOBAL_VIEW_DEPT);
-    if (!_employees.length || _fetchedGlobalScope !== globalScope) await fetchData();
+    if (!_employees.length || _fetchedGlobalScope !== globalScope || _fetchedUserId !== _currentUser?.id) await fetchData();
     await Promise.all([
       fetchMonitoringData(),
       fetchEmployeeActionPlans(),

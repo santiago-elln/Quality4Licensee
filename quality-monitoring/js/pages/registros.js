@@ -3,7 +3,6 @@
    ============================================================ */
 import { getCurrentUser } from '../auth.js';
 import { supabase } from '../supabase.js';
-import { navigate } from '../router.js';
 import { can, P } from '../utils/permissions.js';
 import {
   formatDate, resultBand, scoreColor, scoreColorHex, getInitials,
@@ -877,12 +876,6 @@ function bindTableEvents() {
     });
   });
 
-  document.querySelectorAll('tr[data-emp]').forEach(row => {
-    row.addEventListener('click', e => {
-      if (e.target.closest('.detail-btn, .delete-monitoring-btn')) return;
-      if (row.dataset.emp) navigate('perfil', { id: row.dataset.emp });
-    });
-  });
 }
 
 function bindFilters() {
@@ -1237,10 +1230,25 @@ export async function init() {
   const main = document.getElementById('main-content');
   if (main) main.innerHTML = render(); // mostra spinner imediatamente
 
-  await fetchRefData();
-  await fetchMonitorings();
-  await fetchObservations();
-  _dataLoaded = true;
+  try {
+    await fetchRefData();
+    await fetchMonitorings();
+    await fetchObservations();
+    _dataLoaded = true;
+  } catch (err) {
+    console.error('[registros] init:', err);
+    if (main?.isConnected) {
+      main.innerHTML = `
+        <div class="page-enter" style="padding:var(--space-8)">
+          <div class="empty-state">
+            <div class="empty-state__icon">⚠</div>
+            <div class="empty-state__title">Erro ao carregar registros</div>
+            <div class="empty-state__desc">Tente recarregar a página.</div>
+          </div>
+        </div>`;
+    }
+    return;
+  }
 
   if (!main) return;
   main.innerHTML = render();

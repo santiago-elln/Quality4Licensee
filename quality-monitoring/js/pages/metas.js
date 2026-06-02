@@ -63,7 +63,17 @@ const ACTIVE_TABLES = new Set(['departments', 'sectors', 'teams', 'employees', '
 
 /* ── Data fetch ───────────────────────────── */
 async function fetchPlans() {
-  const { data, error } = await supabase
+  const globalScope = can(_currentUser, P.GLOBAL_VIEW_DEPT);
+  const teamIds     = globalScope ? null : (_currentUser?.supervisedTeamIds ?? []);
+
+  /* Non-global users with no teams: skip the DB round-trip */
+  if (!globalScope && !teamIds.length) {
+    _plans = [];
+    _scopeNames = {};
+    return;
+  }
+
+  let query = supabase
     .from('action_plans')
     .select(`
       id, start_date, finished_at, emp_visible, title,
@@ -83,6 +93,16 @@ async function fetchPlans() {
     .eq('active', true)
     .order('created_at', { ascending: false });
 
+  /* For non-global users, restrict to scope IDs within their teams.
+     RLS cannot do this because it always runs under the real authenticated JWT. */
+  if (!globalScope) {
+    const { data: empRows } = await supabase
+      .from('employees').select('id').eq('active', true).in('team_id', teamIds);
+    const empIds = (empRows ?? []).map(e => e.id);
+    query = query.in('scope_id', [...teamIds, ...empIds]);
+  }
+
+  const { data, error } = await query;
   if (error) { console.error('[metas] fetch:', error); _plans = []; return; }
   _plans = (data ?? []).map(p => ({
     ...p,
@@ -1863,15 +1883,31 @@ export async function init() {
   _targetValueCache = {};
   _plans            = null;
 
+  /* Render immediately so the DOM never shows stale data from a previous navigation */
+  const main = document.getElementById('main-content');
+  if (main) main.innerHTML = render();
+
   if (!can(_currentUser, P.SIDEBAR_GOALS)) return;
 
   /* Pre-select a plan if navigated here from consulta */
   const { planId } = getRouteParams();
   if (planId) _selectedId = planId;
 
-  const main = document.getElementById('main-content');
-  if (main) main.innerHTML = render();   // show spinner
-
-  await fetchPlans();
+  try {
+    await fetchPlans();
+  } catch (err) {
+    console.error('[metas] fetchPlans failed:', err);
+    if (main?.isConnected) {
+      main.innerHTML = `
+        <div class="page-enter" style="padding:var(--space-8)">
+          <div class="empty-state">
+            <div class="empty-state__icon">⚠</div>
+            <div class="empty-state__title">Erro ao carregar planos</div>
+            <div class="empty-state__desc">Tente recarregar a página.</div>
+          </div>
+        </div>`;
+    }
+    return;
+  }
   reloadPage();
 }

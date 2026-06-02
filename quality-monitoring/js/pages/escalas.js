@@ -351,12 +351,19 @@ async function loadData() {
     .rpc('get_employees_for_shifts', { p_date: _selectedDate, p_sector_group_id: sgFilter })
   if (error) { showStatus('Erro ao carregar escalas.', true); return }
 
-  /* Fetch own-team employees (names) — RLS restricts this to the supervisor's scope */
-  const { data: ownEmps } = await supabase
+  /* Fetch own-team employees (names) — scoped explicitly because RLS runs as the
+     real authenticated user (not the view-as user) and would otherwise return all rows. */
+  let ownEmpsQuery = supabase
     .from('employees')
     .select('id, name, team_id, sector_id, sector_group_id')
     .eq('active', true)
     .order('name')
+  if (!can(user, P.GLOBAL_VIEW_DEPT)) {
+    const teamIds = user.supervisedTeamIds ?? [];
+    const EMPTY_GUID = '00000000-0000-0000-0000-000000000000';
+    ownEmpsQuery = ownEmpsQuery.in('team_id', teamIds.length ? teamIds : [EMPTY_GUID]);
+  }
+  const { data: ownEmps } = await ownEmpsQuery
   const ownEmpMap = new Map((ownEmps ?? []).map(e => [e.id, e]))
 
   /* Build employees list and sector-groups from the shift rows */

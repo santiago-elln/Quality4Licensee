@@ -892,8 +892,11 @@ export async function init() {
   _observations = _draft?.observations ?? [];
 
   /* ── Fetch ref data on every visit — guarantees active topics/criteria are current ── */
-  const [empRes, topicRes, obsTypeRes, evalCrRes, analTypeRes, errTypeRes,
-         sgEcRes, sgTopicRes, sgAnalRes, sgErrRes] = await Promise.all([
+  let empRes, topicRes, obsTypeRes, evalCrRes, analTypeRes, errTypeRes,
+      sgEcRes, sgTopicRes, sgAnalRes, sgErrRes;
+  try {
+  [empRes, topicRes, obsTypeRes, evalCrRes, analTypeRes, errTypeRes,
+   sgEcRes, sgTopicRes, sgAnalRes, sgErrRes] = await Promise.all([
     supabase.from('employees').select('id, name, sector_group_id').eq('active', true).order('name'),
     supabase.from('topic').select('id, item, eval_criteria_id, points, description').eq('active', true),
     supabase.from('observation_type').select('id, code').eq('active', true),
@@ -1306,4 +1309,18 @@ export async function init() {
 
   /* ── Restaurar checkboxes do rascunho ─────── */
   restoreDraftCheckboxes(_draft);
+  } catch (err) {
+    console.error('[nova-monitoria] init:', err);
+    const _errMain = document.getElementById('main-content');
+    if (_errMain?.isConnected) {
+      _errMain.innerHTML = `
+        <div class="page-enter" style="padding:var(--space-8)">
+          <div class="empty-state">
+            <div class="empty-state__icon">⚠</div>
+            <div class="empty-state__title">Erro ao carregar formulário</div>
+            <div class="empty-state__desc">Tente recarregar a página.</div>
+          </div>
+        </div>`;
+    }
+  }
 }

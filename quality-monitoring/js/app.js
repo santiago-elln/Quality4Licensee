@@ -52,13 +52,27 @@ async function mountPage(page) {
   if (!main) return;
   main.innerHTML = page.render();
   updateActiveNav();
-  await page.init?.();
+  try {
+    await page.init?.();
+  } catch (err) {
+    console.error('[app] page init failed:', err);
+    if (main.isConnected) {
+      main.innerHTML = `
+        <div class="page-enter" style="padding:var(--space-8)">
+          <div class="empty-state">
+            <div class="empty-state__icon">⚠</div>
+            <div class="empty-state__title">Erro ao carregar dados</div>
+            <div class="empty-state__desc">Tente recarregar a página.</div>
+          </div>
+        </div>`;
+    }
+  }
 }
 
 /* ── Default landing page by access level ───── */
 function defaultPageFor(user) {
   const lvl = user?.accessLevel;
-  if (lvl === 2) return 'escalas';
+  if (lvl === 2) return 'perfil';
   if (lvl === 4) return 'nova-monitoria';
   return 'consulta';
 }

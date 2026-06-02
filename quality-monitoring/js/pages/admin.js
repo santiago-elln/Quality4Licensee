@@ -1,7 +1,7 @@
 /* ============================================================
    ADMIN — Gestão de departamentos, equipes e usuários
    ============================================================ */
-import { getCurrentUser } from '../auth.js';
+import { getCurrentUser, getRealUser } from '../auth.js';
 import { ACCESS_LEVELS, roleClass } from '../utils/access.js';
 import { toast } from '../components/toast.js';
 import { getInitials } from '../utils/formatters.js';
@@ -158,7 +158,7 @@ function _sgMatchFn(table) {
 
 /* ── render() ─────────────────────────────── */
 export function render() {
-  const user = getCurrentUser();
+  const user = getRealUser();
   if (!can(user, P.ADMIN_VIEW_STRUCT) && !can(user, P.ADMIN_UPDATE_CRITERIA)) {
     return `<div class="empty-state"><div class="empty-state__icon">🔒</div><div class="empty-state__title">Acesso restrito</div></div>`;
   }
@@ -1679,7 +1679,7 @@ function closeTransferRequestModal() {
 async function confirmTransferRequest() {
   if (!_transferDragState) return;
   const { empId, fromTeamId, toTeamId } = _transferDragState;
-  const user = getCurrentUser();
+  const user = getRealUser();
   const btn  = document.getElementById('transfer-req-confirm');
   if (btn) { btn.disabled = true; btn.textContent = 'Solicitando…'; }
   try {
@@ -1745,7 +1745,7 @@ async function approveTransfer() {
   const transfer = (_orgData?.transfers ?? []).find(t => t.id === _transferResolveId);
   if (!transfer) return;
 
-  const user = getCurrentUser();
+  const user = getRealUser();
   const btn  = document.getElementById('transfer-approve-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Processando…'; }
   try {
@@ -1782,7 +1782,7 @@ async function approveTransfer() {
 
 async function denyTransfer() {
   if (!_transferResolveId) return;
-  const user = getCurrentUser();
+  const user = getRealUser();
   const btn  = document.getElementById('transfer-deny-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Recusando…'; }
   try {
@@ -1947,7 +1947,7 @@ function bindTabEvents() {
       const originalLevel = Number(stepper.dataset.originalLevel);
       const isEmployee    = stepper.dataset.isEmployee === 'true';
       const name          = stepper.dataset.name;
-      const user          = getCurrentUser();
+      const user          = getRealUser();
       const maxLevel      = user?.accessLevel ?? 2;
 
       const pending           = _pendingLevelChanges[profileId];

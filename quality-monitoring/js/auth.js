@@ -140,6 +140,7 @@ export async function restoreSession() {
 
   supabase.auth.onAuthStateChange(async (_event, session) => {
     _currentUser = session?.user ? await buildUser(session.user) : null;
+    _viewAsUser  = null; // stale impersonation must not survive a token change
     notify();
   });
 
