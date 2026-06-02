@@ -5,6 +5,7 @@ import { supabase } from './supabase.js';
 import { DEFAULT_PERMISSIONS_BY_LEVEL } from './utils/permissions.js';
 
 let _currentUser = null;
+let _viewAsUser  = null;
 const _listeners = new Set();
 
 function notify() {
@@ -16,8 +17,64 @@ export function onAuthChange(fn) {
   return () => _listeners.delete(fn);
 }
 
+/** Returns the viewed-as user when active, otherwise the real authenticated user. */
 export function getCurrentUser() {
+  return _viewAsUser ?? _currentUser;
+}
+
+/** Always returns the real authenticated user, ignoring view-as. */
+export function getRealUser() {
   return _currentUser;
+}
+
+export function isViewingAs() {
+  return _viewAsUser !== null;
+}
+
+export function clearViewAs() {
+  _viewAsUser = null;
+}
+
+/**
+ * Builds a user object for the given employee ID and sets it as the view-as user.
+ * Uses the same shape as buildUser() so all pages behave identically.
+ */
+export async function setViewAs(employeeId) {
+  const [{ data: profile }, { data: teams }, { data: employee }] = await Promise.all([
+    supabase
+      .from('profiles')
+      .select('name, role, access_level, department_id, filter_by, shifts_filter_by, sector_id, sector_group_id')
+      .eq('id', employeeId)
+      .single(),
+    supabase
+      .from('teams')
+      .select('id')
+      .eq('supervisor_id', employeeId)
+      .eq('active', true),
+    supabase
+      .from('employees')
+      .select('id, name')
+      .eq('id', employeeId)
+      .single(),
+  ]);
+
+  const accessLevel = profile?.access_level ?? 2;
+  _viewAsUser = {
+    id:                employeeId,
+    email:             null,
+    name:              profile?.name ?? employee?.name ?? '',
+    role:              profile?.role             ?? null,
+    accessLevel,
+    isClaimed:         !!(profile || employee),
+    employeeId:        employee?.id              ?? null,
+    departmentId:      profile?.department_id    ?? null,
+    sectorId:          profile?.sector_id        ?? null,
+    sectorGroupId:     profile?.sector_group_id  ?? null,
+    filterBy:          profile?.filter_by        ?? null,
+    shiftsFilterBy:    profile?.shifts_filter_by ?? null,
+    supervisedTeamIds: (teams ?? []).map(t => t.id),
+    permissions:       DEFAULT_PERMISSIONS_BY_LEVEL[accessLevel] ?? [],
+  };
 }
 
 export function isAuthenticated() {
@@ -112,5 +169,6 @@ export async function loginWithMicrosoft() {
 export async function logout() {
   await supabase.auth.signOut();
   _currentUser = null;
+  _viewAsUser  = null;
   notify();
 }

@@ -1,51 +1,48 @@
 /* ============================================================
-   PERFIL — Perfil individual do colaborador
+   PERFIL — Dashboard de equipe do supervisor / departamento
    ============================================================ */
 import { getCurrentUser } from '../auth.js';
-import { getRouteParams } from '../router.js';
 import { supabase } from '../supabase.js';
 import { can, P } from '../utils/permissions.js';
-import {
-  formatDate, resultBand, scoreColor, scoreColorHex, getInitials,
-} from '../utils/formatters.js';
-import { renderRadarChart, renderHistoryChartFull, destroyAll } from '../components/charts.js';
-import { toast } from '../components/toast.js';
+import { formatDate, scoreColor, scoreColorHex } from '../utils/formatters.js';
+import { renderRadarChart, renderHBarChart, renderHistoryChartFull, destroyAll } from '../components/charts.js';
+import { CalPicker, calTriggerHtml } from '../components/cal-picker.js';
 
 /* ── Module state ─────────────────────────── */
-let _employee    = null;   // {id, name, team_id, avatar_url}
-let _supervisor  = null;   // {id, name}
-let _monitorings = [];     // [{id, date, zeroed, pct, radarPcts, avgCsat}]
-let _obsLog      = [];     // [{typeCode, typeLabel, criteriaName, content, protocol, monDate}]
-let _evalCriteria  = [];    // [{id, name}]  — cached across navigations
-let _topicMap      = {};    // {topicId: {eval_criteria_id, points}} — cached
-let _sgEcMap       = new Map(); // Map<sector_group_id, Set<eval_criteria_id>> — cached
-let _loadedEmpId   = null;  // cache key
+let _user         = null;
+let _scopeLabel   = '';     // team name / sector group name / "Departamento"
+let _employees    = [];     // [{id, name, sector_id, sector_group_id}]
+let _sectors      = [];     // [{id, name}]
+let _sectorFilter = null;   // sector_id | null
+let _dateFrom     = null;   // YYYY-MM-DD | null
+let _dateTo       = null;   // YYYY-MM-DD | null
+let _calPicker    = null;
 
-/* ── Avatar crop state ────────────────────── */
-let _cropImg      = null;
-let _cropPanX     = 0;
-let _cropPanY     = 0;
-let _cropZoom     = 1;
-let _cropBaseZoom = 1;
-let _cropDragging = false;
-let _cropDragStart = null;
-let _cropObjectUrl = null;
-const CROP_SIZE    = 240;
+let _rawMonsComputed = []; // [{id, date, zeroed, number, pct, radarPcts, avgCsat, employeeId}]
+let _monNoteTypes    = new Map(); // monId → Set<analytical_note_type_id>
+let _obsLog          = [];        // [{code, criteriaName, content, protocol, monDate, employeeId}]
 
-/* ── Obs type code → display ──────────────── */
+/* Static ref (cached across navigations) */
+let _evalCriteria        = [];
+let _topicMap            = {};
+let _sgEcMap             = new Map(); // sg_id → Set<ec_id>
+let _allAnalyticalTypes  = [];
+let _analyticalNoteTypes = []; // scoped to employees' sector groups
+let _sgAnMap             = new Map(); // sg_id → Set<analytical_note_type_id>
+
+/* ── Obs type codes ────────────────────────── */
 const OBS_TYPE = {
-  default:        { code: 'G', label: 'Geral' },
-  improvable_by:  { code: 'O', label: 'Oportunidade' },
-  excelled_by:    { code: 'A', label: 'Acerto' },
-  failed_by:      { code: 'E', label: 'Erro' },
+  default:       { code: 'G' },
+  improvable_by: { code: 'O' },
+  excelled_by:   { code: 'A' },
+  failed_by:     { code: 'E' },
 };
 
-/* ── Compute scored monitorings from raw rows ── */
+/* ── computeMonData ────────────────────────── */
 function computeMonData(rawMons) {
   return rawMons.map(mon => {
     let earned = 0, total = 0;
     const earnedByC = {}, maxByC = {};
-
     for (const ta of (mon.topic_approval ?? [])) {
       const t = _topicMap[ta.topic_id];
       if (!t) continue;
@@ -57,110 +54,128 @@ function computeMonData(rawMons) {
         earned         += t.points;
       }
     }
-
     const pct = total > 0 ? Math.round(earned / total * 100) : 0;
     const radarPcts = {};
     for (const [cid, m] of Object.entries(maxByC)) {
       radarPcts[cid] = m > 0 ? Math.round((earnedByC[cid] ?? 0) / m * 100) : 0;
     }
-
     const csats = (mon.service_chat ?? []).filter(sc => sc.csat).map(sc => sc.csat);
     const avgCsat = csats.length
       ? Math.round(csats.reduce((a, b) => a + b, 0) / csats.length * 10) / 10
       : 0;
-
-    return { id: mon.id, date: mon.date, zeroed: mon.zeroed, pct, radarPcts, avgCsat };
+    return {
+      id: mon.id, date: mon.date, zeroed: mon.zeroed,
+      number: mon.number ?? null,
+      pct, radarPcts, avgCsat,
+      employeeId: mon.employee_id,
+    };
   });
 }
 
-/* ── render() ─────────────────────────────── */
+/* ── computeFiltered ────────────────────────── */
+function computeFiltered() {
+  let mons = _rawMonsComputed;
+  let emps = _employees;
+  if (_sectorFilter) {
+    const empIds = new Set(emps.filter(e => e.sector_id === _sectorFilter).map(e => e.id));
+    mons = mons.filter(m => empIds.has(m.employeeId));
+    emps = emps.filter(e => empIds.has(e.id));
+  }
+  if (_dateFrom) mons = mons.filter(m => m.date >= _dateFrom);
+  if (_dateTo)   mons = mons.filter(m => m.date <= _dateTo);
+  return { mons, emps };
+}
+
+/* ── buildCatBreakdown (for filtered emps) ──── */
+function buildCatBreakdown(mons, emps) {
+  const empSgIds  = new Set(emps.map(e => e.sector_group_id).filter(Boolean));
+  const usedEcIds = new Set();
+  for (const sgId of empSgIds) {
+    const linked = _sgEcMap.get(sgId);
+    if (linked) for (const id of linked) usedEcIds.add(id);
+  }
+  const criteria = usedEcIds.size
+    ? _evalCriteria.filter(ec => usedEcIds.has(ec.id))
+    : _evalCriteria;
+  return criteria.map(ec => {
+    const vals = mons.map(m => m.radarPcts[ec.id] ?? 0);
+    const avg  = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
+    return { id: ec.id, name: ec.name, pct: avg };
+  });
+}
+
+/* ── render() ───────────────────────────────── */
 export function render() {
-  if (!_employee) {
+  if (!_user) {
     return `
       <div class="profile-page page-enter"
            style="display:flex;align-items:center;justify-content:center;height:300px;gap:12px;color:var(--text-secondary)">
         <div class="boot-spinner" style="width:20px;height:20px;border-width:2px"></div>
-        Carregando perfil…
+        Carregando…
       </div>`;
   }
 
-  const count    = _monitorings.length;
-  const avgPct   = count ? Math.round(_monitorings.reduce((s, m) => s + m.pct, 0) / count) : 0;
-  const zeroed   = _monitorings.filter(m => m.zeroed).length;
-  const lastDate = _monitorings.length ? _monitorings[_monitorings.length - 1].date : null;
+  const { mons, emps } = computeFiltered();
 
-  const csatVals  = _monitorings.filter(m => m.avgCsat).map(m => m.avgCsat);
-  const avgCsat   = csatVals.length
+  /* Aggregate stats */
+  const count    = mons.length;
+  const avgPct   = count ? Math.round(mons.reduce((s, m) => s + m.pct, 0) / count) : 0;
+  const zeroed   = mons.filter(m => m.zeroed).length;
+  const csatVals = mons.filter(m => m.avgCsat).map(m => m.avgCsat);
+  const avgCsat  = csatVals.length
     ? Math.round(csatVals.reduce((a, b) => a + b, 0) / csatVals.length * 10) / 10
     : null;
 
-  /* Category breakdown — filtered to employee's sector_group */
-  const sgCriteria   = evalCriteriaForSg(_employee.sector_group_id);
-  const catBreakdown = sgCriteria.map(ec => {
-    const vals = _monitorings.map(m => m.radarPcts[ec.id] ?? 0);
-    const avg  = vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
-    return { name: ec.name, pct: avg };
-  });
+  /* Category breakdown for sidebar bars */
+  const catBreakdown = buildCatBreakdown(mons, emps);
 
-  /* Obs log HTML — only for users with Profile.canViewObs */
-  const canViewObs = can(getCurrentUser(), P.PROFILE_VIEW_OBS);
-  const obsLogHtml = !canViewObs ? null : _obsLog.length
-    ? _obsLog.map(o => `
-        <div class="obs-log-item obs-log-item--${o.code}">
-          <div class="obs-log-item__badge obs-log-item__badge--${o.code}">${o.code}</div>
-          <div class="obs-log-item__body">
-            ${o.criteriaName ? `<div class="obs-log-item__criteria">${o.criteriaName}</div>` : ''}
-            <div class="obs-log-item__text">${o.content}</div>
-            <div class="obs-log-item__meta">
-              ${o.monDate ? formatDate(o.monDate) : ''}
-              ${o.protocol ? ` · Prot. ${o.protocol}` : ''}
-            </div>
-          </div>
-        </div>`).join('')
-    : `<div class="empty-state" style="padding:var(--space-6)">
-         <div class="empty-state__title">Sem observações</div>
-       </div>`;
+  /* Sector filter options */
+  const sectorOpts = _sectors.map(s =>
+    `<option value="${s.id}"${_sectorFilter === s.id ? ' selected' : ''}>${s.name}</option>`
+  ).join('');
+  const showSectorFilter = _sectors.length > 1;
 
-  const currentUser = getCurrentUser();
-  const isSelf = currentUser?.employeeId === _employee.id || can(currentUser, P.CROSS_DEPT_VIEW);
+  /* Subtitle: reflect filtered count */
+  const subtitle = _sectorFilter && emps.length !== _employees.length
+    ? `${emps.length} de ${_employees.length} colaboradores`
+    : `${_employees.length} colaborador${_employees.length !== 1 ? 'es' : ''}`;
 
-  const avatarUrl = _employee.avatar_url ?? null;
+  const canViewObs = can(_user, P.PROFILE_VIEW_OBS);
+
+  /* Observations filtered to current sector scope */
+  const filteredEmpIds = new Set(emps.map(e => e.id));
+  const filteredObs = _obsLog.filter(o => !o.employeeId || filteredEmpIds.has(o.employeeId));
+
+  /* Analytical notes panel height */
+  const anPanelH = Math.max(80, _analyticalNoteTypes.length * 34);
 
   return `
     <div class="profile-page page-enter">
       <!-- Hero -->
       <div class="profile-hero">
-        <div class="profile-hero__top">
-          <div class="profile-hero__avatar${isSelf ? ' profile-hero__avatar--editable' : ''}" id="profile-avatar">
-            ${avatarUrl ? `<img src="${avatarUrl}" alt="" class="profile-hero__avatar-img" onerror="this.style.display='none';document.getElementById('avatar-initials-span').style.display=''">` : ''}
-            <span id="avatar-initials-span"${avatarUrl ? ' style="display:none"' : ''}>${getInitials(_employee.name)}</span>
-            ${isSelf ? `
-              <div class="profile-hero__avatar-overlay" aria-hidden="true">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
-                  <circle cx="12" cy="13" r="4"/>
-                </svg>
-              </div>
-            ` : ''}
+        <div class="profile-hero__top profile-hero__top--team">
+          <div class="profile-hero__team-info">
+            <div class="profile-hero__team-icon">
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                <circle cx="9" cy="7" r="4"/>
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+              </svg>
+            </div>
+            <div>
+              <div class="profile-hero__name">${_scopeLabel}</div>
+              <div class="profile-hero__meta">${subtitle}</div>
+            </div>
           </div>
-          ${isSelf ? `<input type="file" id="avatar-file-input" accept="image/*" style="position:fixed;opacity:0;pointer-events:none;left:-9999px;top:-9999px">` : ''}
-          <div class="profile-hero__info">
-            <div class="profile-hero__name-row">
-              <div class="profile-hero__name" id="profile-name-display">${_employee.name}</div>
-              ${isSelf ? `
-                <input class="profile-hero__name-input hidden" id="profile-name-input"
-                       value="${_employee.name.replace(/"/g, '&quot;')}" maxlength="80" />
-                <button class="profile-hero__edit-btn" id="profile-name-edit" title="Editar nome" type="button">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                  </svg>
-                </button>` : ''}
-            </div>
-            <div class="profile-hero__meta">${_supervisor?.name ?? '—'}</div>
-            <div class="profile-hero__badges">
-              ${lastDate ? `<span class="badge badge--neutral">Última monitoria: ${formatDate(lastDate)}</span>` : ''}
-            </div>
+          <div class="profile-hero__filters">
+            ${showSectorFilter ? `
+            <select id="prof-sector-filter" class="prof-filter-select">
+              <option value="">Todos os setores</option>
+              ${sectorOpts}
+            </select>` : ''}
+            ${calTriggerHtml('prof-date-picker', _dateFrom, _dateTo)}
           </div>
         </div>
         <div class="profile-hero__stats">
@@ -180,12 +195,16 @@ export function render() {
             <div class="profile-stat__val" style="color:${zeroed > 0 ? 'var(--color-danger)' : 'inherit'}">${zeroed}</div>
             <div class="profile-stat__lbl">Zeradas</div>
           </div>
+          <div class="profile-stat">
+            <div class="profile-stat__val">${emps.length}</div>
+            <div class="profile-stat__lbl">Colaboradores</div>
+          </div>
         </div>
       </div>
 
       <!-- Charts row -->
       <div class="profile-charts">
-        <!-- Radar -->
+        <!-- Radar + category bars -->
         <div class="radar-panel panel">
           <div class="panel__header"><div class="panel__title">Radar de Categorias</div></div>
           <div class="panel__body">
@@ -207,414 +226,159 @@ export function render() {
           </div>
         </div>
 
-        <!-- History chart -->
+        <!-- History by monitoring number + analytical notes -->
         <div class="history-panel panel">
-          <div class="panel__header"><div class="panel__title">Histórico de Resultados</div></div>
-          <div class="panel__body">
-            <div class="chart-container chart-h-250">
-              <canvas id="chart-history" height="250"></canvas>
+          <div class="panel__header"><div class="panel__title">Histórico por Monitoria</div></div>
+          <div class="panel__body" style="display:flex;flex-direction:column;gap:var(--space-5)">
+            <div class="chart-container chart-h-200">
+              <canvas id="chart-history" height="200"></canvas>
             </div>
+            ${_analyticalNoteTypes.length ? `
+            <div>
+              <div class="prof-chart-sublabel">
+                Critérios Analíticos
+                <span class="badge badge--neutral" style="font-size:var(--text-xs)">% das monitorias</span>
+              </div>
+              <div class="chart-container" style="height:${anPanelH}px">
+                <canvas id="chart-analytical"></canvas>
+              </div>
+            </div>` : ''}
           </div>
         </div>
       </div>
 
-      ${obsLogHtml !== null ? `
+      ${canViewObs ? `
       <!-- Observations log -->
       <div class="panel">
         <div class="panel__header">
           <div class="panel__title">Observações Qualitativas</div>
-          <span class="badge badge--neutral">${_obsLog.length}</span>
+          <span class="badge badge--neutral">${filteredObs.length}</span>
         </div>
         <div class="panel__body panel__body--compact">
-          <div class="obs-log">${obsLogHtml}</div>
+          <div class="obs-log">
+            ${filteredObs.length
+              ? filteredObs.map(o => `
+                <div class="obs-log-item obs-log-item--${o.code}">
+                  <div class="obs-log-item__badge obs-log-item__badge--${o.code}">${o.code}</div>
+                  <div class="obs-log-item__body">
+                    ${o.criteriaName ? `<div class="obs-log-item__criteria">${o.criteriaName}</div>` : ''}
+                    <div class="obs-log-item__text">${o.content}</div>
+                    <div class="obs-log-item__meta">
+                      ${o.monDate ? formatDate(o.monDate) : ''}
+                      ${o.protocol ? ` · Prot. ${o.protocol}` : ''}
+                    </div>
+                  </div>
+                </div>`).join('')
+              : `<div class="empty-state" style="padding:var(--space-6)">
+                   <div class="empty-state__title">Sem observações</div>
+                 </div>`}
+          </div>
         </div>
       </div>` : ''}
-    </div>
-
-    ${isSelf ? `
-    <!-- Avatar options modal -->
-    <div id="avatar-options-modal" class="modal-overlay modal-overlay--hidden">
-      <div class="modal" style="max-width:260px">
-        <div class="modal__header">
-          <div class="modal__title">Foto de perfil</div>
-          <button class="modal__close" id="avatar-options-close" type="button">✕</button>
-        </div>
-        <div class="modal__body" style="display:flex;flex-direction:column;gap:var(--space-2)">
-          <button class="btn btn--secondary" id="avatar-options-change" type="button"
-                  style="width:100%;justify-content:center">
-            Alterar foto
-          </button>
-          <button class="btn btn--ghost" id="avatar-options-remove" type="button"
-                  style="width:100%;justify-content:center;color:var(--color-danger)${avatarUrl ? '' : ';display:none'}">
-            Remover foto
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Avatar crop modal -->
-    <div id="avatar-crop-modal" class="modal-overlay modal-overlay--hidden">
-      <div class="modal" style="max-width:340px">
-        <div class="modal__header">
-          <div class="modal__title">Ajustar foto de perfil</div>
-          <button class="modal__close" id="avatar-crop-close" type="button">✕</button>
-        </div>
-        <div class="modal__body" style="display:flex;flex-direction:column;align-items:center;gap:var(--space-4)">
-          <div id="avatar-crop-container" class="avatar-crop-container">
-            <canvas id="avatar-crop-canvas" width="${CROP_SIZE}" height="${CROP_SIZE}"></canvas>
-          </div>
-          <div style="width:100%;display:flex;align-items:center;gap:var(--space-3)">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;opacity:.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-            <input type="range" id="avatar-zoom-slider" min="1" max="3" step="0.01" value="1" style="flex:1;accent-color:var(--brand-green)">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;opacity:.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
-          </div>
-          <p style="font-size:var(--text-xs);color:var(--text-secondary);margin:0">Arraste para reposicionar · Scroll ou deslize para ampliar</p>
-        </div>
-        <div class="modal__footer">
-          <button class="btn btn--ghost" id="avatar-crop-cancel" type="button">Cancelar</button>
-          <button class="btn btn--primary" id="avatar-crop-confirm" type="button">Salvar foto</button>
-        </div>
-      </div>
-    </div>` : ''}`;
+    </div>`;
 }
 
-/* ── Sector-group criteria helper ─────────── */
-function evalCriteriaForSg(sgId) {
-  if (!sgId || !_sgEcMap.has(sgId)) return _evalCriteria;
-  const linked = _sgEcMap.get(sgId);
-  return _evalCriteria.filter(ec => linked.has(ec.id));
-}
-
-/* ── Charts ───────────────────────────────── */
+/* ── initCharts ─────────────────────────────── */
 function initCharts() {
-  const sgCriteria  = evalCriteriaForSg(_employee.sector_group_id);
-  const radarLabels = sgCriteria.map(ec => ec.name.split(' ')[0]);
-  const radarData   = sgCriteria.map(ec => {
-    const vals = _monitorings.map(m => m.radarPcts[ec.id] ?? 0);
-    return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
-  });
+  const { mons, emps } = computeFiltered();
+  const catBreakdown   = buildCatBreakdown(mons, emps);
 
-  renderRadarChart(
-    'chart-radar',
-    radarLabels,
-    [{ label: _employee.name.split(' ')[0], data: radarData }]
-  );
+  /* Radar */
+  if (catBreakdown.length) {
+    renderRadarChart(
+      'chart-radar',
+      catBreakdown.map(c => c.name.split(' ')[0]),
+      [{ label: 'Equipe', data: catBreakdown.map(c => c.pct) }]
+    );
+  }
 
-  if (_monitorings.length) {
-    renderHistoryChartFull(
-      'chart-history',
-      _monitorings.map(m => formatDate(m.date)),
-      _monitorings.map(m => m.pct),
-      _monitorings.map(m => scoreColorHex(m.pct))
+  /* History chart: average pct grouped by monitoring number */
+  const numGroups = new Map(); // number → [pct]
+  for (const mon of mons) {
+    if (mon.number == null) continue;
+    if (!numGroups.has(mon.number)) numGroups.set(mon.number, []);
+    numGroups.get(mon.number).push(mon.pct);
+  }
+  if (numGroups.size) {
+    const sortedNums = [...numGroups.keys()].sort((a, b) => a - b);
+    const histLabels  = sortedNums.map(n => `Nº ${n}`);
+    const histData    = sortedNums.map(n => {
+      const vals = numGroups.get(n);
+      return Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
+    });
+    renderHistoryChartFull('chart-history', histLabels, histData, histData.map(scoreColorHex));
+  }
+
+  /* Analytical notes: % of monitorings that have each note type */
+  if (_analyticalNoteTypes.length && mons.length) {
+    const totalMons = mons.length;
+    const anData = _analyticalNoteTypes.map(at => {
+      let cnt = 0;
+      for (const mon of mons) {
+        if (_monNoteTypes.get(mon.id)?.has(at.id)) cnt++;
+      }
+      return Math.round(cnt / totalMons * 100);
+    });
+    renderHBarChart(
+      'chart-analytical',
+      _analyticalNoteTypes.map(at => at.name),
+      anData,
+      'rgba(74,186,61,0.7)'
     );
   }
 }
 
-/* ── Access control ───────────────────────── */
-// RLS enforces row-level access at the DB. If the employee was fetched, access is granted.
-// GLOBAL_VIEW_DEPT is kept as an explicit frontend guard for future cached-state edge cases.
-function isAllowed(user, _empId, employee) {
-  if (can(user, P.GLOBAL_VIEW_DEPT)) return true;
-  return !!employee;
-}
-
-function renderDenied() {
-  const main = document.getElementById('main-content');
-  if (main) main.innerHTML = `
-    <div class="page-enter">
-      <div class="empty-state">
-        <div class="empty-state__icon">🔒</div>
-        <div class="empty-state__title">Acesso não autorizado</div>
-        <div class="empty-state__desc">Você não tem permissão para visualizar este perfil.</div>
-      </div>
-    </div>`;
-}
-
-/* ── Page reload ──────────────────────────── */
+/* ── reloadPage ─────────────────────────────── */
 function reloadPage() {
   destroyAll();
+  _calPicker?.destroy();
+  _calPicker = null;
   const main = document.getElementById('main-content');
   if (!main) return;
   main.innerHTML = render();
   initCharts();
-  bindNameEdit();
-  bindAvatarUpload();
+  bindFilters();
 }
 
-/* ── Avatar crop helpers ──────────────────── */
-function _clampCropPan(px, py, zoom) {
-  const iw = _cropImg.naturalWidth  * zoom;
-  const ih = _cropImg.naturalHeight * zoom;
-  return {
-    x: Math.min(0, Math.max(CROP_SIZE - iw, px)),
-    y: Math.min(0, Math.max(CROP_SIZE - ih, py)),
-  };
-}
+/* ── bindFilters ────────────────────────────── */
+function bindFilters() {
+  document.getElementById('prof-sector-filter')?.addEventListener('change', e => {
+    _sectorFilter = e.target.value || null;
+    reloadPage();
+  });
 
-function _drawCrop() {
-  const canvas = document.getElementById('avatar-crop-canvas');
-  if (!canvas || !_cropImg) return;
-  const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, CROP_SIZE, CROP_SIZE);
-  ctx.drawImage(_cropImg, _cropPanX, _cropPanY,
-    _cropImg.naturalWidth * _cropZoom, _cropImg.naturalHeight * _cropZoom);
-}
-
-function openCropModal(file) {
-  if (_cropObjectUrl) URL.revokeObjectURL(_cropObjectUrl);
-  _cropObjectUrl = URL.createObjectURL(file);
-  const img = new Image();
-  img.onload = () => {
-    _cropImg      = img;
-    _cropBaseZoom = Math.max(CROP_SIZE / img.naturalWidth, CROP_SIZE / img.naturalHeight);
-    _cropZoom     = _cropBaseZoom;
-    _cropPanX     = (CROP_SIZE - img.naturalWidth  * _cropZoom) / 2;
-    _cropPanY     = (CROP_SIZE - img.naturalHeight * _cropZoom) / 2;
-    const c = _clampCropPan(_cropPanX, _cropPanY, _cropZoom);
-    _cropPanX = c.x; _cropPanY = c.y;
-
-    const slider = document.getElementById('avatar-zoom-slider');
-    if (slider) { slider.min = _cropBaseZoom; slider.max = _cropBaseZoom * 3; slider.value = _cropZoom; }
-
-    document.getElementById('avatar-crop-modal')?.classList.remove('modal-overlay--hidden');
-    _drawCrop();
-  };
-  img.src = _cropObjectUrl;
-}
-
-function closeCropModal() {
-  document.getElementById('avatar-crop-modal')?.classList.add('modal-overlay--hidden');
-  _cropDragging = false;
-  _cropImg = null;
-  if (_cropObjectUrl) { URL.revokeObjectURL(_cropObjectUrl); _cropObjectUrl = null; }
-}
-
-function _zoomAroundCenter(newZoom) {
-  const cx = CROP_SIZE / 2, cy = CROP_SIZE / 2;
-  const imgCX = (cx - _cropPanX) / _cropZoom;
-  const imgCY = (cy - _cropPanY) / _cropZoom;
-  _cropZoom = newZoom;
-  const c = _clampCropPan(cx - imgCX * newZoom, cy - imgCY * newZoom, newZoom);
-  _cropPanX = c.x; _cropPanY = c.y;
-}
-
-async function confirmCrop() {
-  if (!_cropImg) return;
-  const btn = document.getElementById('avatar-crop-confirm');
-  if (btn) { btn.disabled = true; btn.textContent = 'Salvando…'; }
-  try {
-    const out = document.createElement('canvas');
-    out.width = out.height = 72;
-    const ctx = out.getContext('2d');
-    ctx.drawImage(_cropImg,
-      -_cropPanX / _cropZoom, -_cropPanY / _cropZoom,
-      CROP_SIZE   / _cropZoom, CROP_SIZE   / _cropZoom,
-      0, 0, 72, 72
-    );
-    const blob = await new Promise(res => out.toBlob(res, 'image/jpeg', 0.92));
-    if (!blob) throw new Error('Falha ao processar imagem.');
-
-    const path = `employees/${_employee.id}.jpg`;
-    const { error: upErr } = await supabase.storage
-      .from('avatars').upload(path, blob, { upsert: true, contentType: 'image/jpeg' });
-    if (upErr) throw upErr;
-
-    const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(path);
-    const publicUrl = urlData.publicUrl;
-    await supabase.from('employees').update({ avatar_url: publicUrl }).eq('id', _employee.id);
-    _employee = { ..._employee, avatar_url: publicUrl };
-
-    const avatarEl = document.getElementById('profile-avatar');
-    if (avatarEl) {
-      const img = avatarEl.querySelector('.profile-hero__avatar-img') ?? document.createElement('img');
-      img.src = publicUrl + '?t=' + Date.now();
-      img.alt = '';
-      img.className = 'profile-hero__avatar-img';
-      img.onerror = () => { img.style.display = 'none'; document.getElementById('avatar-initials-span').style.display = ''; };
-      if (!avatarEl.contains(img)) avatarEl.prepend(img);
-      document.getElementById('avatar-initials-span').style.display = 'none';
-    }
-    const removeBtn = document.getElementById('avatar-options-remove');
-    if (removeBtn) removeBtn.style.display = '';
-    closeCropModal();
-    toast.success('Foto atualizada');
-  } catch (err) {
-    console.error('[perfil] avatar upload:', err);
-    toast.error('Erro ao salvar foto', err.message);
-    if (btn) { btn.disabled = false; btn.textContent = 'Salvar foto'; }
+  const triggerEl = document.getElementById('prof-date-picker');
+  if (triggerEl) {
+    _calPicker = new CalPicker({
+      triggerEl,
+      from: _dateFrom ?? '',
+      to:   _dateTo   ?? '',
+      onApply: (from, to) => {
+        _dateFrom = from;
+        _dateTo   = to;
+        reloadPage();
+      },
+      onClear: () => {
+        _dateFrom = null;
+        _dateTo   = null;
+        reloadPage();
+      },
+    });
   }
 }
 
-function openAvatarOptionsModal() {
-  document.getElementById('avatar-options-modal')?.classList.remove('modal-overlay--hidden');
-}
-
-function closeAvatarOptionsModal() {
-  document.getElementById('avatar-options-modal')?.classList.add('modal-overlay--hidden');
-}
-
-async function removeAvatar() {
-  const btn = document.getElementById('avatar-options-remove');
-  if (btn) { btn.disabled = true; btn.textContent = 'Removendo…'; }
-  try {
-    const path = `employees/${_employee.id}.jpg`;
-    await supabase.storage.from('avatars').remove([path]);
-    await supabase.from('employees').update({ avatar_url: null }).eq('id', _employee.id);
-    _employee = { ..._employee, avatar_url: null };
-
-    const avatarEl = document.getElementById('profile-avatar');
-    if (avatarEl) {
-      avatarEl.querySelector('.profile-hero__avatar-img')?.remove();
-      document.getElementById('avatar-initials-span').style.display = '';
-    }
-    closeAvatarOptionsModal();
-    toast.success('Foto removida');
-  } catch (err) {
-    console.error('[perfil] avatar remove:', err);
-    toast.error('Erro ao remover foto', err.message);
-    if (btn) { btn.disabled = false; btn.textContent = 'Remover foto'; }
-  }
-}
-
-function bindAvatarUpload() {
-  const fileInput = document.getElementById('avatar-file-input');
-  const container = document.getElementById('avatar-crop-container');
-  const slider    = document.getElementById('avatar-zoom-slider');
-  if (!fileInput) return;
-
-  /* Avatar click → open options menu */
-  document.getElementById('profile-avatar')?.addEventListener('click', openAvatarOptionsModal);
-
-  /* Options modal */
-  document.getElementById('avatar-options-close')?.addEventListener('click',  closeAvatarOptionsModal);
-  document.getElementById('avatar-options-modal')?.addEventListener('click',
-    e => { if (e.target.id === 'avatar-options-modal') closeAvatarOptionsModal(); });
-  document.getElementById('avatar-options-change')?.addEventListener('click', () => {
-    closeAvatarOptionsModal();
-    fileInput.click();
-  });
-  document.getElementById('avatar-options-remove')?.addEventListener('click', removeAvatar);
-
-  fileInput.addEventListener('change', e => {
-    const file = e.target.files?.[0];
-    if (!file || !file.type.startsWith('image/')) return;
-    fileInput.value = '';
-    openCropModal(file);
-  });
-
-  document.getElementById('avatar-crop-close')?.addEventListener('click', closeCropModal);
-  document.getElementById('avatar-crop-cancel')?.addEventListener('click', closeCropModal);
-  document.getElementById('avatar-crop-modal')?.addEventListener('click',
-    e => { if (e.target.id === 'avatar-crop-modal') closeCropModal(); });
-  document.getElementById('avatar-crop-confirm')?.addEventListener('click', confirmCrop);
-
-  if (!container) return;
-
-  container.addEventListener('mousedown', e => {
-    if (!_cropImg) return;
-    _cropDragging  = true;
-    _cropDragStart = { x: e.clientX - _cropPanX, y: e.clientY - _cropPanY };
-    e.preventDefault();
-  });
-  document.addEventListener('mousemove', e => {
-    if (!_cropDragging || !_cropImg) return;
-    const c = _clampCropPan(e.clientX - _cropDragStart.x, e.clientY - _cropDragStart.y, _cropZoom);
-    _cropPanX = c.x; _cropPanY = c.y;
-    _drawCrop();
-  });
-  document.addEventListener('mouseup', () => { _cropDragging = false; });
-
-  container.addEventListener('touchstart', e => {
-    if (!_cropImg) return;
-    _cropDragging  = true;
-    const t = e.touches[0];
-    _cropDragStart = { x: t.clientX - _cropPanX, y: t.clientY - _cropPanY };
-    e.preventDefault();
-  }, { passive: false });
-  container.addEventListener('touchmove', e => {
-    if (!_cropDragging || !_cropImg) return;
-    const t = e.touches[0];
-    const c = _clampCropPan(t.clientX - _cropDragStart.x, t.clientY - _cropDragStart.y, _cropZoom);
-    _cropPanX = c.x; _cropPanY = c.y;
-    _drawCrop();
-    e.preventDefault();
-  }, { passive: false });
-  container.addEventListener('touchend', () => { _cropDragging = false; });
-
-  container.addEventListener('wheel', e => {
-    if (!_cropImg) return;
-    e.preventDefault();
-    const delta    = e.deltaY < 0 ? 0.05 : -0.05;
-    const newZoom  = Math.max(_cropBaseZoom, Math.min(_cropBaseZoom * 3, _cropZoom + delta * _cropZoom));
-    _zoomAroundCenter(newZoom);
-    if (slider) slider.value = newZoom;
-    _drawCrop();
-  }, { passive: false });
-
-  slider?.addEventListener('input', () => {
-    if (!_cropImg) return;
-    _zoomAroundCenter(parseFloat(slider.value));
-    _drawCrop();
-  });
-}
-
-function bindNameEdit() {
-  const editBtn  = document.getElementById('profile-name-edit');
-  const display  = document.getElementById('profile-name-display');
-  const input    = document.getElementById('profile-name-input');
-  const avatar   = document.getElementById('profile-avatar');
-  if (!editBtn || !display || !input) return;
-
-  editBtn.addEventListener('click', () => {
-    display.classList.add('hidden');
-    editBtn.classList.add('hidden');
-    input.classList.remove('hidden');
-    input.focus();
-    input.select();
-  });
-
-  async function commitEdit() {
-    const newName = input.value.trim();
-    if (!newName || newName === _employee.name) {
-      input.value = _employee.name;
-      input.classList.add('hidden');
-      display.classList.remove('hidden');
-      editBtn.classList.remove('hidden');
-      return;
-    }
-    const { error } = await supabase
-      .from('employees').update({ name: newName }).eq('id', _employee.id);
-    if (error) {
-      input.value = _employee.name;
-    } else {
-      _employee = { ..._employee, name: newName };
-      display.textContent = newName;
-      const initialsSpan = document.getElementById('avatar-initials-span');
-      if (initialsSpan) initialsSpan.textContent = getInitials(newName);
-    }
-    input.classList.add('hidden');
-    display.classList.remove('hidden');
-    editBtn.classList.remove('hidden');
-  }
-
-  input.addEventListener('blur', commitEdit);
-  input.addEventListener('keydown', e => {
-    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
-    if (e.key === 'Escape') { input.value = _employee.name; input.blur(); }
-  });
-}
-
-/* ── init ─────────────────────────────────── */
+/* ── init ───────────────────────────────────── */
 export async function init() {
-  const user          = getCurrentUser();
-  const { id: empId } = getRouteParams();
+  const user    = getCurrentUser();
+  _user         = user;
+  const isGlobal = can(user, P.GLOBAL_VIEW_DEPT);
+  const hasTeam  = user?.supervisedTeamIds?.length > 0;
 
-  /* No employee ID in params, OR user passed their own profile ID but has no employee record */
-  const ownProfileWithNoEmployee = empId === user?.id && !user?.employeeId;
-  if (!empId || ownProfileWithNoEmployee) {
+  if (!isGlobal && !hasTeam) {
     const main = document.getElementById('main-content');
     if (main) main.innerHTML = `
-      <div class="page-enter" style="display:flex;align-items:center;justify-content:center;height:100%;min-height:60vh">
+      <div class="page-enter"
+           style="display:flex;align-items:center;justify-content:center;height:100%;min-height:60vh">
         <div class="empty-state">
           <div class="empty-state__icon">👤</div>
           <div class="empty-state__title">Funcionalidade indisponível</div>
@@ -624,25 +388,28 @@ export async function init() {
     return;
   }
 
-  /* Cache hit — re-validate access before rendering */
-  if (_loadedEmpId === empId) {
-    if (!isAllowed(user, empId, _employee)) { renderDenied(); return; }
-    reloadPage();
-    return;
-  }
+  /* Reset per-navigation state (preserve static ref cache) */
+  _employees           = [];
+  _sectors             = [];
+  _sectorFilter        = null;
+  _dateFrom            = null;
+  _dateTo              = null;
+  _rawMonsComputed     = [];
+  _monNoteTypes        = new Map();
+  _obsLog              = [];
+  _analyticalNoteTypes = [];
+  _scopeLabel          = '';
+  _calPicker?.destroy();
+  _calPicker = null;
 
-  /* Reset para novo employee */
-  _employee = null;
-  _supervisor = null;
-  _monitorings = [];
-  _obsLog = [];
-
-  /* Static ref data (cached across navigations) */
+  /* ── Static ref data (cached after first load) */
   if (!_evalCriteria.length) {
-    const [ecRes, topicRes, sgEcRes] = await Promise.all([
+    const [ecRes, topicRes, sgEcRes, anRes, sgAnRes] = await Promise.all([
       supabase.from('eval_criteria').select('id, name').eq('active', true),
       supabase.from('topic').select('id, eval_criteria_id, points').eq('active', true),
       supabase.from('sector_group_eval_criteria').select('sector_group_id, eval_criteria_id'),
+      supabase.from('analytical_note_type').select('id, name').eq('active', true).order('name'),
+      supabase.from('sector_group_analytical_note_type').select('sector_group_id, analytical_note_type_id'),
     ]);
     _evalCriteria = ecRes.data ?? [];
     _topicMap     = Object.fromEntries((topicRes.data ?? []).map(t => [t.id, t]));
@@ -651,56 +418,111 @@ export async function init() {
       if (!_sgEcMap.has(sector_group_id)) _sgEcMap.set(sector_group_id, new Set());
       _sgEcMap.get(sector_group_id).add(eval_criteria_id);
     }
+    _allAnalyticalTypes = anRes.data ?? [];
+    _sgAnMap = new Map();
+    for (const { sector_group_id, analytical_note_type_id } of (sgAnRes.data ?? [])) {
+      if (!_sgAnMap.has(sector_group_id)) _sgAnMap.set(sector_group_id, new Set());
+      _sgAnMap.get(sector_group_id).add(analytical_note_type_id);
+    }
   }
 
-  /* Employee + monitorings in parallel; supervisor resolved separately to avoid FK ambiguity */
-  const [empRes, monsRes] = await Promise.all([
-    supabase.from('employees')
-      .select('id, name, team_id, sector_group_id, avatar_url, teams(supervisor_id)')
-      .eq('id', empId)
-      .single(),
-    supabase.from('monitoring')
-      .select(`
-        id, date, zeroed,
-        topic_approval(topic_id, obtained),
-        service_chat(csat, protocol)
-      `)
-      .eq('employee_id', empId)
-      .order('date', { ascending: true }),
-  ]);
+  /* ── Scope label + employees in parallel */
+  let scopeLabelPromise;
+  if (isGlobal && user.departmentId) {
+    scopeLabelPromise = supabase
+      .from('departments').select('name')
+      .eq('id', user.departmentId).single()
+      .then(({ data }) => data?.name ?? 'Departamento');
+  } else if (isGlobal) {
+    scopeLabelPromise = Promise.resolve('Departamento');
+  } else if (hasTeam) {
+    scopeLabelPromise = supabase
+      .from('teams').select('name')
+      .in('id', user.supervisedTeamIds).eq('active', true)
+      .then(({ data }) => (data ?? []).map(t => t.name).filter(Boolean).join(' / ') || user.name);
+  } else {
+    scopeLabelPromise = Promise.resolve(user.name ?? '');
+  }
 
-  if (empRes.error || !empRes.data) {
+  let empQuery = supabase
+    .from('employees')
+    .select('id, name, sector_id, sector_group_id')
+    .eq('active', true)
+    .order('name');
+  if (!isGlobal) empQuery = empQuery.in('team_id', user.supervisedTeamIds);
+
+  const [scopeLabel, { data: empData }] = await Promise.all([
+    scopeLabelPromise,
+    empQuery,
+  ]);
+  _scopeLabel = scopeLabel;
+  _employees  = empData ?? [];
+
+  if (!_employees.length) {
     const main = document.getElementById('main-content');
     if (main) main.innerHTML = `
-      <div class="page-enter">
+      <div class="page-enter"
+           style="display:flex;align-items:center;justify-content:center;height:100%;min-height:60vh">
         <div class="empty-state">
-          <div class="empty-state__title">Colaborador não encontrado</div>
+          <div class="empty-state__icon">👥</div>
+          <div class="empty-state__title">Nenhum colaborador encontrado</div>
+          <div class="empty-state__desc">Não há colaboradores ativos nesta equipe.</div>
         </div>
       </div>`;
     return;
   }
 
-  const { teams: empTeam, ...empData } = empRes.data;
-  _employee = empData;
+  /* Scoped analytical note types (union of all employees' sector groups) */
+  const empSgIds  = new Set(_employees.map(e => e.sector_group_id).filter(Boolean));
+  const usedAnIds = new Set();
+  for (const sgId of empSgIds) {
+    const linked = _sgAnMap.get(sgId);
+    if (linked) for (const id of linked) usedAnIds.add(id);
+  }
+  _analyticalNoteTypes = usedAnIds.size
+    ? _allAnalyticalTypes.filter(at => usedAnIds.has(at.id))
+    : _allAnalyticalTypes;
 
-  const supervisorId = empTeam?.supervisor_id ?? null;
-  if (supervisorId) {
-    const { data: supData } = await supabase
-      .from('profiles').select('id, name').eq('id', supervisorId).single();
-    _supervisor = supData ?? null;
-  } else {
-    _supervisor = null;
+  /* Sectors for filter (only if employees span multiple sectors) */
+  const sectorIds = [...new Set(_employees.map(e => e.sector_id).filter(Boolean))];
+  if (sectorIds.length > 1) {
+    const { data: sectorsData } = await supabase
+      .from('sectors').select('id, name').in('id', sectorIds).order('name');
+    _sectors = sectorsData ?? [];
   }
 
-  if (!isAllowed(user, empId, _employee)) { renderDenied(); return; }
-  const rawMons = monsRes.data ?? [];
-  _monitorings = computeMonData(rawMons);
+  /* ── Monitorings */
+  const empIds = _employees.map(e => e.id);
+  const { data: rawMons } = await supabase
+    .from('monitoring')
+    .select(`
+      id, date, zeroed, number, employee_id,
+      topic_approval(topic_id, obtained),
+      service_chat(csat)
+    `)
+    .in('employee_id', empIds)
+    .order('date', { ascending: true });
 
-  /* Observations — skip fetch for users without Profile.canViewObs */
-  const monIds = rawMons.map(m => m.id);
+  _rawMonsComputed = computeMonData(rawMons ?? []);
+
+  /* ── Analytical notes */
+  const monIds = (rawMons ?? []).map(m => m.id);
+  if (monIds.length) {
+    const { data: anNotes } = await supabase
+      .from('analytical_note')
+      .select('monitoring_id, analytical_note_type_id')
+      .in('monitoring_id', monIds);
+    _monNoteTypes = new Map();
+    for (const an of (anNotes ?? [])) {
+      if (!_monNoteTypes.has(an.monitoring_id)) _monNoteTypes.set(an.monitoring_id, new Set());
+      _monNoteTypes.get(an.monitoring_id).add(an.analytical_note_type_id);
+    }
+  }
+
+  /* ── Observations (if permitted) */
   if (monIds.length && can(user, P.PROFILE_VIEW_OBS)) {
-    const monDateMap = Object.fromEntries(rawMons.map(m => [m.id, m.date]));
-
+    const monDateMap  = Object.fromEntries((rawMons ?? []).map(m => [m.id, m.date]));
+    const monEmpMap   = Object.fromEntries(_rawMonsComputed.map(m => [m.id, m.employeeId]));
     const { data: obsData } = await supabase
       .from('monitoring_observation')
       .select(`
@@ -711,21 +533,19 @@ export async function init() {
       `)
       .in('monitoring_id', monIds)
       .order('id', { ascending: false })
-      .limit(30);
-
+      .limit(60);
     _obsLog = (obsData ?? []).map(o => {
       const typeInfo = OBS_TYPE[o.observation_type?.code] ?? OBS_TYPE.default;
       return {
         code:         typeInfo.code,
-        label:        typeInfo.label,
         criteriaName: o.eval_criteria?.name ?? null,
         content:      o.content ?? '',
         protocol:     o.service_chat?.protocol ?? null,
         monDate:      monDateMap[o.monitoring_id] ?? null,
+        employeeId:   monEmpMap[o.monitoring_id]  ?? null,
       };
     });
   }
 
-  _loadedEmpId = empId;
   reloadPage();
 }

@@ -1,0 +1,151 @@
+/* ============================================================
+   VIEW AS — Employee impersonation modal + header indicator
+   ============================================================ */
+
+/* ── Search bar inside modal ─────────────────────────────── */
+.va-search-wrap {
+  position: relative;
+  padding: var(--space-3) var(--space-5);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.va-search-icon {
+  position: absolute;
+  left: calc(var(--space-5) + var(--space-2));
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+.va-search {
+  width: 100%;
+  height: 36px;
+  padding: 0 var(--space-3) 0 calc(var(--space-2) + 22px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-2);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  outline: none;
+  transition: border-color .15s;
+}
+.va-search:focus { border-color: var(--brand-green); }
+
+/* ── Employee list ───────────────────────────────────────── */
+.va-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 440px;
+  overflow-y: auto;
+  padding: var(--space-2) 0;
+}
+.va-separator {
+  height: 1px;
+  background: var(--border-light);
+  margin: var(--space-2) var(--space-5);
+}
+.va-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-5);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  text-align: left;
+  width: 100%;
+  border: none;
+  background: none;
+  color: inherit;
+}
+.va-item:hover { background: var(--bg-surface-2); }
+
+.va-item--own { color: var(--color-info); }
+.va-item--own:hover { background: var(--color-info-bg); }
+
+.va-item--loading { opacity: 0.5; pointer-events: none; cursor: wait; }
+
+.va-item__avatar {
+  width: 36px; height: 36px;
+  border-radius: var(--radius-full);
+  background: var(--bg-surface-3);
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
+  flex-shrink: 0;
+  user-select: none;
+}
+.va-item--own .va-item__avatar,
+.va-item__avatar--own {
+  background: var(--color-info-bg);
+  color: var(--color-info);
+}
+
+.va-item__info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.va-item__name {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.va-item--own .va-item__name { color: var(--color-info); font-weight: var(--weight-semibold); }
+.va-item__role {
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+.va-item__level {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
+  background: var(--bg-surface-3);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.va-empty,
+.va-loading {
+  padding: var(--space-6) var(--space-5);
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+}
+
+/* ── Header impersonation indicator ─────────────────────── */
+.app-header--impersonate {
+  border-bottom: 2px solid var(--color-warning);
+}
+
+.user-badge--view-as {
+  cursor: pointer;
+}
+.user-avatar--impersonate {
+  background: var(--color-warning) !important;
+  color: #fff !important;
+}
+.user-badge__impersonate-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.user-badge__impersonate-lbl {
+  font-size: 9px;
+  font-weight: var(--weight-bold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-warning);
+  line-height: 1;
+  white-space: nowrap;
+}
+.user-badge--clickable { cursor: pointer; }

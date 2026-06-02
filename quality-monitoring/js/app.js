@@ -58,10 +58,25 @@ async function mountPage(page) {
 /* ── Default landing page by access level ───── */
 function defaultPageFor(user) {
   const lvl = user?.accessLevel;
-  if (lvl === 2) return 'perfil';
+  if (lvl === 2) return 'escalas';
   if (lvl === 4) return 'nova-monitoria';
   return 'consulta';
 }
+
+/* ── Page map (used by view-as re-mount) ────── */
+const PAGE_MAP = new Map([
+  ['dashboard',        DashboardPage],
+  ['nova-monitoria',   NovaMonitoriaPage],
+  ['consulta',         ConsultaPage],
+  ['perfil',           PerfilPage],
+  ['registros',        RegistrosPage],
+  ['ai-analise',       AIPage],
+  ['admin',            AdminPage],
+  ['metas',            MetasPage],
+  ['comparacao',       ComparacaoPage],
+  ['editar-monitoria', EditarMonitoriaPage],
+  ['escalas',          EscalasPage],
+]);
 
 /* ── Routes ─────────────────────────────────── */
 function registerRoutes() {
@@ -88,22 +103,7 @@ function registerRoutes() {
     await mountPage(NaoAutorizadoPage);
   });
 
-  /* All other protected pages */
-  const protected_ = [
-    ['dashboard',        DashboardPage],
-    ['nova-monitoria',   NovaMonitoriaPage],
-    ['consulta',         ConsultaPage],
-    ['perfil',           PerfilPage],
-    ['registros',        RegistrosPage],
-    ['ai-analise',       AIPage],
-    ['admin',            AdminPage],
-    ['metas',            MetasPage],
-    ['comparacao',       ComparacaoPage],
-    ['editar-monitoria', EditarMonitoriaPage],
-    ['escalas',          EscalasPage],
-  ];
-
-  protected_.forEach(([route, page]) => {
+  PAGE_MAP.forEach((page, route) => {
     protectRoute(route);
     registerRoute(route, async () => {
       const u = getCurrentUser();
@@ -151,6 +151,21 @@ async function bootstrap() {
 
   registerRoutes();
   setupPeriodRefresh();
+
+  /* Re-render shell + current page when view-as changes */
+  document.addEventListener('viewas:changed', async () => {
+    const u = getCurrentUser();
+    if (!u?.isClaimed) return;
+    mountShell();
+    renderShell();
+    const route = getCurrentRoute();
+    if (route) {
+      setSidebarCollapsed(route === 'escalas');
+      const page = PAGE_MAP.get(route);
+      if (page) await mountPage(page);
+    }
+  });
+
   initRouter();
 }
 

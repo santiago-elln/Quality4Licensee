@@ -464,7 +464,7 @@ export function renderHBarChart(canvasId, labels, data, color = '#4aba3d') {
       labels,
       datasets: [{
         data,
-        backgroundColor: color,
+        backgroundColor: Array.isArray(color) ? color : data.map(() => color),
         borderRadius: 3,
         borderSkipped: false,
       }],

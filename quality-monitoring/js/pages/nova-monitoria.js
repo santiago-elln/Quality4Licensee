@@ -1104,7 +1104,19 @@ export async function init() {
   });
 
   /* ── Save Monitoria ─────────────────────── */
-  document.getElementById('btn-cancel-form')?.addEventListener('click', resetForm);
+  document.getElementById('btn-cancel-form')?.addEventListener('click', () => {
+    resetForm();
+    _employees         = [];
+    _topics            = [];
+    _obsTypeMap        = {};
+    _evalCriteria      = [];
+    _analyticalTypes   = [];
+    _errorTypes        = [];
+    _sgLinks           = { eval_criteria: new Map(), topic: new Map(), analytical_note_type: new Map(), error_type: new Map() };
+    _EVAL_CATEGORIES    = [];
+    _ANALYTICAL_CRITERIA = [];
+    _TOTAL_MAX_PTS      = 0;
+  });
 
   document.getElementById('btn-save-monitoring')?.addEventListener('click', async () => {
     if (!can(getCurrentUser(), P.NEW_MONITORING_SAVE)) return;
