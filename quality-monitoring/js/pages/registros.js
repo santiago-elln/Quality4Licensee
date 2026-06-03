@@ -175,7 +175,10 @@ async function fetchObservations() {
 
 /* ── Radar chart ──────────────────────────── */
 function scopedEvalCriteria() {
-  const sgIds = new Set(_teams.map(t => t.sector_group_id).filter(Boolean));
+  // When a specific team is selected, scope to that team's sector_group only
+  const sgIds = _filters.supId
+    ? new Set([_teams.find(t => t.id === _filters.supId)?.sector_group_id].filter(Boolean))
+    : new Set(_teams.map(t => t.sector_group_id).filter(Boolean));
   if (!sgIds.size || !_sgEcMap.size) return _evalCriteria;
   const allowed = new Set();
   for (const sgId of sgIds) {

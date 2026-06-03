@@ -8,10 +8,11 @@ import { getInitials }                    from '../utils/formatters.js';
 let _overlay = null;
 
 async function fetchEmployees() {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('profiles')
     .select('id, name, role, access_level')
     .order('name');
+  if (error) throw error;
   return data ?? [];
 }
 
@@ -43,6 +44,7 @@ function renderItems(employees, query = '') {
 }
 
 function close() {
+  document.removeEventListener('keydown', _escHandler);
   _overlay?.remove();
   _overlay = null;
 }
@@ -86,7 +88,15 @@ export async function openViewAsModal() {
   document.getElementById('va-close')?.addEventListener('click', close);
 
   // Fetch employees
-  const employees = await fetchEmployees();
+  let employees;
+  try {
+    employees = await fetchEmployees();
+  } catch (err) {
+    console.error('[view-as] fetchEmployees:', err);
+    const list = document.getElementById('va-list');
+    if (list) list.innerHTML = `<div class="va-empty">Erro ao carregar colaboradores. Tente novamente.</div>`;
+    return;
+  }
 
   const list = document.getElementById('va-list');
   if (!list) return;
@@ -143,7 +153,13 @@ export async function openViewAsModal() {
     const item = e.target.closest('.va-item[data-id]');
     if (!item) return;
     item.classList.add('va-item--loading');
-    await setViewAs(item.dataset.id);
+    try {
+      await setViewAs(item.dataset.id);
+    } catch (err) {
+      console.error('[view-as] setViewAs:', err);
+      item.classList.remove('va-item--loading');
+      return;
+    }
     close();
     dispatchChanged();
   });

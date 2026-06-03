@@ -195,6 +195,8 @@ let _selectedDate = null
 let _selectedDateRange = { from: null, to: null }
 let _activeMetrics = new Set()
 let _sectorGroups = []   // [{id, name}] — unique groups among visible employees
+let _deptSectors  = []   // [{id, name}] — unique sectors for analytics overlays (global mode)
+let _sectorId     = null // supervisor's sector_id (non-global mode)
 let _employees    = []
 let _shifts       = {}
 let _origShifts   = {}
@@ -286,6 +288,8 @@ export async function init() {
   _viewMode = can(_user, P.SHIFTS_EDIT) ? 'edit' : 'analysis'
   _activeMetrics = new Set()
   _sectorGroups = []
+  _deptSectors  = []
+  _sectorId     = null
   _employees = []; _shifts = {}; _origShifts = {}
   _dirty.clear(); _drag = null
 
@@ -414,6 +418,19 @@ async function loadData() {
   }
 
   if (!_employees.length) { _dirty.clear(); hideSaveBar(); updateStats(); return }
+
+  /* Populate sector data for analytics overlays */
+  if (can(_user, P.GLOBAL_VIEW_DEPT)) {
+    const uniqueSectorIds = [...new Set(_employees.map(e => e.sector_id).filter(Boolean))]
+    if (uniqueSectorIds.length) {
+      const { data: secData } = await supabase
+        .from('sectors').select('id, name').in('id', uniqueSectorIds).eq('active', true).order('name')
+      _deptSectors = secData ?? []
+    }
+  } else {
+    _sectorId = _user?.sectorId ?? null
+  }
+
   _dirty.clear(); hideSaveBar(); updateStats()
 }
 

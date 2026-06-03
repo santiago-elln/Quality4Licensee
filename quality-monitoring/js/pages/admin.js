@@ -1647,11 +1647,24 @@ export async function init() {
       btn.classList.add('active');
       _orgData = null;
       _pendingLevelChanges = {};
-      if (_activeTab === 'org')   await loadOrgTabData();
-      if (_activeTab === 'users') await loadUsersTabData();
-      document.getElementById('admin-tab-content').innerHTML = renderTab(_activeTab, getCurrentUser());
-      bindTabEvents();
-      if (_activeTab === 'catalog') await initCatalogData();
+      try {
+        if (_activeTab === 'org')   await loadOrgTabData();
+        if (_activeTab === 'users') await loadUsersTabData();
+        document.getElementById('admin-tab-content').innerHTML = renderTab(_activeTab, getCurrentUser());
+        bindTabEvents();
+        if (_activeTab === 'catalog') await initCatalogData();
+      } catch (err) {
+        console.error('[admin] tab load:', err);
+        const content = document.getElementById('admin-tab-content');
+        if (content) content.innerHTML = `
+          <div style="display:flex;align-items:center;justify-content:center;height:200px">
+            <div class="empty-state">
+              <div class="empty-state__icon">⚠</div>
+              <div class="empty-state__title">Erro ao carregar</div>
+              <div class="empty-state__desc">Tente novamente.</div>
+            </div>
+          </div>`;
+      }
     });
   });
 
