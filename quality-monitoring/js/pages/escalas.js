@@ -195,8 +195,7 @@ let _selectedDate = null
 let _selectedDateRange = { from: null, to: null }
 let _activeMetrics = new Set()
 let _sectorGroups = []   // [{id, name}] — unique groups among visible employees
-let _deptSectors  = []   // [{id, name}] — unique sectors for analytics overlays (global mode)
-let _sectorId     = null // supervisor's sector_id (non-global mode)
+let _deptSectors  = []   // [{id, name}] — unique sectors across visible employees (analytics overlays)
 let _employees    = []
 let _shifts       = {}
 let _origShifts   = {}
@@ -289,7 +288,6 @@ export async function init() {
   _activeMetrics = new Set()
   _sectorGroups = []
   _deptSectors  = []
-  _sectorId     = null
   _employees = []; _shifts = {}; _origShifts = {}
   _dirty.clear(); _drag = null
 
@@ -419,16 +417,12 @@ async function loadData() {
 
   if (!_employees.length) { _dirty.clear(); hideSaveBar(); updateStats(); return }
 
-  /* Populate sector data for analytics overlays */
-  if (can(_user, P.GLOBAL_VIEW_DEPT)) {
-    const uniqueSectorIds = [...new Set(_employees.map(e => e.sector_id).filter(Boolean))]
-    if (uniqueSectorIds.length) {
-      const { data: secData } = await supabase
-        .from('sectors').select('id, name').in('id', uniqueSectorIds).eq('active', true).order('name')
-      _deptSectors = secData ?? []
-    }
-  } else {
-    _sectorId = _user?.sectorId ?? null
+  /* Populate sector data for analytics overlays (both global and supervisor paths) */
+  const uniqueSectorIds = [...new Set(_employees.map(e => e.sector_id).filter(Boolean))]
+  if (uniqueSectorIds.length) {
+    const { data: secData } = await supabase
+      .from('sectors').select('id, name').in('id', uniqueSectorIds).eq('active', true).order('name')
+    _deptSectors = secData ?? []
   }
 
   _dirty.clear(); hideSaveBar(); updateStats()
@@ -600,21 +594,6 @@ function aggregateHourlyMetrics(rows) {
   return r
 }
 
-async function loadMetrics() {
-  const empty={tme:Array(12).fill(0),tma:Array(12).fill(0),csat:Array(12).fill(0),fallbackDate:null}
-  if(!_sectorId||!_selectedDateRange.from) return empty
-  const {data,error}=await supabase.from('sector_metrics').select('hour,tme,tma,csat')
-    .eq('sector_id',_sectorId).gte('date',_selectedDateRange.from).lte('date',_selectedDateRange.to)
-    .gte('hour',8).lte('hour',19)
-  if(!error&&data?.length) return{...aggregateHourlyMetrics(data),fallbackDate:null}
-  const {data:latest}=await supabase.from('sector_metrics').select('date')
-    .eq('sector_id',_sectorId).order('date',{ascending:false}).limit(1).single()
-  if(!latest?.date) return empty
-  const {data:fbData,error:fbError}=await supabase.from('sector_metrics').select('hour,tme,tma,csat')
-    .eq('sector_id',_sectorId).eq('date',latest.date).gte('hour',8).lte('hour',19)
-  if(fbError||!fbData?.length) return empty
-  return{...aggregateHourlyMetrics(fbData),fallbackDate:latest.date}
-}
 
 async function loadAllSectorMetrics() {
   if(!_deptSectors.length||!_selectedDateRange.from) return {}
@@ -684,6 +663,49 @@ async function loadAllSectorMetrics() {
   return aggregate(fbData, null)  // no weekday filter on fallback
 }
 
+/* Average the per-sector metrics objects for a list of sector IDs into one combined object. */
+function mergeMetrics(allMetrics, sectorIds) {
+  const merged={tme:Array(12).fill(0),tma:Array(12).fill(0),csat:Array(12).fill(0)}
+  let count=0
+  for(const sid of sectorIds){
+    const m=allMetrics[sid]; if(!m) continue
+    count++
+    for(let i=0;i<12;i++){merged.tme[i]+=m.tme[i];merged.tma[i]+=m.tma[i];merged.csat[i]+=m.csat[i]}
+  }
+  if(!count) return null
+  if(count>1) for(let i=0;i<12;i++){
+    merged.tme[i]=Math.round(merged.tme[i]/count)
+    merged.tma[i]=Math.round(merged.tma[i]/count)
+    merged.csat[i]=+(merged.csat[i]/count).toFixed(2)
+  }
+  return merged
+}
+
+function attachMetricOverlay(containerEl, metrics, totalH, overlayId) {
+  const rowH=parseInt(getComputedStyle(document.documentElement).getPropertyValue('--esc-row-h'))||38
+  const maxH=totalH-rowH*0.02
+  const tmeMax=Math.max(...metrics.tme,1), tmaMax=Math.max(...metrics.tma,1)
+  const cfg={
+    tme: {data:metrics.tme, pxPerUnit:maxH/tmeMax,   rgb:'59,130,246',  label:'TME',  fmt:v=>fmtSec(v)},
+    tma: {data:metrics.tma, pxPerUnit:maxH/tmaMax,   rgb:'139,92,246',  label:'TMA',  fmt:v=>fmtSec(v)},
+    csat:{data:metrics.csat,pxPerUnit:totalH,          rgb:'245,158,11', label:'CSAT', fmt:v=>Math.round(v*100)+'pp'},
+  }
+  const overlay=document.createElement('div')
+  if(overlayId) overlay.id=overlayId
+  overlay.className= overlayId==='esc-metric-overlay' ? 'esc-metric-overlay' : 'esc-sector-metric-overlay'
+  overlay.style.pointerEvents='auto'
+  containerEl.appendChild(overlay)
+  _activeMetrics.forEach(m=>{const c=cfg[m]; if(c) overlay.appendChild(buildMetricSvg(c.data,c.pxPerUnit,totalH,c.rgb,overlayId?`${overlayId}-${m}`:m))})
+  overlay.addEventListener('mousemove',e=>{
+    const xPct=(e.clientX-overlay.getBoundingClientRect().left)/overlay.getBoundingClientRect().width
+    const hourIdx=Math.min(Math.floor(xPct*12),11)
+    const rows=[..._activeMetrics].map(m=>{const c=cfg[m]; if(!c) return null; const val=c.data[hourIdx]; if(!val) return null; return{m,label:c.label,val,fmt:c.fmt}}).filter(Boolean)
+    if(!rows.length){hideMetricTooltip();return}
+    showMetricTooltip(e.clientX,e.clientY,minToTime(GRID_START+hourIdx*60),rows)
+  })
+  overlay.addEventListener('mouseleave',hideMetricTooltip)
+}
+
 async function renderSectorMetricOverlays() {
   if(_viewMode!=='analysis'||!_activeMetrics.size) return
 
@@ -691,52 +713,20 @@ async function renderSectorMetricOverlays() {
   if(_viewMode!=='analysis'||!_activeMetrics.size) return
 
   const rowH=parseInt(getComputedStyle(document.documentElement).getPropertyValue('--esc-row-h'))||38
-  const metricCfg={
-    tme: {rgb:'59,130,246',  label:'TME',  fmt:v=>fmtSec(v)},
-    tma: {rgb:'139,92,246',  label:'TMA',  fmt:v=>fmtSec(v)},
-    csat:{rgb:'245,158,11',  label:'CSAT', fmt:v=>Math.round(v*100)+'pp'},
-  }
 
-  for(const sector of _deptSectors){
-    const rowsEl=document.querySelector(`.esc-sector-rows[data-sector-id="${sector.id}"]`)
+  /* The DOM groups by sector_group (data-sector-id stores the sector_group id).
+     Merge all sector_metrics within each group into one combined overlay. */
+  for(const group of _sectorGroups){
+    const rowsEl=document.querySelector(`.esc-sector-rows[data-sector-id="${group.id}"]`)
     if(!rowsEl) continue
-    const emps=_employees.filter(e=>e.sector_id===sector.id)
+    const emps=_employees.filter(e=>e.sector_group_id===group.id)
     if(!emps.length) continue
 
-    const metrics=allMetrics[sector.id]
+    const groupSectorIds=[...new Set(emps.map(e=>e.sector_id).filter(Boolean))]
+    const metrics=mergeMetrics(allMetrics, groupSectorIds)
     if(!metrics) continue
 
-    const totalH=emps.length*rowH
-
-    /* Per-metric scale: largest value in each metric → 90% of sector height */
-    const cfg={}
-    _activeMetrics.forEach(m=>{
-      const c=metricCfg[m]; if(!c) return
-      const maxVal=Math.max(...metrics[m],0.001)
-      cfg[m]={...c, data:metrics[m], pxPerUnit:(totalH*0.9)/maxVal}
-    })
-    if(!Object.keys(cfg).length) continue
-
-    const overlay=document.createElement('div')
-    overlay.className='esc-sector-metric-overlay'
-    overlay.style.pointerEvents='auto'
-    rowsEl.appendChild(overlay)
-
-    Object.entries(cfg).forEach(([m,c])=>
-      overlay.appendChild(buildMetricSvg(c.data,c.pxPerUnit,totalH,c.rgb,`${sector.id}-${m}`))
-    )
-
-    overlay.addEventListener('mousemove',e=>{
-      const xPct=(e.clientX-overlay.getBoundingClientRect().left)/overlay.getBoundingClientRect().width
-      const hourIdx=Math.min(Math.floor(xPct*12),11)
-      const rows=Object.entries(cfg).map(([m,c])=>{
-        const val=c.data[hourIdx]; if(!val) return null
-        return{m,label:c.label,val,fmt:c.fmt}
-      }).filter(Boolean)
-      if(!rows.length){hideMetricTooltip();return}
-      showMetricTooltip(e.clientX,e.clientY,minToTime(GRID_START+hourIdx*60),rows)
-    })
-    overlay.addEventListener('mouseleave',hideMetricTooltip)
+    attachMetricOverlay(rowsEl, metrics, emps.length*rowH, group.id)
   }
 }
 
@@ -752,35 +742,15 @@ async function renderMetricOverlay() {
     return
   }
 
-  /* Single-sector overlay (supervisor mode) */
-  const metricsData=await loadMetrics()
+  /* Single overlay (supervisor mode — one sector_group, no esc-sector-rows wrappers in DOM) */
+  const allMetrics=await loadAllSectorMetrics()
   if(_viewMode!=='analysis'||!_activeMetrics.size) return
-  if(metricsData.fallbackDate) showMetricsWarn(metricsData.fallbackDate)
+  const sectorIds=_deptSectors.map(s=>s.id)
+  const metricsData=mergeMetrics(allMetrics, sectorIds)
+  if(!metricsData) return
   const empRowsEl=$e('esc-emp-rows'); if(!empRowsEl) return
   const rowH=parseInt(getComputedStyle(document.documentElement).getPropertyValue('--esc-row-h'))||38
-  const totalH=_employees.length*rowH, maxH=totalH-rowH*0.02
-  const tmeMax=Math.max(...metricsData.tme,1), tmaMax=Math.max(...metricsData.tma,1)
-  const overlay=document.createElement('div')
-  overlay.id='esc-metric-overlay'; overlay.className='esc-metric-overlay'; overlay.style.pointerEvents='auto'
-  empRowsEl.appendChild(overlay)
-  const cfg={
-    tme: {data:metricsData.tme, pxPerUnit:maxH/tmeMax,  rgb:'59,130,246',  label:'TME',  fmt:v=>fmtSec(v)},
-    tma: {data:metricsData.tma, pxPerUnit:maxH/tmaMax,  rgb:'139,92,246',  label:'TMA',  fmt:v=>fmtSec(v)},
-    csat:{data:metricsData.csat,pxPerUnit:totalH,         rgb:'245,158,11', label:'CSAT', fmt:v=>Math.round(v*100)+'pp'},
-  }
-  _activeMetrics.forEach(m=>{const c=cfg[m]; if(c) overlay.appendChild(buildMetricSvg(c.data,c.pxPerUnit,totalH,c.rgb,m))})
-  overlay.addEventListener('mousemove',e=>{
-    const xPct=(e.clientX-overlay.getBoundingClientRect().left)/overlay.getBoundingClientRect().width
-    const hourIdx=Math.min(Math.floor(xPct*12),11)
-    const rows=[..._activeMetrics].map(m=>{
-      const c=cfg[m]; if(!c) return null
-      const val=c.data[hourIdx]; if(!val) return null
-      return{m,label:c.label,val,fmt:c.fmt}
-    }).filter(Boolean)
-    if(!rows.length){hideMetricTooltip();return}
-    showMetricTooltip(e.clientX,e.clientY,minToTime(GRID_START+hourIdx*60),rows)
-  })
-  overlay.addEventListener('mouseleave',hideMetricTooltip)
+  attachMetricOverlay(empRowsEl, metricsData, _employees.length*rowH, 'esc-metric-overlay')
 }
 
 const fmtSec=s=>{const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=Math.round(s%60);return`${h}h ${String(m).padStart(2,'0')}m ${String(sec).padStart(2,'0')}s`}
