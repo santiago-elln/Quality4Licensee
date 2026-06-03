@@ -1309,6 +1309,44 @@ export async function init() {
 
   /* ── Restaurar checkboxes do rascunho ─────── */
   restoreDraftCheckboxes(_draft);
+
+  /* ── Rebuild catalog for the draft employee's sector group ───────────────
+     rebuildCatalogForSg(undefined) ran at init time — shows ALL criteria.
+     restoreDraftCheckboxes() only sets sel.value and does NOT fire 'change',
+     so the catalog was never scoped to the selected employee.             */
+  if (_draft?.collabId) {
+    const draftEmp = _employees.find(em => em.id === _draft.collabId);
+    if (draftEmp) {
+      const draftSgId      = draftEmp.sector_group_id ?? null;
+      const draftFiltErrs  = rebuildCatalogForSg(draftSgId);
+
+      const catEl2 = document.getElementById('nm-eval-categories');
+      if (catEl2) catEl2.innerHTML = _EVAL_CATEGORIES.map(renderCategory).join('');
+
+      const analEl2 = document.getElementById('nm-analytical-rows');
+      if (analEl2) analEl2.innerHTML = _ANALYTICAL_CRITERIA.map(renderAnalyticalRow).join('');
+
+      const scoreMaxEl2 = document.getElementById('score-max');
+      if (scoreMaxEl2) scoreMaxEl2.textContent = `/ ${_TOTAL_MAX_PTS}`;
+
+      const critSel2 = document.getElementById('obs-criteria');
+      if (critSel2) critSel2.innerHTML = `<option value="">— nenhum —</option>` +
+        _EVAL_CATEGORIES.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+
+      const nc2 = draftFiltErrs.filter(er => !er.critical);
+      const cr2 = draftFiltErrs.filter(er => er.critical);
+      const obsErr2   = document.getElementById('obs-error-type');
+      if (obsErr2)   obsErr2.innerHTML   = `<option value="">— selecione —</option>` +
+        nc2.map(er => `<option value="${er.id}">${er.name}</option>`).join('');
+      const resetErr2 = document.getElementById('reset-error-type');
+      if (resetErr2) resetErr2.innerHTML = `<option value="">— selecione —</option>` +
+        cr2.map(er => `<option value="${er.id}">${er.name}</option>`).join('');
+
+      bindEvalSectionEvents();
+      recalcScores();
+      restoreDraftCheckboxes(_draft); // re-apply on the now-scoped DOM
+    }
+  }
   } catch (err) {
     console.error('[nova-monitoria] init:', err);
     const _errMain = document.getElementById('main-content');
