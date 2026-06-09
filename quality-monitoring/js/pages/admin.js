@@ -1899,7 +1899,9 @@ async function inviteUser() {
   });
 
   if (fnError) {
-    toast.error('Erro ao enviar convite', fnError.message);
+    let message = fnError.message;
+    try { ({ error: message } = await fnError.context.json()); } catch { /* keep original */ }
+    toast.error('Erro ao enviar convite', message);
     if (btn) { btn.disabled = false; btn.textContent = 'Convidar'; }
     return;
   }

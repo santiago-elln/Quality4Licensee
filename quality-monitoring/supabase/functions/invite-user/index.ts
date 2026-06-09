@@ -30,9 +30,16 @@ Deno.serve(async (req) => {
     });
 
     if (inviteError) {
-      return new Response(JSON.stringify({ error: inviteError.message }), {
-        status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      const alreadyExists = inviteError.message.toLowerCase().includes('already registered')
+                         || inviteError.message.toLowerCase().includes('already been registered')
+                         || inviteError.status === 422;
+      return new Response(
+        JSON.stringify({ error: alreadyExists
+          ? 'Este e-mail já possui uma conta no sistema.'
+          : inviteError.message
+        }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      );
     }
 
     const { error: insertError } = await supabaseAdmin
