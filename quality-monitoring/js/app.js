@@ -143,19 +143,7 @@ function setupPeriodRefresh() {
 
 /* ── Bootstrap ──────────────────────────────── */
 async function bootstrap() {
-  /* Capture hash BEFORE restoreSession — Supabase clears it via history.replaceState */
-  const hash = window.location.hash;
-  const isAuthCallback = hash.includes('type=recovery') ||
-                         hash.includes('type=invite')   ||
-                         hash.includes('type=signup');
-
   await restoreSession();
-
-  if (isAuthCallback) {
-    app.innerHTML = LoginPage.renderReset();
-    await LoginPage.initReset();
-    return;
-  }
 
   onAuthChange(user => {
     if (!user && getCurrentRoute() !== 'login') {

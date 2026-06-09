@@ -503,7 +503,7 @@ function renderCard(collab) {
         </div>
         <div class="cc-card__info">
           <div class="cc-card__name">
-            ${collab.name}
+            <a href="#perfil?id=${collab.id}">${collab.name}</a>
           </div>
           <div class="cc-card__last-mon">${lastMonHtml}</div>
           <div class="cc-card__badges">

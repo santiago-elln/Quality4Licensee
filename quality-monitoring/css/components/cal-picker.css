@@ -130,7 +130,8 @@
   height: 28px; font-size: .75rem; cursor: pointer;
   border-radius: 0; transition: background .1s; color: var(--text-primary);
 }
-.cp-empty { cursor: default; }
+.cp-empty    { cursor: default; }
+.cp-disabled { cursor: default; opacity: .28; pointer-events: none; }
 
 .cp-today .cp-day-num::after {
   content: ''; position: absolute; bottom: 2px; left: 50%;

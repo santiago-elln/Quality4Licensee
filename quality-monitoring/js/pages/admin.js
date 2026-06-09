@@ -29,6 +29,7 @@ let _transferResolveId = null;   // transfer id being reviewed in resolve modal
 let _unclaimedProfiles = [];  // profiles with no employee record
 let _adminSectors      = [];  // all sectors for the absorption modal
 let _absorbTarget      = null; // profile id being absorbed
+let _inviteTarget      = null; // { name, email } being submitted
 
 /* ── Level change state ───────────────────── */
 let _pendingLevelChanges = {};
@@ -1456,7 +1457,7 @@ async function applyLevelChanges() {
   }
 }
 
-function renderUsersTab() {
+function renderUsersTab(user) {
   const rows = _unclaimedProfiles.length
     ? _unclaimedProfiles.map(p => `
         <tr>
@@ -1490,11 +1491,16 @@ function renderUsersTab() {
     `<option value="${s.id}">${s.name}</option>`
   ).join('');
 
+  const inviteBtn = can(user, P.ADMIN_INVITE_USER)
+    ? `<button class="btn btn--ghost btn--sm" id="btn-invite-user">+ Convidar usuário</button>`
+    : '';
+
   return `
     <div class="panel">
       <div class="panel__header">
         <div class="panel__title">Usuários sem vínculo</div>
         <span class="badge badge--neutral">${_unclaimedProfiles.length}</span>
+        ${inviteBtn}
       </div>
       <table class="admin-table" style="width:100%; padding:10px">
         <thead>
@@ -1532,6 +1538,33 @@ function renderUsersTab() {
         <div class="modal__footer">
           <button class="btn btn--ghost" id="absorb-cancel">Cancelar</button>
           <button class="btn btn--primary" id="absorb-confirm">Absorver</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Invite user modal ── -->
+    <div id="invite-modal" class="modal-overlay modal-overlay--hidden">
+      <div class="modal">
+        <div class="modal__header">
+          <div class="modal__title">Convidar usuário</div>
+          <button class="modal__close" id="invite-close">✕</button>
+        </div>
+        <div class="modal__body">
+          <p style="font-size:var(--text-sm);color:var(--text-secondary);margin-bottom:var(--space-4)">
+            O convite será registrado. O usuário receberá acesso ao sistema após a confirmação.
+          </p>
+          <div class="form-group">
+            <label class="form-label">Nome <span class="required">*</span></label>
+            <input class="form-input" type="text" id="invite-name" placeholder="Nome completo" autocomplete="off" />
+          </div>
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">E-mail <span class="required">*</span></label>
+            <input class="form-input" type="email" id="invite-email" placeholder="email@exemplo.com" autocomplete="off" />
+          </div>
+        </div>
+        <div class="modal__footer">
+          <button class="btn btn--ghost" id="invite-cancel">Cancelar</button>
+          <button class="btn btn--primary" id="invite-confirm">Convidar</button>
         </div>
       </div>
     </div>`;
@@ -1819,6 +1852,62 @@ async function denyTransfer() {
   }
 }
 
+function openInviteModal() {
+  const nameEl  = document.getElementById('invite-name');
+  const emailEl = document.getElementById('invite-email');
+  if (nameEl)  nameEl.value  = '';
+  if (emailEl) emailEl.value = '';
+  document.getElementById('invite-modal')?.classList.remove('modal-overlay--hidden');
+  nameEl?.focus();
+}
+
+function closeInviteModal() {
+  document.getElementById('invite-modal')?.classList.add('modal-overlay--hidden');
+}
+
+async function inviteUser() {
+  const name  = document.getElementById('invite-name')?.value.trim()  ?? '';
+  const email = document.getElementById('invite-email')?.value.trim() ?? '';
+  if (!name)  { toast.warning('Atenção', 'Informe o nome do usuário.'); return; }
+  if (!email) { toast.warning('Atenção', 'Informe o e-mail do usuário.'); return; }
+
+  const btn = document.getElementById('invite-confirm');
+  if (btn) { btn.disabled = true; btn.textContent = 'Verificando…'; }
+
+  const emailLower = email.toLowerCase();
+
+  const alreadyUnclaimed = _unclaimedProfiles.some(p => p.email?.toLowerCase() === emailLower);
+  if (alreadyUnclaimed) {
+    toast.warning('E-mail já cadastrado', 'Este e-mail já possui uma conta no sistema aguardando vínculo.');
+    if (btn) { btn.disabled = false; btn.textContent = 'Convidar'; }
+    return;
+  }
+
+  const { data: existingInvite } = await supabase
+    .from('user_invitations').select('id').ilike('email', emailLower).maybeSingle();
+
+  if (existingInvite) {
+    toast.warning('Convite duplicado', 'Este e-mail já foi convidado anteriormente.');
+    if (btn) { btn.disabled = false; btn.textContent = 'Convidar'; }
+    return;
+  }
+
+  if (btn) btn.textContent = 'Convidando…';
+
+  const { error: fnError } = await supabase.functions.invoke('invite-user', {
+    body: { email: emailLower, name },
+  });
+
+  if (fnError) {
+    toast.error('Erro ao enviar convite', fnError.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Convidar'; }
+    return;
+  }
+
+  closeInviteModal();
+  toast.success('Convite enviado', `Um e-mail de convite foi enviado para ${emailLower}.`);
+}
+
 function bindTabEvents() {
   /* ── Users tab ── */
   document.querySelectorAll('.btn-absorb').forEach(btn => {
@@ -1829,6 +1918,13 @@ function bindTabEvents() {
   document.getElementById('absorb-modal')?.addEventListener('click',
     e => { if (e.target.id === 'absorb-modal') closeAbsorbModal(); });
   document.getElementById('absorb-confirm')?.addEventListener('click', absorbUser);
+
+  document.getElementById('btn-invite-user')?.addEventListener('click', openInviteModal);
+  document.getElementById('invite-close')?.addEventListener('click', closeInviteModal);
+  document.getElementById('invite-cancel')?.addEventListener('click', closeInviteModal);
+  document.getElementById('invite-modal')?.addEventListener('click',
+    e => { if (e.target.id === 'invite-modal') closeInviteModal(); });
+  document.getElementById('invite-confirm')?.addEventListener('click', inviteUser);
 
   /* ── Org tab — team collapse toggles ── */
   document.querySelectorAll('.org-team-toggle').forEach(btn => {

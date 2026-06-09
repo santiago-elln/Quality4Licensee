@@ -1226,9 +1226,13 @@ export async function init() {
   _expandedId  = null;
   _page        = 1;
 
+  const _today = new Date().toISOString().split('T')[0];
+  const _d30   = new Date();
+  _d30.setDate(_d30.getDate() - 30);
+
   _filters.supId    = '';
-  _filters.dateFrom = '';
-  _filters.dateTo   = '';
+  _filters.dateFrom = _d30.toISOString().split('T')[0];
+  _filters.dateTo   = _today;
 
   const main = document.getElementById('main-content');
   if (main) main.innerHTML = render(); // mostra spinner imediatamente

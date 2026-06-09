@@ -34,6 +34,7 @@ export const P = Object.freeze({
   ADMIN_UPDATE_CRITERIA:   'Admin.canUpdateCriteria',
   ADMIN_GLOBAL_VIEW:       'Admin.hasGlobalView',
   ADMIN_SET_ACCESS_LEVEL:  'Admin.canSetAccessLevel',
+  ADMIN_INVITE_USER:       'Admin.canInviteUser',
 
   /* Global */
   GLOBAL_VIEW_DEPT:      'Global.canViewDept',
@@ -70,6 +71,7 @@ export const PERMISSION_LABELS = Object.freeze({
   [P.ADMIN_UPDATE_CRITERIA]:  'Admin — Editar Critérios',
   [P.ADMIN_GLOBAL_VIEW]:       'Admin — Visualizar departamento inteiro',
   [P.ADMIN_SET_ACCESS_LEVEL]:  'Admin — Alterar Nível de Acesso',
+  [P.ADMIN_INVITE_USER]:       'Admin — Convidar Usuário',
   [P.GLOBAL_VIEW_DEPT]:       'Global — Ver todo o departamento',
   [P.CROSS_DEPT_VIEW]:        'Global — Ver outros departamentos',
   [P.GLOBAL_VIEW_AS]:         'Global — Visualizar como outro usuário',
@@ -105,6 +107,7 @@ export const DEFAULT_PERMISSIONS_BY_LEVEL = Object.freeze({
     P.SHIFTS_ACCESS,
     P.SHIFTS_EDIT,
     P.ADMIN_VIEW_STRUCT,
+    P.ADMIN_INVITE_USER,
     P.SIDEBAR_NEW_MONITORING,
     P.SIDEBAR_CONSULT,
     P.SIDEBAR_RECORDS,
@@ -125,6 +128,7 @@ export const DEFAULT_PERMISSIONS_BY_LEVEL = Object.freeze({
     P.RECORD_EDITABLE_OBS,
     // P.ADMIN_VIEW_STRUCT,
     P.ADMIN_UPDATE_CRITERIA,
+    P.ADMIN_INVITE_USER,
     P.SIDEBAR_NEW_MONITORING,
     P.SIDEBAR_CONSULT,
     P.SIDEBAR_RECORDS,
@@ -136,7 +140,7 @@ export const DEFAULT_PERMISSIONS_BY_LEVEL = Object.freeze({
     P.SIDEBAR_ADMIN,
   ],
 
-  // Nível 4.5 — Auxiliar Analista
+  // Nível 6 — Auxiliar Analista
   6: [
     P.NEW_MONITORING_ACCESS,
     // P.NEW_MONITORING_SAVE,
@@ -149,6 +153,7 @@ export const DEFAULT_PERMISSIONS_BY_LEVEL = Object.freeze({
     // P.RECORD_EDITABLE_OBS,
     P.ADMIN_VIEW_STRUCT,
     P.ADMIN_UPDATE_CRITERIA,
+    // P.ADMIN_INVITE_USER,
     P.SIDEBAR_NEW_MONITORING,
     P.SIDEBAR_CONSULT,
     P.SIDEBAR_RECORDS,
@@ -172,6 +177,7 @@ export const DEFAULT_PERMISSIONS_BY_LEVEL = Object.freeze({
     P.SHIFTS_ACCESS,
     P.ADMIN_VIEW_STRUCT,
     P.ADMIN_SET_ACCESS_LEVEL,
+    P.ADMIN_INVITE_USER,
     P.SIDEBAR_NEW_MONITORING,
     P.SIDEBAR_CONSULT,
     P.SIDEBAR_RECORDS,
@@ -201,6 +207,7 @@ export const DEFAULT_PERMISSIONS_BY_LEVEL = Object.freeze({
     P.ADMIN_UPDATE_CRITERIA,
     P.ADMIN_GLOBAL_VIEW,
     P.ADMIN_SET_ACCESS_LEVEL,
+    P.ADMIN_INVITE_USER,
     P.GLOBAL_VIEW_AS,
     P.SIDEBAR_NEW_MONITORING,
     P.SIDEBAR_CONSULT,

@@ -517,7 +517,8 @@
   height: 28px; font-size: .75rem; cursor: pointer;
   border-radius: 0; transition: background .1s; color: #f1f5f9;
 }
-.esc-cal-day.empty { cursor: default; }
+.esc-cal-day.empty    { cursor: default; }
+.esc-cal-day.disabled { cursor: default; opacity: .28; pointer-events: none; }
 .esc-cal-day.today .esc-day-num::after {
   content: ''; position: absolute; bottom: 2px; left: 50%; transform: translateX(-50%);
   width: 4px; height: 4px; border-radius: 50%; background: #4ade80;

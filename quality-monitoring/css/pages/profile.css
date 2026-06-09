@@ -30,6 +30,20 @@
   align-items: center;
   gap: var(--space-3);
 }
+.profile-hero__back {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px; height: 32px;
+  border-radius: var(--radius-full);
+  color: rgba(255,255,255,0.7);
+  flex-shrink: 0;
+  transition: color .15s, background .15s;
+}
+.profile-hero__back:hover {
+  color: #fff;
+  background: rgba(255,255,255,0.12);
+}
 .profile-hero__team-icon {
   width: 52px; height: 52px;
   border-radius: var(--radius-full);

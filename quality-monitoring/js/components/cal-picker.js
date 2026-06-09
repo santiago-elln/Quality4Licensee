@@ -112,17 +112,19 @@ export class CalPicker {
     for (let i = 0; i < firstDOW; i++) h += '<div class="cp-day cp-empty"></div>';
 
     for (let d = 1; d <= days; d++) {
-      const ds      = toStr(year, month, d);
-      const isStart = ds === rangeA;
-      const isEnd   = rangeB && ds === rangeB;
-      const inRange = rangeA && rangeB && cmp(ds,rangeA) > 0 && cmp(ds,rangeB) < 0;
-      const isToday = ds === todayS;
+      const ds         = toStr(year, month, d);
+      const isFuture   = cmp(ds, todayS) > 0;
+      const isStart    = ds === rangeA;
+      const isEnd      = rangeB && ds === rangeB;
+      const inRange    = rangeA && rangeB && cmp(ds,rangeA) > 0 && cmp(ds,rangeB) < 0;
+      const isToday    = ds === todayS;
       let cls = 'cp-day';
-      if (isStart) cls += ' cp-range-start';
-      if (isEnd)   cls += ' cp-range-end';
-      if (inRange) cls += ' cp-in-range';
-      if (isToday) cls += ' cp-today';
-      h += `<div class="${cls}" data-date="${ds}"><span class="cp-day-num">${d}</span></div>`;
+      if (isFuture) cls += ' cp-disabled';
+      if (isStart)  cls += ' cp-range-start';
+      if (isEnd)    cls += ' cp-range-end';
+      if (inRange)  cls += ' cp-in-range';
+      if (isToday)  cls += ' cp-today';
+      h += `<div class="${cls}"${isFuture ? '' : ` data-date="${ds}"`}><span class="cp-day-num">${d}</span></div>`;
     }
     return h + '</div>';
   }

@@ -77,13 +77,15 @@ const EscCalendar = (() => {
     h += '<div class="esc-cal-weekdays">' + WEEKDAYS.map(w=>`<span class="esc-cal-weekday">${w}</span>`).join('') + '</div><div class="esc-cal-days">'
     for (let i = 0; i < firstDOW; i++) h += '<div class="esc-cal-day empty"></div>'
     for (let d = 1; d <= days; d++) {
-      const ds = toStr(year, month, d)
-      let cls  = 'esc-cal-day'
+      const ds       = toStr(year, month, d)
+      const isFuture = cmp(ds, todayS) > 0
+      let cls = 'esc-cal-day'
+      if (isFuture)                                             cls += ' disabled'
       if (ds === rangeA)                                        cls += ' range-start'
       if (rangeB && ds === rangeB)                              cls += ' range-end'
       if (rangeA && rangeB && cmp(ds,rangeA)>0 && cmp(ds,rangeB)<0) cls += ' in-range'
       if (ds === todayS)                                        cls += ' today'
-      h += `<div class="${cls}" data-date="${ds}"><span class="esc-day-num">${d}</span></div>`
+      h += `<div class="${cls}"${isFuture ? '' : ` data-date="${ds}"`}><span class="esc-day-num">${d}</span></div>`
     }
     return h + '</div>'
   }
@@ -414,6 +416,14 @@ async function loadData() {
       _origShifts[row.employee_id] = { ...parsed }
     }
   }
+
+  /* Own-team employees first (name !== null), then ghosts; alphabetical within each group */
+  _employees.sort((a, b) => {
+    const aOwn = a.name !== null ? 0 : 1;
+    const bOwn = b.name !== null ? 0 : 1;
+    if (aOwn !== bOwn) return aOwn - bOwn;
+    return (a.name ?? '').localeCompare(b.name ?? '', 'pt-BR');
+  });
 
   if (!_employees.length) { _dirty.clear(); hideSaveBar(); updateStats(); return }
 

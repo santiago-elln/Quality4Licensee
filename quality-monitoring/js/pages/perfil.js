@@ -2,6 +2,7 @@
    PERFIL — Dashboard de equipe do supervisor / departamento
    ============================================================ */
 import { getCurrentUser } from '../auth.js';
+import { getRouteParams } from '../router.js';
 import { supabase } from '../supabase.js';
 import { can, P } from '../utils/permissions.js';
 import { formatDate, scoreColor, scoreColorHex } from '../utils/formatters.js';
@@ -17,6 +18,7 @@ let _sectorFilter = null;   // sector_id | null
 let _dateFrom     = null;   // YYYY-MM-DD | null
 let _dateTo       = null;   // YYYY-MM-DD | null
 let _calPicker    = null;
+let _employeeId   = null;   // non-null → individual employee view
 
 let _rawMonsComputed = []; // [{id, date, zeroed, number, pct, radarPcts, avgCsat, employeeId}]
 let _monNoteTypes    = new Map(); // monId → Set<analytical_note_type_id>
@@ -30,6 +32,10 @@ let _allAnalyticalTypes  = [];
 let _analyticalNoteTypes = []; // scoped to employees' sector groups
 let _sgAnMap             = new Map(); // sg_id → Set<analytical_note_type_id>
 let _refCacheUserId      = null; // user.id when ref data was last fetched
+
+/* Team-view data cache (skipped for individual employee views) */
+let _teamCache = null;
+const TEAM_CACHE_TTL = 5 * 60 * 1000; // 5 min
 
 /* ── Obs type codes ────────────────────────── */
 const OBS_TYPE = {
@@ -136,10 +142,14 @@ export function render() {
   ).join('');
   const showSectorFilter = _sectors.length > 1;
 
+  const isIndividualView = !!_employeeId;
+
   /* Subtitle: reflect filtered count */
-  const subtitle = _sectorFilter && emps.length !== _employees.length
-    ? `${emps.length} de ${_employees.length} colaboradores`
-    : `${_employees.length} colaborador${_employees.length !== 1 ? 'es' : ''}`;
+  const subtitle = isIndividualView
+    ? 'Colaborador'
+    : _sectorFilter && emps.length !== _employees.length
+      ? `${emps.length} de ${_employees.length} colaboradores`
+      : `${_employees.length} colaborador${_employees.length !== 1 ? 'es' : ''}`;
 
   const canViewObs = can(_user, P.PROFILE_VIEW_OBS);
 
@@ -156,14 +166,27 @@ export function render() {
       <div class="profile-hero">
         <div class="profile-hero__top profile-hero__top--team">
           <div class="profile-hero__team-info">
+            ${isIndividualView ? `
+            <a href="#perfil" class="profile-hero__back" title="Voltar à equipe">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="15 18 9 12 15 6"/>
+              </svg>
+            </a>` : ''}
             <div class="profile-hero__team-icon">
+              ${isIndividualView ? `
+              <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                <circle cx="12" cy="7" r="4"/>
+              </svg>` : `
               <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                    stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
                 <circle cx="9" cy="7" r="4"/>
                 <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
                 <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-              </svg>
+              </svg>`}
             </div>
             <div>
               <div class="profile-hero__name">${_scopeLabel}</div>
@@ -372,6 +395,7 @@ function bindFilters() {
 export async function init() {
   const user    = getCurrentUser();
   _user         = user;
+  _employeeId   = getRouteParams().id || null;
   const isGlobal = can(user, P.GLOBAL_VIEW_DEPT);
   const hasTeam  = user?.supervisedTeamIds?.length > 0;
 
@@ -389,12 +413,18 @@ export async function init() {
     return;
   }
 
+  /* 30-day window — used both as the DB filter and the initial cal-picker selection */
+  const today = new Date().toISOString().split('T')[0];
+  const d30   = new Date();
+  d30.setDate(d30.getDate() - 30);
+  const since = d30.toISOString().split('T')[0];
+
   /* Reset per-navigation state (preserve static ref cache) */
   _employees           = [];
   _sectors             = [];
   _sectorFilter        = null;
-  _dateFrom            = null;
-  _dateTo              = null;
+  _dateFrom            = since;
+  _dateTo              = today;
   _rawMonsComputed     = [];
   _monNoteTypes        = new Map();
   _obsLog              = [];
@@ -402,6 +432,9 @@ export async function init() {
   _scopeLabel          = '';
   _calPicker?.destroy();
   _calPicker = null;
+
+  const isIndividualView = !!_employeeId;
+  const cacheKey = `${user.id}:${isGlobal ? 'global' : (user.supervisedTeamIds ?? []).slice().sort().join(',')}`;
 
   try {
   /* ── Static ref data (cached; invalidated when viewed user changes) */
@@ -429,6 +462,21 @@ export async function init() {
     _refCacheUserId = user.id;
   }
 
+  /* ── Team-view cache hit → skip all heavy queries */
+  if (!isIndividualView &&
+      _teamCache?.key === cacheKey &&
+      Date.now() - _teamCache.fetchedAt < TEAM_CACHE_TTL) {
+    ({ employees:         _employees,
+       sectors:           _sectors,
+       scopeLabel:        _scopeLabel,
+       rawMonsComputed:   _rawMonsComputed,
+       monNoteTypes:      _monNoteTypes,
+       obsLog:            _obsLog,
+       analyticalNoteTypes: _analyticalNoteTypes } = _teamCache);
+    reloadPage();
+    return;
+  }
+
   /* ── Scope label + employees in parallel */
   let scopeLabelPromise;
   if (isGlobal && user.departmentId) {
@@ -453,13 +501,16 @@ export async function init() {
     .eq('active', true)
     .order('name');
   if (!isGlobal) empQuery = empQuery.in('team_id', user.supervisedTeamIds);
+  if (_employeeId) empQuery = empQuery.eq('id', _employeeId);
 
   const [scopeLabel, { data: empData }] = await Promise.all([
     scopeLabelPromise,
     empQuery,
   ]);
-  _scopeLabel = scopeLabel;
   _employees  = empData ?? [];
+  _scopeLabel = (_employeeId && _employees.length === 1)
+    ? _employees[0].name
+    : scopeLabel;
 
   if (!_employees.length) {
     const main = document.getElementById('main-content');
@@ -494,7 +545,7 @@ export async function init() {
     _sectors = sectorsData ?? [];
   }
 
-  /* ── Monitorings */
+  /* ── Monitorings (last 30 days) */
   const empIds = _employees.map(e => e.id);
   const { data: rawMons } = await supabase
     .from('monitoring')
@@ -504,6 +555,7 @@ export async function init() {
       service_chat(csat)
     `)
     .in('employee_id', empIds)
+    .gte('date', since)
     .order('date', { ascending: true });
 
   _rawMonsComputed = computeMonData(rawMons ?? []);
@@ -548,6 +600,21 @@ export async function init() {
         employeeId:   monEmpMap[o.monitoring_id]  ?? null,
       };
     });
+  }
+
+  /* ── Store team-view cache */
+  if (!isIndividualView) {
+    _teamCache = {
+      key:              cacheKey,
+      fetchedAt:        Date.now(),
+      employees:        _employees,
+      sectors:          _sectors,
+      scopeLabel:       _scopeLabel,
+      rawMonsComputed:  _rawMonsComputed,
+      monNoteTypes:     _monNoteTypes,
+      obsLog:           _obsLog,
+      analyticalNoteTypes: _analyticalNoteTypes,
+    };
   }
 
   reloadPage();
