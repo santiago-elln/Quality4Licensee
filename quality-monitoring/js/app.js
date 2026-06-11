@@ -8,6 +8,7 @@ import {
 } from './router.js';
 import { renderHeader, bindHeader, setOnPeriodChange } from './components/header.js';
 import { renderSidebar, bindSidebar, updateActiveNav, setSidebarCollapsed } from './components/sidebar.js';
+import { can, P } from './utils/permissions.js';
 import { destroyAll } from './components/charts.js';
 
 /* ── Page modules ───────────────────────────── */
@@ -148,11 +149,26 @@ async function bootstrap() {
   onAuthChange(user => {
     if (!user && getCurrentRoute() !== 'login') {
       navigate('login');
+    } else if (user && getCurrentRoute() === 'login') {
+      navigate(user.isClaimed ? defaultPageFor(user) : 'nao-autorizado');
     }
   });
 
   registerRoutes();
   setupPeriodRefresh();
+
+  const ROUTE_PERMISSION = new Map([
+    ['nova-monitoria',  P.SIDEBAR_NEW_MONITORING],
+    ['consulta',        P.SIDEBAR_CONSULT],
+    ['registros',       P.SIDEBAR_RECORDS],
+    ['perfil',          P.SIDEBAR_PROFILE],
+    ['dashboard',       P.SIDEBAR_DASHBOARD],
+    ['comparacao',      P.SIDEBAR_COMPARATIVE],
+    ['ai-analise',      P.SIDEBAR_AI],
+    ['admin',           P.SIDEBAR_ADMIN],
+    ['metas',           P.SIDEBAR_GOALS],
+    ['escalas',         P.SHIFTS_ACCESS],
+  ]);
 
   /* Re-render shell + current page when view-as changes */
   document.addEventListener('viewas:changed', async () => {
@@ -161,6 +177,11 @@ async function bootstrap() {
     mountShell();
     renderShell();
     const route = getCurrentRoute();
+    const requiredPerm = ROUTE_PERMISSION.get(route);
+    if (requiredPerm && !can(u, requiredPerm)) {
+      navigate(defaultPageFor(u));
+      return;
+    }
     if (route) {
       setSidebarCollapsed(route === 'escalas');
       const page = PAGE_MAP.get(route);

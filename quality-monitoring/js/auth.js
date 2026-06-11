@@ -36,6 +36,35 @@ export function clearViewAs() {
 }
 
 /**
+ * Sets the view-as user as a plain employee (no profile, access_level 2).
+ * Used by the SysOwner to simulate how a collaborator without admin access sees the app.
+ */
+export async function setViewAsEmployee(employeeId) {
+  const { data: employee } = await supabase
+    .from('employees')
+    .select('id, name')
+    .eq('auth_user_id', employeeId)
+    .single();
+
+  _viewAsUser = {
+    id:                employeeId,
+    email:             null,
+    name:              employee?.name ?? _currentUser?.name ?? '',
+    role:              null,
+    accessLevel:       2,
+    isClaimed:         true,
+    employeeId:        employee?.id ?? null,
+    departmentId:      null,
+    sectorId:          null,
+    sectorGroupId:     null,
+    filterBy:          null,
+    shiftsFilterBy:    null,
+    supervisedTeamIds: [],
+    permissions:       DEFAULT_PERMISSIONS_BY_LEVEL[2] ?? [],
+  };
+}
+
+/**
  * Builds a user object for the given employee ID and sets it as the view-as user.
  * Uses the same shape as buildUser() so all pages behave identically.
  */
@@ -54,7 +83,7 @@ export async function setViewAs(employeeId) {
     supabase
       .from('employees')
       .select('id, name')
-      .eq('id', employeeId)
+      .eq('auth_user_id', employeeId)
       .single(),
   ]);
 

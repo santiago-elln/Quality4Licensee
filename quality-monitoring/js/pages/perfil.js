@@ -399,7 +399,7 @@ export async function init() {
   const isGlobal = can(user, P.GLOBAL_VIEW_DEPT);
   const hasTeam  = user?.supervisedTeamIds?.length > 0;
 
-  if (!isGlobal && !hasTeam) {
+  if (!isGlobal && !hasTeam && !_employeeId) {
     const main = document.getElementById('main-content');
     if (main) main.innerHTML = `
       <div class="page-enter"

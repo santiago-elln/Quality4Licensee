@@ -1351,7 +1351,6 @@ async function confirmDeactivateEmployee() {
     const { error: e1 } = await supabase.from('employees').update({
       active:     false,
       team_id:    null,
-      sector_id:  null,
     }).eq('id', profileId);
     if (e1) throw e1;
 

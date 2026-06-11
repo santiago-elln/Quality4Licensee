@@ -93,6 +93,7 @@ export const DEFAULT_PERMISSIONS_BY_LEVEL = Object.freeze({
   2: [
     P.NEW_MONITORING_ACCESS,
     P.SHIFTS_ACCESS,
+    P.SIDEBAR_PROFILE,
     P.SIDEBAR_GOALS,
   ],
 

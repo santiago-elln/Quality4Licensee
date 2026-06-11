@@ -364,8 +364,13 @@ async function loadData() {
     .order('name')
   if (!can(user, P.GLOBAL_VIEW_DEPT)) {
     const teamIds = user.supervisedTeamIds ?? [];
-    const EMPTY_GUID = '00000000-0000-0000-0000-000000000000';
-    ownEmpsQuery = ownEmpsQuery.in('team_id', teamIds.length ? teamIds : [EMPTY_GUID]);
+    if (teamIds.length) {
+      ownEmpsQuery = ownEmpsQuery.in('team_id', teamIds);
+    } else if (user.employeeId) {
+      ownEmpsQuery = ownEmpsQuery.eq('id', user.employeeId);
+    } else {
+      ownEmpsQuery = ownEmpsQuery.eq('id', '00000000-0000-0000-0000-000000000000');
+    }
   }
   const { data: ownEmps } = await ownEmpsQuery
   const ownEmpMap = new Map((ownEmps ?? []).map(e => [e.id, e]))
@@ -415,6 +420,16 @@ async function loadData() {
       _shifts[row.employee_id]     = parsed
       _origShifts[row.employee_id] = { ...parsed }
     }
+  }
+
+  /* Plain employees (no team, no sector group, no global view) only see their own row */
+  const isOwnOnly = !can(user, P.GLOBAL_VIEW_DEPT)
+    && !(user.supervisedTeamIds?.length)
+    && !user.sectorGroupId;
+  if (isOwnOnly) {
+    _employees = user.employeeId
+      ? _employees.filter(e => e.id === user.employeeId)
+      : [];
   }
 
   /* Own-team employees first (name !== null), then ghosts; alphabetical within each group */

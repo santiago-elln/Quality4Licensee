@@ -2,7 +2,7 @@
    VIEW-AS MODAL — SysOwner employee impersonation selector
    ============================================================ */
 import { supabase }                       from '../supabase.js';
-import { getRealUser, isViewingAs, clearViewAs, setViewAs } from '../auth.js';
+import { getRealUser, isViewingAs, clearViewAs, setViewAs, setViewAsEmployee } from '../auth.js';
 import { getInitials }                    from '../utils/formatters.js';
 
 let _overlay = null;
@@ -102,7 +102,7 @@ export async function openViewAsModal() {
   if (!list) return;
 
   const realUser    = getRealUser();
-  const ownEmpId    = realUser?.employeeId ?? null;
+  const ownEmpId    = realUser?.employeeId ?? realUser?.id ?? null;
 
   function buildList(query = '') {
     const returnHtml = isViewingAs() ? `
@@ -154,7 +154,8 @@ export async function openViewAsModal() {
     if (!item) return;
     item.classList.add('va-item--loading');
     try {
-      await setViewAs(item.dataset.id);
+      const fn = item.classList.contains('va-item--emp-shortcut') ? setViewAsEmployee : setViewAs;
+      await fn(item.dataset.id);
     } catch (err) {
       console.error('[view-as] setViewAs:', err);
       item.classList.remove('va-item--loading');
