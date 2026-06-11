@@ -30,11 +30,17 @@ let _unclaimedProfiles = [];  // profiles with no employee record
 let _adminSectors      = [];  // all sectors for the absorption modal
 let _absorbTarget      = null; // profile id being absorbed
 let _inviteTarget      = null; // { name, email } being submitted
+let _newSectorData     = null; // { sectorGroups, teams, supervisors } fetched when modal opens
 
 /* ── Level change state ───────────────────── */
 let _pendingLevelChanges = {};
 // { [profileId]: { newLevel, originalLevel, name, isEmployee } }
 let _deactivationTarget  = null; // { profileId, name } — employee pending deactivation confirm
+
+/* ── Team management state ────────────────── */
+let _teamSupervisorTarget   = null; // { teamId, teamName }
+let _teamSupervisorProfiles = [];
+let _teamDeactivateTarget   = null; // { teamId, teamName, memberCount }
 
 /* ── Donut color palette ──────────────────── */
 const EC_COLORS = [
@@ -1214,8 +1220,19 @@ function renderOrgTab(user) {
         </div>
       </div>`).join('');
 
+    const safeName   = team.name.replace(/"/g, '&quot;');
+    const canManage  = can(currentUser, P.ADMIN_CREATE_GROUPS);
+    const manageHtml = canManage ? `
+      <button class="btn btn--ghost btn--sm org-team-edit-sup-btn"
+              data-team-id="${team.id}" data-team-name="${safeName}"
+              type="button" title="Alterar supervisor">✎</button>
+      <button class="btn btn--ghost btn--sm btn--danger-text org-team-deactivate-btn"
+              data-team-id="${team.id}" data-team-name="${safeName}"
+              data-member-count="${team.members.length}"
+              type="button" title="Desativar equipe">✕</button>` : '';
+
     return `
-      <div class="org-team-block" id="org-team-${team.id}" data-drop-team-id="${team.id}">
+      <div class="org-team-block org-team-block--collapsed" id="org-team-${team.id}" data-drop-team-id="${team.id}">
         <div class="org-node org-node--team"><div class="org-node__content">
           <div class="org-node__avatar org-node__avatar--team">👥</div>
           <div class="org-node__info">
@@ -1225,6 +1242,7 @@ function renderOrgTab(user) {
               · Supervisor: ${team.supervisorName}
             </div>
           </div>
+          ${manageHtml}
           <button class="org-team-toggle" data-team="${team.id}" title="Expandir/recolher" type="button">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="6 9 12 15 18 9"/>
@@ -1239,6 +1257,7 @@ function renderOrgTab(user) {
     <div class="panel panel--dark">
       <div class="panel__header">
         <div class="panel__title">Estrutura — ${department?.name ?? 'Departamento'}</div>
+        ${can(currentUser, P.ADMIN_CREATE_GROUPS) ? `<button class="btn btn--sm btn--primary" id="btn-new-sector" type="button">+ Novo Setor</button>` : ''}
       </div>
       <div id="level-pending-bar" class="level-pending-bar${pendingCount === 0 ? ' level-pending-bar--hidden' : ''}">
         <span class="level-pending-bar__count">${pendingCount} alteração(ões) pendente(s)</span>
@@ -1261,6 +1280,104 @@ function renderOrgTab(user) {
         ${teamBlocks}
       </div>
     </div>
+
+    ${can(currentUser, P.ADMIN_CREATE_GROUPS) ? `
+    <!-- Team supervisor change modal -->
+    <div id="team-supervisor-modal" class="modal-overlay modal-overlay--hidden">
+      <div class="modal modal--sm">
+        <div class="modal__header">
+          <div class="modal__title">Alterar Supervisor</div>
+          <button class="modal__close" id="team-sup-close" type="button">✕</button>
+        </div>
+        <div class="modal__body">
+          <p id="team-sup-msg" style="font-size:var(--text-sm);color:var(--text-secondary);margin-bottom:var(--space-4)"></p>
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Novo supervisor <span style="color:var(--error)">*</span></label>
+            <select id="team-sup-select" class="form-select">
+              <option value="">— carregando —</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal__footer">
+          <button class="btn btn--ghost" id="team-sup-cancel" type="button">Cancelar</button>
+          <button class="btn btn--primary" id="team-sup-confirm" type="button">Salvar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Team deactivate modal -->
+    <div id="team-deactivate-modal" class="modal-overlay modal-overlay--hidden">
+      <div class="modal modal--sm">
+        <div class="modal__header">
+          <div class="modal__title">Desativar Equipe</div>
+          <button class="modal__close" id="team-deact-close" type="button">✕</button>
+        </div>
+        <div class="modal__body">
+          <p id="team-deact-msg" style="font-size:var(--text-sm);color:var(--text-secondary)"></p>
+        </div>
+        <div class="modal__footer">
+          <button class="btn btn--ghost" id="team-deact-cancel" type="button">Cancelar</button>
+          <button class="btn btn--danger" id="team-deact-confirm" type="button">Desativar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- New sector modal -->
+    <div id="new-sector-modal" class="modal-overlay modal-overlay--hidden">
+      <div class="modal modal--sm">
+        <div class="modal__header">
+          <div class="modal__title">Novo Setor</div>
+          <button class="modal__close" id="new-sector-close" type="button">✕</button>
+        </div>
+        <div class="modal__body">
+
+          <div class="form-field" style="margin-bottom:var(--space-4)">
+            <label class="form-label">Nome do setor <span style="color:var(--error)">*</span></label>
+            <input id="ns-name" type="text" class="input" placeholder="Ex.: Atendimento Premium" autocomplete="off">
+          </div>
+
+          <div class="form-field" style="margin-bottom:var(--space-4)">
+            <label class="form-label" style="margin-bottom:var(--space-2)">Equipe</label>
+            <div style="display:flex;gap:var(--space-5);margin-bottom:var(--space-3)">
+              <label style="display:flex;align-items:center;gap:6px;font-size:var(--text-sm)"><input type="radio" name="ns-team-mode" value="none" checked> Nenhuma</label>
+              <label style="display:flex;align-items:center;gap:6px;font-size:var(--text-sm)"><input type="radio" name="ns-team-mode" value="existing"> Existente</label>
+              <label style="display:flex;align-items:center;gap:6px;font-size:var(--text-sm)"><input type="radio" name="ns-team-mode" value="new"> Criar nova</label>
+            </div>
+            <div id="ns-team-existing-wrap" style="display:none">
+              <select id="ns-team-select" class="input"><option value="">Selecione a equipe…</option></select>
+            </div>
+            <div id="ns-team-new-wrap" style="display:none">
+              <div style="margin-bottom:var(--space-3)">
+                <label class="form-label" style="font-size:var(--text-xs)">Nome da equipe <span style="color:var(--error)">*</span></label>
+                <input id="ns-team-name" type="text" class="input" placeholder="Nome da nova equipe" autocomplete="off">
+              </div>
+              <div style="margin-bottom:var(--space-4)">
+                <label class="form-label" style="font-size:var(--text-xs)">Supervisor <span style="color:var(--error)">*</span></label>
+                <select id="ns-team-supervisor" class="input"><option value="">Selecione o supervisor…</option></select>
+              </div>
+              <div style="border-top:1px solid var(--border);padding-top:var(--space-3)">
+                <label class="form-label" style="font-size:var(--text-xs);margin-bottom:var(--space-2)">Grupo de setor da equipe</label>
+                <div style="display:flex;gap:var(--space-5);margin-bottom:var(--space-3)">
+                  <label style="display:flex;align-items:center;gap:6px;font-size:var(--text-sm)"><input type="radio" name="ns-sg-mode" value="existing" checked> Existente</label>
+                  <label style="display:flex;align-items:center;gap:6px;font-size:var(--text-sm)"><input type="radio" name="ns-sg-mode" value="new"> Criar novo</label>
+                </div>
+                <div id="ns-sg-existing-wrap" style="display:none">
+                  <select id="ns-sg-select" class="input"><option value="">Selecione o grupo…</option></select>
+                </div>
+                <div id="ns-sg-new-wrap" style="display:none">
+                  <input id="ns-sg-name" type="text" class="input" placeholder="Nome do novo grupo de setor" autocomplete="off">
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+        <div class="modal__footer">
+          <button id="new-sector-cancel" class="btn btn--ghost" type="button">Cancelar</button>
+          <button id="new-sector-confirm" class="btn btn--primary" type="button">Criar Setor</button>
+        </div>
+      </div>
+    </div>` : ''}
 
     <!-- Transfer request modal -->
     <div id="transfer-req-modal" class="modal-overlay modal-overlay--hidden">
@@ -1909,6 +2026,243 @@ async function inviteUser() {
   toast.success('Convite enviado', `Um e-mail de convite foi enviado para ${emailLower}.`);
 }
 
+/* ── Team supervisor change ───────────────── */
+async function openTeamSupervisorModal(teamId, teamName) {
+  _teamSupervisorTarget = { teamId, teamName };
+  const user   = getCurrentUser();
+  const deptId = user.departmentId ?? null;
+
+  const msg = document.getElementById('team-sup-msg');
+  if (msg) msg.innerHTML = `Selecione o novo supervisor para a equipe <strong>${teamName}</strong>.`;
+
+  const sel = document.getElementById('team-sup-select');
+  if (sel) sel.innerHTML = '<option value="">— carregando —</option>';
+  document.getElementById('team-supervisor-modal')?.classList.remove('modal-overlay--hidden');
+
+  const { data: profiles } = await (deptId
+    ? supabase.from('profiles').select('id, name').eq('department_id', deptId).gte('access_level', 3).order('name')
+    : supabase.from('profiles').select('id, name').gte('access_level', 3).order('name'));
+
+  _teamSupervisorProfiles = profiles ?? [];
+  const team = _orgData?.teams.find(t => t.id === teamId);
+
+  if (sel) {
+    sel.innerHTML = '<option value="">— selecione —</option>' +
+      _teamSupervisorProfiles.map(p =>
+        `<option value="${p.id}" ${p.id === team?.supervisorId ? 'selected' : ''}>${p.name}</option>`
+      ).join('');
+  }
+}
+
+function closeTeamSupervisorModal() {
+  document.getElementById('team-supervisor-modal')?.classList.add('modal-overlay--hidden');
+  _teamSupervisorTarget   = null;
+  _teamSupervisorProfiles = [];
+}
+
+async function submitTeamSupervisorChange() {
+  const supervisorId = document.getElementById('team-sup-select')?.value;
+  if (!supervisorId) { toast.warning('Atenção', 'Selecione um supervisor.'); return; }
+  if (!_teamSupervisorTarget) return;
+
+  const { teamId, teamName } = _teamSupervisorTarget;
+  const btn = document.getElementById('team-sup-confirm');
+  if (btn) { btn.disabled = true; btn.textContent = 'Salvando…'; }
+
+  try {
+    const { error } = await supabase.from('teams').update({ supervisor_id: supervisorId }).eq('id', teamId);
+    if (error) throw error;
+    toast.success('Supervisor alterado', teamName);
+    closeTeamSupervisorModal();
+    _orgData = null;
+    await loadOrgTabData();
+    document.getElementById('admin-tab-content').innerHTML = renderTab('org', getCurrentUser());
+    bindTabEvents();
+  } catch (err) {
+    toast.error('Erro ao alterar supervisor', err.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Salvar'; }
+  }
+}
+
+/* ── Team deactivation ────────────────────── */
+function openTeamDeactivateModal(teamId, teamName, memberCount) {
+  _teamDeactivateTarget = { teamId, teamName, memberCount };
+  const msg        = document.getElementById('team-deact-msg');
+  const confirmBtn = document.getElementById('team-deact-confirm');
+
+  if (memberCount > 0) {
+    if (msg) msg.innerHTML =
+      `A equipe <strong>${teamName}</strong> possui <strong>${memberCount} colaborador${memberCount !== 1 ? 'es' : ''}</strong>. ` +
+      `Transfira todos os colaboradores para outra equipe antes de desativar.`;
+    if (confirmBtn) confirmBtn.style.display = 'none';
+  } else {
+    if (msg) msg.innerHTML =
+      `Desativar a equipe <strong>${teamName}</strong>? Os setores vinculados também serão desativados. ` +
+      `Esta ação pode ser revertida manualmente.`;
+    if (confirmBtn) confirmBtn.style.display = '';
+  }
+
+  document.getElementById('team-deactivate-modal')?.classList.remove('modal-overlay--hidden');
+}
+
+function closeTeamDeactivateModal() {
+  document.getElementById('team-deactivate-modal')?.classList.add('modal-overlay--hidden');
+  _teamDeactivateTarget = null;
+}
+
+async function confirmTeamDeactivate() {
+  if (!_teamDeactivateTarget) return;
+  const { teamId, teamName } = _teamDeactivateTarget;
+  const btn = document.getElementById('team-deact-confirm');
+  if (btn) { btn.disabled = true; btn.textContent = 'Desativando…'; }
+
+  try {
+    const { error: e1 } = await supabase.from('sectors').update({ active: false }).eq('team_id', teamId);
+    if (e1) throw e1;
+    const { error: e2 } = await supabase.from('teams').update({ active: false }).eq('id', teamId);
+    if (e2) throw e2;
+    toast.success('Equipe desativada', teamName);
+    closeTeamDeactivateModal();
+    _orgData = null;
+    await loadOrgTabData();
+    document.getElementById('admin-tab-content').innerHTML = renderTab('org', getCurrentUser());
+    bindTabEvents();
+  } catch (err) {
+    toast.error('Erro ao desativar equipe', err.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Desativar'; }
+  }
+}
+
+/* ── New sector modal ─────────────────────── */
+async function openNewSectorModal() {
+  const user   = getCurrentUser();
+  const deptId = user.departmentId ?? null;
+
+  document.getElementById('ns-name').value = '';
+  document.getElementById('ns-team-name').value = '';
+  document.getElementById('ns-sg-name').value = '';
+  document.querySelector('input[name="ns-team-mode"][value="none"]').checked = true;
+  document.querySelector('input[name="ns-sg-mode"][value="existing"]').checked = true;
+  _refreshNewSectorConditionals();
+
+  const btn = document.getElementById('new-sector-confirm');
+  if (btn) { btn.disabled = true; btn.textContent = 'Carregando…'; }
+
+  const [sgRes, teamRes, supRes] = await Promise.all([
+    deptId
+      ? supabase.from('sector_groups').select('id, name').eq('department_id', deptId).order('name')
+      : supabase.from('sector_groups').select('id, name').order('name'),
+    supabase.from('teams').select('id, name, sector_group_id').eq('active', true).order('name'),
+    deptId
+      ? supabase.from('profiles').select('id, name').eq('department_id', deptId).gte('access_level', 3).order('name')
+      : supabase.from('profiles').select('id, name').gte('access_level', 3).order('name'),
+  ]);
+
+  _newSectorData = {
+    sectorGroups: sgRes.data  ?? [],
+    teams:        teamRes.data ?? [],
+    supervisors:  supRes.data  ?? [],
+  };
+
+  const sgOpts   = _newSectorData.sectorGroups.map(sg => `<option value="${sg.id}">${sg.name}</option>`).join('');
+  const teamOpts = _newSectorData.teams.map(t => {
+    const sg = _newSectorData.sectorGroups.find(s => s.id === t.sector_group_id);
+    return `<option value="${t.id}">${t.name}${sg ? ` (${sg.name})` : ''}</option>`;
+  }).join('');
+  const supOpts  = _newSectorData.supervisors.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+
+  document.getElementById('ns-sg-select').innerHTML   = `<option value="">Selecione o grupo…</option>${sgOpts}`;
+  document.getElementById('ns-team-select').innerHTML = `<option value="">Selecione a equipe…</option>${teamOpts}`;
+  document.getElementById('ns-team-supervisor').innerHTML = `<option value="">Selecione o supervisor…</option>${supOpts}`;
+
+  if (btn) { btn.disabled = false; btn.textContent = 'Criar Setor'; }
+  document.getElementById('new-sector-modal')?.classList.remove('modal-overlay--hidden');
+  document.getElementById('ns-name')?.focus();
+}
+
+function closeNewSectorModal() {
+  document.getElementById('new-sector-modal')?.classList.add('modal-overlay--hidden');
+  _newSectorData = null;
+}
+
+function _refreshNewSectorConditionals() {
+  const teamMode = document.querySelector('input[name="ns-team-mode"]:checked')?.value ?? 'none';
+  document.getElementById('ns-team-existing-wrap').style.display = teamMode === 'existing' ? '' : 'none';
+  document.getElementById('ns-team-new-wrap').style.display      = teamMode === 'new'      ? '' : 'none';
+
+  const sgMode = document.querySelector('input[name="ns-sg-mode"]:checked')?.value ?? 'existing';
+  document.getElementById('ns-sg-existing-wrap').style.display = sgMode === 'existing' ? '' : 'none';
+  document.getElementById('ns-sg-new-wrap').style.display      = sgMode === 'new'      ? '' : 'none';
+}
+
+async function submitNewSector() {
+  const sectorName = document.getElementById('ns-name')?.value.trim();
+  if (!sectorName) {
+    document.getElementById('ns-name')?.focus();
+    toast.error('Campo obrigatório', 'Informe o nome do setor.');
+    return;
+  }
+
+  const teamMode = document.querySelector('input[name="ns-team-mode"]:checked')?.value ?? 'none';
+  const btn      = document.getElementById('new-sector-confirm');
+  let   teamId   = null;
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Criando…'; }
+
+  try {
+    if (teamMode === 'existing') {
+      teamId = document.getElementById('ns-team-select')?.value || null;
+      if (!teamId) { toast.error('Campo obrigatório', 'Selecione uma equipe.'); return; }
+
+    } else if (teamMode === 'new') {
+      const teamName     = document.getElementById('ns-team-name')?.value.trim();
+      const supervisorId = document.getElementById('ns-team-supervisor')?.value || null;
+      if (!teamName)     { toast.error('Campo obrigatório', 'Informe o nome da nova equipe.'); return; }
+      if (!supervisorId) { toast.error('Campo obrigatório', 'Selecione um supervisor para a equipe.'); return; }
+
+      const sgMode = document.querySelector('input[name="ns-sg-mode"]:checked')?.value ?? 'existing';
+      let sectorGroupId = null;
+
+      if (sgMode === 'existing') {
+        sectorGroupId = document.getElementById('ns-sg-select')?.value || null;
+        if (!sectorGroupId) { toast.error('Campo obrigatório', 'Selecione um grupo de setor.'); return; }
+      } else if (sgMode === 'new') {
+        const sgName = document.getElementById('ns-sg-name')?.value.trim();
+        if (!sgName) { toast.error('Campo obrigatório', 'Informe o nome do novo grupo de setor.'); return; }
+        const { data: newSg, error: sgErr } = await supabase
+          .from('sector_groups')
+          .insert({ name: sgName, department_id: getCurrentUser().departmentId ?? null })
+          .select('id').single();
+        if (sgErr) throw sgErr;
+        sectorGroupId = newSg.id;
+      }
+
+      const { data: newTeam, error: teamErr } = await supabase
+        .from('teams')
+        .insert({ name: teamName, supervisor_id: supervisorId, sector_group_id: sectorGroupId })
+        .select('id').single();
+      if (teamErr) throw teamErr;
+      teamId = newTeam.id;
+    }
+
+    const { error: sectorErr } = await supabase
+      .from('sectors')
+      .insert({ name: sectorName, team_id: teamId });
+    if (sectorErr) throw sectorErr;
+
+    toast.success('Setor criado', sectorName);
+    closeNewSectorModal();
+    _orgData = null;
+    await loadOrgTabData();
+    document.getElementById('admin-tab-content').innerHTML = renderTab('org', getCurrentUser());
+    bindTabEvents();
+  } catch (err) {
+    console.error('[admin] new sector:', err);
+    toast.error('Erro ao criar', err.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Criar Setor'; }
+  }
+}
+
 function bindTabEvents() {
   /* ── Users tab ── */
   document.querySelectorAll('.btn-absorb').forEach(btn => {
@@ -1926,6 +2280,42 @@ function bindTabEvents() {
   document.getElementById('invite-modal')?.addEventListener('click',
     e => { if (e.target.id === 'invite-modal') closeInviteModal(); });
   document.getElementById('invite-confirm')?.addEventListener('click', inviteUser);
+
+  /* ── Org tab — team supervisor change ── */
+  document.querySelectorAll('.org-team-edit-sup-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      openTeamSupervisorModal(btn.dataset.teamId, btn.dataset.teamName);
+    });
+  });
+  document.getElementById('team-sup-close')?.addEventListener('click', closeTeamSupervisorModal);
+  document.getElementById('team-sup-cancel')?.addEventListener('click', closeTeamSupervisorModal);
+  document.getElementById('team-supervisor-modal')?.addEventListener('click',
+    e => { if (e.target.id === 'team-supervisor-modal') closeTeamSupervisorModal(); });
+  document.getElementById('team-sup-confirm')?.addEventListener('click', submitTeamSupervisorChange);
+
+  /* ── Org tab — team deactivation ── */
+  document.querySelectorAll('.org-team-deactivate-btn').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      openTeamDeactivateModal(btn.dataset.teamId, btn.dataset.teamName, Number(btn.dataset.memberCount));
+    });
+  });
+  document.getElementById('team-deact-close')?.addEventListener('click', closeTeamDeactivateModal);
+  document.getElementById('team-deact-cancel')?.addEventListener('click', closeTeamDeactivateModal);
+  document.getElementById('team-deactivate-modal')?.addEventListener('click',
+    e => { if (e.target.id === 'team-deactivate-modal') closeTeamDeactivateModal(); });
+  document.getElementById('team-deact-confirm')?.addEventListener('click', confirmTeamDeactivate);
+
+  /* ── Org tab — new sector ── */
+  document.getElementById('btn-new-sector')?.addEventListener('click', openNewSectorModal);
+  document.getElementById('new-sector-close')?.addEventListener('click', closeNewSectorModal);
+  document.getElementById('new-sector-cancel')?.addEventListener('click', closeNewSectorModal);
+  document.getElementById('new-sector-modal')?.addEventListener('click',
+    e => { if (e.target.id === 'new-sector-modal') closeNewSectorModal(); });
+  document.getElementById('new-sector-confirm')?.addEventListener('click', submitNewSector);
+  document.querySelectorAll('input[name="ns-team-mode"]').forEach(r => r.addEventListener('change', _refreshNewSectorConditionals));
+  document.querySelectorAll('input[name="ns-sg-mode"]').forEach(r => r.addEventListener('change', _refreshNewSectorConditionals));
 
   /* ── Org tab — team collapse toggles ── */
   document.querySelectorAll('.org-team-toggle').forEach(btn => {

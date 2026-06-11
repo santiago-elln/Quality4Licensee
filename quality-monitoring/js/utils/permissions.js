@@ -30,6 +30,7 @@ export const P = Object.freeze({
   SHIFTS_EDIT:           'Shifts.canEdit',
 
   /* Admin */
+  ADMIN_CREATE_GROUPS:     'Admin.canCreateGroups',
   ADMIN_VIEW_STRUCT:       'Admin.canViewStruct',
   ADMIN_UPDATE_CRITERIA:   'Admin.canUpdateCriteria',
   ADMIN_GLOBAL_VIEW:       'Admin.hasGlobalView',
@@ -67,6 +68,7 @@ export const PERMISSION_LABELS = Object.freeze({
   [P.PROFILE_VIEW_OBS]:       'Perfil — Ver observações qualitativas',
   [P.SHIFTS_ACCESS]:          'Escalas — Acessar',
   [P.SHIFTS_EDIT]:            'Escalas — Editar',
+  [P.ADMIN_CREATE_GROUPS]:    'Admin — Criar Setores, Equipes e Grupos',
   [P.ADMIN_VIEW_STRUCT]:      'Admin — Ver Organograma e Usuários',
   [P.ADMIN_UPDATE_CRITERIA]:  'Admin — Editar Critérios',
   [P.ADMIN_GLOBAL_VIEW]:       'Admin — Visualizar departamento inteiro',
@@ -169,6 +171,7 @@ export const DEFAULT_PERMISSIONS_BY_LEVEL = Object.freeze({
   // Nível 5 — Gestor
   5: [
     P.NEW_MONITORING_ACCESS,
+    P.ADMIN_CREATE_GROUPS,
     P.CONSULT_ACCESS,
     P.CONSULT_ACTION_PLAN,
     P.GLOBAL_VIEW_DEPT,
@@ -192,6 +195,7 @@ export const DEFAULT_PERMISSIONS_BY_LEVEL = Object.freeze({
   // Nível 9 — SYSOWNER (acesso total)
   9: [
     P.NEW_MONITORING_ACCESS,
+    P.ADMIN_CREATE_GROUPS,
     P.NEW_MONITORING_SAVE,
     P.CONSULT_ACCESS,
     P.CONSULT_ACTION_PLAN,
