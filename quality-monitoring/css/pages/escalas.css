@@ -253,6 +253,7 @@
 .esc-grid-line { position: absolute; top: 0; bottom: 0; width: 1px; pointer-events: none; }
 .esc-grid-line.major { background: #e5e7eb; }
 .esc-grid-line.minor { background: #f3f4f6; }
+.esc-grid-line.micro { background: #f9fafb; }
 
 .esc-th-slot {
   position: absolute;
@@ -274,13 +275,15 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: 9px;
   font-weight: 700;
   user-select: none;
-  pointer-events: none;
+  pointer-events: auto;
   transition: background 0.2s, color 0.2s;
   border-right: 1px solid rgba(255,255,255,.45);
 }
+.esc-avail-slot.has-prebreak { flex-direction: column; gap: 1px; }
+.esc-prebreak-sub { font-size: 7px; font-weight: 700; color: #d97706; line-height: 1; }
 
 /* ─── Metric overlay ──────────────────────────────────────── */
 #esc-emp-rows { position: relative; }
@@ -402,6 +405,7 @@
   user-select: none;
   overflow: hidden;
   white-space: nowrap;
+  z-index: 2;
 }
 .esc-sh-time {
   position: absolute;
@@ -412,7 +416,7 @@
   z-index: 6; padding: 0 5px; line-height: 1;
   text-shadow: 0 1px 2px rgba(0,0,0,.25);
 }
-.esc-start-time { left: 0; }
+.esc-start-time { left: 0; transition: opacity 0.25s; }
 .esc-end-time   { right: 0; }
 
 .esc-drag-ghost {
@@ -439,8 +443,128 @@
 .esc-break-ind[data-drag="break"]:active { cursor: grabbing; }
 .esc-break-ind:hover { box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 0 0 2px #d97706; }
 .esc-break-label { font-size: 9px; font-weight: 700; color: #92400e; white-space: nowrap; pointer-events: none; user-select: none; padding: 0 3px; overflow: hidden; }
+.esc-break-label.sm-break {font-size: 7px}
+/* ─── Small breaks (bright green) ────────────────────────── */
+.esc-small-break {
+  background: linear-gradient(180deg, #86efac 0%, #22c55e 100%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.3);
+}
+.esc-small-break[data-drag="sb1"],
+.esc-small-break[data-drag="sb2"] { cursor: grab; }
+.esc-small-break[data-drag="sb1"]:active,
+.esc-small-break[data-drag="sb2"]:active { cursor: grabbing; }
+.esc-small-break:hover { box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 0 0 2px #15803d; }
+.esc-small-break .esc-break-label { color: #14532d; }
+
+/* ─── Pre-break shadow ────────────────────────────────────── */
+.esc-pre-break-shadow {
+  position: absolute;
+  top: 0; height: 100%;
+  background: linear-gradient(180deg, #9e78198c 0%, #d38b0e7c 100%);
+  pointer-events: none;
+  z-index: 1;
+  border-radius: 3px 0 0 3px;
+}
+
+/* ─── Ghost for small breaks ──────────────────────────────── */
+.esc-ghost-sb { border-radius: 4px; border-color: rgb(74,222,128); z-index: 4; }
+
+/* Analysis mode — disable small break drag */
+.escalas-page.esc-analysis-mode .esc-small-break[data-drag="sb1"],
+.escalas-page.esc-analysis-mode .esc-small-break[data-drag="sb2"] { cursor: default; }
+.escalas-page.esc-analysis-mode .esc-resize-handle { display: none; }
+
+/* ─── Resize handle ───────────────────────────────────────── */
+.esc-resize-handle {
+  position: absolute;
+  right: 0; top: 0; bottom: 0;
+  width: 7px;
+  cursor: ew-resize;
+  z-index: 9;
+  border-radius: 0 4px 4px 0;
+  background: rgba(255,255,255,.18);
+  transition: background 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.esc-resize-handle::before {
+  content: '';
+  width: 2px;
+  height: 10px;
+  background: rgba(0,0,0,.22);
+  border-radius: 1px;
+}
+.esc-resize-handle:hover { background: rgba(255,255,255,.42); }
+.esc-shift-bar.esc-dragging .esc-resize-handle { background: rgba(255,255,255,.42); }
 
 .esc-no-shift { position: absolute; top: 50%; left: 12px; transform: translateY(-50%); font-size: 12px; color: #9ca3af; font-style: italic; pointer-events: none; user-select: none; }
+
+/* ─── Avail slot tooltip ──────────────────────────────────── */
+.esc-avail-tooltip {
+  display: none;
+  position: absolute;
+  z-index: 9999;
+  transform: translateY(calc(-100% - 8px));
+  background: #1e293b;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-width: 180px;
+  max-width: 260px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.35);
+  pointer-events: none;
+}
+.esc-tt-time {
+  font-size: 10px;
+  font-weight: 700;
+  color: #94a3b8;
+  letter-spacing: .5px;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.esc-tt-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+}
+.esc-tt-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.esc-tt-name {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 500;
+  color: #e2e8f0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.esc-tt-status {
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* ─── Resize tooltip ──────────────────────────────────────── */
+.esc-resize-tip {
+  display: none;
+  position: absolute;
+  z-index: 9999;
+  transform: translateY(calc(-100% - 6px));
+  background: #1e293b;
+  color: #f1f5f9;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 5px;
+  pointer-events: none;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0,0,0,.3);
+}
 
 /* ─── Save bar (fixed) ────────────────────────────────────── */
 .esc-save-bar {

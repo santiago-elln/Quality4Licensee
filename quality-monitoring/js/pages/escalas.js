@@ -10,9 +10,9 @@ import { can, P } from '../utils/permissions.js';
 const GRID_START = 8 * 60
 const GRID_END   = 20 * 60
 const GRID_DUR   = GRID_END - GRID_START
-const SLOT_MIN   = 30
+const SLOT_MIN   = 15
 const NUM_SLOTS  = GRID_DUR / SLOT_MIN
-const SNAP       = 30
+const SNAP       = 15
 
 const SECTOR_ORDER = ['Gestores & Abaixo', 'Diretores', 'Executivos', 'Performance']
 const SECTOR_CLASS = {
@@ -201,6 +201,8 @@ let _deptSectors  = []   // [{id, name}] — unique sectors across visible emplo
 let _employees    = []
 let _shifts       = {}
 let _origShifts   = {}
+let _sbNatural    = {} // eid -> {sb1, sb2}: last explicitly-set SB positions (not push-derived)
+let _breakNatural = {} // eid -> break_start_min: last explicitly-set break position (not push-derived)
 const _dirty      = new Set()
 let _drag              = null
 let _abortCtrl         = null
@@ -290,7 +292,7 @@ export async function init() {
   _activeMetrics = new Set()
   _sectorGroups = []
   _deptSectors  = []
-  _employees = []; _shifts = {}; _origShifts = {}
+  _employees = []; _shifts = {}; _origShifts = {}; _sbNatural = {}; _breakNatural = {}
   _dirty.clear(); _drag = null
 
   const today = todayISO()
@@ -326,6 +328,11 @@ export async function init() {
   }, { signal: sig })
   $e('esc-modal-confirm')?.addEventListener('click', confirmSave, { signal: sig })
 
+  document.addEventListener('mouseover', e => {
+    const sl = e.target.closest('.esc-avail-slot'); if (sl) showAvailTooltip(sl)
+    else hideAvailTooltip()
+  }, { signal: sig })
+  document.addEventListener('mouseleave', hideAvailTooltip, { signal: sig })
   document.addEventListener('mousedown',  onDown, { signal: sig })
   document.addEventListener('mousemove',  onMove, { signal: sig })
   document.addEventListener('mouseup',    onUp,   { signal: sig })
@@ -346,7 +353,7 @@ export async function init() {
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
 async function loadData() {
-  _shifts = {}; _origShifts = {}
+  _shifts = {}; _origShifts = {}; _sbNatural = {}; _breakNatural = {}
 
   /* Fetch shifts scoped to the user's sector_group (null = global view, no filter) */
   const user     = getCurrentUser();
@@ -399,6 +406,17 @@ async function loadData() {
     }
     /* Populate shifts */
     if (row.shift_id) {
+      const startMin      = timeToMin(row.start_time)
+      const endMin        = timeToMin(row.end_time)
+      const breakStartMin = timeToMin(row.break_start)
+      const breakEndMin   = breakStartMin + row.break_duration_minutes
+
+      /* Default small-break positions when DB columns are null */
+      const sb1Lo = startMin, sb1Hi = breakStartMin - 45
+      const sb2Lo = breakEndMin + 30, sb2Hi = endMin - 75
+      const sb1Default = sb1Hi > sb1Lo ? clamp(snapMin(startMin + 90), sb1Lo, sb1Hi) : null
+      const sb2Default = sb2Hi > sb2Lo ? clamp(snapMin(breakEndMin + 90), sb2Lo, sb2Hi) : null
+
       const parsed = {
         id:                    row.shift_id,
         employee_id:           row.employee_id,
@@ -410,15 +428,19 @@ async function loadData() {
         validated:             row.validated ?? false,
         updated_by:            row.updated_by,
         updated_at:            row.updated_at,
-        start_min:             timeToMin(row.start_time),
-        end_min:               timeToMin(row.end_time),
-        break_start_min:       timeToMin(row.break_start),
+        start_min:             startMin,
+        end_min:               endMin,
+        break_start_min:       breakStartMin,
+        small_break_1_min:     row.small_break_1_start ? timeToMin(row.small_break_1_start) : sb1Default,
+        small_break_2_min:     row.small_break_2_start ? timeToMin(row.small_break_2_start) : sb2Default,
         is_from_default:       row.is_default ?? false,
         date_shift_id:         row.is_default ? null : row.shift_id,
         default_shift_id:      row.is_default ? row.shift_id : null,
       }
       _shifts[row.employee_id]     = parsed
       _origShifts[row.employee_id] = { ...parsed }
+      _sbNatural[row.employee_id]    = { sb1: parsed.small_break_1_min, sb2: parsed.small_break_2_min }
+      _breakNatural[row.employee_id] = parsed.break_start_min
     }
   }
 
@@ -457,15 +479,112 @@ async function loadData() {
 function calcAvailForGroup(slotMin, empIds) {
   return empIds.reduce((n, id) => {
     const s = _shifts[id]; if (!s) return n
-    const inShift = s.start_min <= slotMin && s.end_min > slotMin
-    const onBreak  = s.break_start_min <= slotMin && (s.break_start_min + s.break_duration_minutes) > slotMin
-    return n + (inShift && !onBreak ? 1 : 0)
+    const inShift    = s.start_min <= slotMin && s.end_min > slotMin
+    const onBreak    = s.break_start_min <= slotMin && (s.break_start_min + s.break_duration_minutes) > slotMin
+    const onSmallBrk = (s.small_break_1_min !== null && s.small_break_1_min <= slotMin && s.small_break_1_min + 15 > slotMin)
+                    || (s.small_break_2_min !== null && s.small_break_2_min <= slotMin && s.small_break_2_min + 15 > slotMin)
+    return n + (inShift && !onBreak && !onSmallBrk ? 1 : 0)
   }, 0)
 }
 
 function calcAvail(slotMin) {
   return calcAvailForGroup(slotMin, _employees.map(e => e.id))
 }
+
+// ─── Avail slot tooltip ───────────────────────────────────────────────────────
+let _availTooltip = null
+function ensureTooltip() {
+  if (_availTooltip) return _availTooltip
+  _availTooltip = document.createElement('div')
+  _availTooltip.className = 'esc-avail-tooltip'
+  document.body.appendChild(_availTooltip)
+  return _availTooltip
+}
+
+function getSlotStatus(s, slotMin) {
+  if (!s || s.start_min > slotMin || s.end_min <= slotMin) return null
+  if (s.break_start_min <= slotMin && s.break_start_min + s.break_duration_minutes > slotMin) return 'Pausa'
+  if (s.small_break_1_min !== null && s.small_break_1_min <= slotMin && s.small_break_1_min + 15 > slotMin) return 'Café'
+  if (s.small_break_2_min !== null && s.small_break_2_min <= slotMin && s.small_break_2_min + 15 > slotMin) return 'Café'
+  if (s.break_start_min - 30 <= slotMin && slotMin < s.break_start_min) return 'Pré-pausa'
+  return 'Disponível'
+}
+
+const STATUS_DOT = { 'Disponível':'#16a34a', 'Café':'#4ade80', 'Pausa':'#d97706', 'Pré-pausa':'#f59e0b' }
+
+function showAvailTooltip(slotEl) {
+  const slot = parseInt(slotEl.dataset.slot); if (isNaN(slot)) return
+  const slotMin  = GRID_START + slot * SLOT_MIN
+  const sectorId = slotEl.dataset.sectorId
+  const emps     = sectorId
+    ? _employees.filter(e => String(e.sector_group_id) === sectorId || String(e.sector_id) === sectorId)
+    : _employees
+  const entries  = emps.map(emp => ({ name: emp.name, status: getSlotStatus(_shifts[emp.id], slotMin) }))
+                       .filter(e => e.status !== null && e.name)
+                       .sort((a,b) => a.status.localeCompare(b.status))
+  if (!entries.length) return
+
+  const tt = ensureTooltip()
+  tt.innerHTML = `<div class="esc-tt-time">${minToTime(slotMin)} – ${minToTime(slotMin + SLOT_MIN)}</div>`
+    + entries.map(e=>`<div class="esc-tt-row"><span class="esc-tt-dot" style="background:${STATUS_DOT[e.status]??'#9ca3af'}"></span><span class="esc-tt-name">${e.name}</span><span class="esc-tt-status" style="color:${STATUS_DOT[e.status]??'#6b7280'}">${e.status}</span></div>`).join('')
+  tt.style.display = 'block'
+
+  const r   = slotEl.getBoundingClientRect()
+  const ttH = tt.offsetHeight || 160
+  const ttW = tt.offsetWidth  || 220
+  let left  = r.left + r.width / 2 - ttW / 2
+  left = Math.max(8, Math.min(left, window.innerWidth - ttW - 8))
+  tt.style.left = left + 'px'
+  // Flip below if not enough room above
+  const spaceAbove = r.top - 8
+  if (spaceAbove < ttH) {
+    tt.style.transform = 'none'
+    tt.style.top = (r.bottom + window.scrollY + 8) + 'px'
+  } else {
+    tt.style.transform = ''
+    tt.style.top = (r.top + window.scrollY - 8) + 'px'
+  }
+}
+
+function hideAvailTooltip() {
+  if (_availTooltip) _availTooltip.style.display = 'none'
+}
+
+// ─── Resize tooltip ───────────────────────────────────────────────────────────
+let _resizeTip = null
+function showResizeTip(durMin) {
+  if (!_resizeTip) {
+    _resizeTip = document.createElement('div')
+    _resizeTip.className = 'esc-resize-tip'
+    document.body.appendChild(_resizeTip)
+  }
+  _resizeTip.textContent = durLabel(durMin)
+  _resizeTip.style.display = 'block'
+  const bar = document.querySelector(`.esc-shift-bar[data-eid="${_drag.eid}"]`)
+  if (!bar) return
+  const r   = bar.getBoundingClientRect()
+  const ttW = _resizeTip.offsetWidth || 52
+  const left = Math.max(8, Math.min(r.right - ttW / 2, window.innerWidth - ttW - 8))
+  _resizeTip.style.left = left + 'px'
+  _resizeTip.style.top  = (r.top + window.scrollY - 8) + 'px'
+}
+function hideResizeTip() { if (_resizeTip) _resizeTip.style.display = 'none' }
+
+function calcPreBreakForGroup(slotMin, empIds) {
+  return empIds.reduce((n, id) => {
+    const s = _shifts[id]; if (!s) return n
+    const inShift    = s.start_min <= slotMin && s.end_min > slotMin
+    const onBreak    = s.break_start_min <= slotMin && (s.break_start_min + s.break_duration_minutes) > slotMin
+    const onSmallBrk = (s.small_break_1_min !== null && s.small_break_1_min <= slotMin && s.small_break_1_min + 15 > slotMin)
+                    || (s.small_break_2_min !== null && s.small_break_2_min <= slotMin && s.small_break_2_min + 15 > slotMin)
+    const inPreBreak = s.break_start_min - 30 <= slotMin && slotMin < s.break_start_min
+    return n + (inShift && !onBreak && !onSmallBrk && inPreBreak ? 1 : 0)
+  }, 0)
+}
+
+const slotInner = (count, pre) => pre > 0
+  ? `${count}<span class="esc-prebreak-sub">${count - pre}</span>`
+  : String(count)
 
 function updateStats() {
   const total=_employees.length, withShift=_employees.filter(e=>_shifts[e.id]).length
@@ -490,11 +609,12 @@ function buildSectorHeaderRow(sector, emps) {
   for (let i = 0; i < NUM_SLOTS; i++) {
     const sm = GRID_START + i * SLOT_MIN
     const count = calcAvailForGroup(sm, empIds)
+    const pre   = calcPreBreakForGroup(sm, empIds)
     const total = emps.length
     const hue = total ? Math.round(count / total * 120) : 45
-    cells.push(`<div class="esc-avail-slot esc-sector-avail-slot"
+    cells.push(`<div class="esc-avail-slot esc-sector-avail-slot${pre>0?' has-prebreak':''}"
       data-sector-id="${sector.id}" data-slot="${i}"
-      style="left:${slotPct(i)}%;width:${slotPct(1)}%;background:hsl(${hue},38%,85%);color:hsl(${hue},50%,30%)">${count}</div>`)
+      style="left:${slotPct(i)}%;width:${slotPct(1)}%;background:hsl(${hue},38%,85%);color:hsl(${hue},50%,30%)">${slotInner(count,pre)}</div>`)
   }
   return `
     <div class="esc-srow esc-sector-header">
@@ -506,21 +626,22 @@ function buildSectorHeaderRow(sector, emps) {
 // ─── Grid rendering ───────────────────────────────────────────────────────────
 function buildGridLines() {
   let h=''
-  for(let i=0;i<=NUM_SLOTS;i++) h+=`<div class="esc-grid-line ${i%2===0?'major':'minor'}" style="left:${slotPct(i)}%"></div>`
+  for(let i=0;i<=NUM_SLOTS;i++) h+=`<div class="esc-grid-line ${i%4===0?'major':i%2===0?'minor':'micro'}" style="left:${slotPct(i)}%"></div>`
   return `<div class="esc-grid-bg">${h}</div>`
 }
 
 function renderGrid() {
-  const hourSlots=Array.from({length:NUM_SLOTS+1},(_,i)=>i).filter(i=>i%2===0)
+  const hourSlots=Array.from({length:NUM_SLOTS+1},(_,i)=>i).filter(i=>i%4===0)
   const timeLabels=hourSlots
     .filter((_,idx)=>idx!==0&&idx!==hourSlots.length-1)
     .map(i=>`<div class="esc-th-slot" style="left:${slotPct(i)}%">${minToTime(GRID_START+i*SLOT_MIN)}</div>`)
   const availCells=[]
   for(let i=0;i<NUM_SLOTS;i++){
     const sm=GRID_START+i*SLOT_MIN, count=calcAvail(sm)
+    const pre=calcPreBreakForGroup(sm,_employees.map(e=>e.id))
     const total=_employees.length, hue=total?Math.round(count/total*120):45
-    availCells.push(`<div class="esc-avail-slot" data-slot="${i}"
-      style="left:${slotPct(i)}%;width:${slotPct(1)}%;background:hsl(${hue},38%,88%);color:hsl(${hue},45%,28%)">${count}</div>`)
+    availCells.push(`<div class="esc-avail-slot${pre>0?' has-prebreak':''}" data-slot="${i}"
+      style="left:${slotPct(i)}%;width:${slotPct(1)}%;background:hsl(${hue},38%,88%);color:hsl(${hue},45%,28%)">${slotInner(count,pre)}</div>`)
   }
   /* Group employees by sector_group when more than one group is visible */
   let empRowsHtml = ''
@@ -801,25 +922,58 @@ function buildEmpRow(emp) {
   const canEdit = !isGhost && can(_user, P.SHIFTS_EDIT) && (can(_user, P.GLOBAL_VIEW_DEPT) || (_user?.supervisedTeamIds ?? []).includes(emp.team_id))
   let gridContent=''
   if(shift){
-    const barLeft=minToPct(shift.start_min),barWidth=durToPct(shift.end_min-shift.start_min)
-    const shiftDur=shift.end_min-shift.start_min
-    const brkLeft=(((shift.break_start_min-shift.start_min)/shiftDur)*100).toFixed(4)
-    const brkWidth=((shift.break_duration_minutes/shiftDur)*100).toFixed(4)
-    const brkLeftF=parseFloat(brkLeft),brkWidthF=parseFloat(brkWidth)
+    const barLeft  = minToPct(shift.start_min)
+    const barWidth = durToPct(shift.end_min - shift.start_min)
+    const dur      = shift.end_min - shift.start_min
+    const rp = (t) => ((t - shift.start_min) / dur * 100).toFixed(4)  // relative left%
+    const rd = (d) => (d / dur * 100).toFixed(4)                       // relative width%
+    const breakEnd = shift.break_start_min + shift.break_duration_minutes
+    const sb1 = shift.small_break_1_min
+    const sb2 = shift.small_break_2_min
     const unvalidated = shift.validated === false
+
+    /* Break indicator (main) */
+    const brkL = rp(shift.break_start_min), brkW = rd(shift.break_duration_minutes)
+
+    /* Pre-break shadow: 30 min before break_start */
+    const shadowL = rp(shift.break_start_min - 30), shadowW = rd(30)
+
+    /* Segment + small-break markup (only when SBs are available) */
+    const sbMarkup = (sb1 !== null && sb2 !== null) ? `
+        <span class="esc-seg-label" style="left:0;width:${rp(sb1)}%">${durLabel(sb1 - shift.start_min)}</span>
+        <div class="esc-break-ind esc-small-break" ${canEdit?'data-drag="sb1"':''} data-eid="${emp.id}"
+             style="left:${rp(sb1)}%;width:${rd(15)}%">
+          <span class="esc-break-label sm-break">${minToTime(sb1)}</span>
+        </div>
+        <span class="esc-seg-label" style="left:${rp(sb1+15)}%;width:${rp(shift.break_start_min) - rp(sb1+15)}%">${durLabel(shift.break_start_min-(sb1+15))}</span>
+        <div class="esc-pre-break-shadow" style="left:${shadowL}%;width:${shadowW}%"></div>
+        <div class="esc-break-ind" ${canEdit?'data-drag="break"':''} data-eid="${emp.id}"
+             style="left:${brkL}%;width:${brkW}%">
+          <span class="esc-break-label">${minToTime(shift.break_start_min)}</span>
+        </div>
+        <span class="esc-seg-label" style="left:${rp(breakEnd)}%;width:${rp(sb2) - rp(breakEnd)}%">${durLabel(sb2-breakEnd)}</span>
+        <div class="esc-break-ind esc-small-break" ${canEdit?'data-drag="sb2"':''} data-eid="${emp.id}"
+             style="left:${rp(sb2)}%;width:${rd(15)}%">
+          <span class="esc-break-label sm-break">${minToTime(sb2)}</span>
+        </div>
+        <span class="esc-seg-label" style="left:${rp(sb2+15)}%;right:0">${durLabel(shift.end_min-(sb2+15))}</span>` : `
+        <span class="esc-seg-label" style="left:0;width:${brkL}%">${durLabel(shift.break_start_min-shift.start_min)}</span>
+        <div class="esc-pre-break-shadow" style="left:${shadowL}%;width:${shadowW}%"></div>
+        <div class="esc-break-ind" ${canEdit?'data-drag="break"':''} data-eid="${emp.id}"
+             style="left:${brkL}%;width:${brkW}%">
+          <span class="esc-break-label">${minToTime(shift.break_start_min)}</span>
+        </div>
+        <span class="esc-seg-label" style="left:${parseFloat(brkL)+parseFloat(brkW)}%;right:0">${durLabel(shift.end_min-breakEnd)}</span>`
+
     gridContent=`
       ${unvalidated ? `<div class="esc-unvalidated-tooltip">Este horário pode estar incorreto</div>` : ''}
       <div class="esc-shift-bar ${canEdit?'esc-can-edit':'esc-read-only'}${unvalidated?' esc-shift-bar--unvalidated':''}"
            data-drag="${canEdit?'bar':''}" data-eid="${emp.id}"
            style="left:${barLeft}%;width:${barWidth}%">
         <span class="esc-sh-time esc-start-time">${minToTime(shift.start_min)}</span>
-        <span class="esc-seg-label esc-seg-before" style="left:0;width:${brkLeft}%">${durLabel(shift.break_start_min-shift.start_min)}</span>
-        <div class="esc-break-ind" ${canEdit?'data-drag="break"':''} data-eid="${emp.id}"
-             style="left:${brkLeft}%;width:${brkWidth}%">
-          <span class="esc-break-label">${minToTime(shift.break_start_min)}</span>
-        </div>
-        <span class="esc-seg-label esc-seg-after" style="left:${brkLeftF+brkWidthF}%;right:0">${durLabel(shift.end_min-(shift.break_start_min+shift.break_duration_minutes))}</span>
+        ${sbMarkup}
         <span class="esc-sh-time esc-end-time">${minToTime(shift.end_min)}</span>
+        ${canEdit?`<div class="esc-resize-handle" data-drag="resize" data-eid="${emp.id}"></div>`:''}
       </div>`
   } else {
     gridContent=`<div class="esc-no-shift">Sem escala para esta data</div>`
@@ -859,8 +1013,9 @@ function onDown(e) {
   const s=_shifts[eid]; if(!s) return
   const gridEl=el.closest('.esc-emp-grid')||document.querySelector('.esc-emp-grid')
   _drag={type,eid,startX:clientX(e),origStart:s.start_min,origEnd:s.end_min,
-         origBreak:s.break_start_min,origDur:s.end_min-s.start_min,
-         gridPx:gridEl?gridEl.clientWidth:gridPxNow(),gridEl,ghostEl:null,moved:false}
+         origBreak:s.break_start_min,origSb1:s.small_break_1_min,origSb2:s.small_break_2_min,
+         origDur:s.end_min-s.start_min,
+         gridPx:gridEl?gridEl.clientWidth:gridPxNow(),gridEl,ghostEl:null,ghostSb1El:null,ghostSb2El:null,moved:false}
   document.querySelector(`.esc-shift-bar[data-eid="${eid}"]`)?.classList.add('esc-dragging')
 }
 
@@ -868,11 +1023,17 @@ function onMove(e) { if(!_drag) return; if(e.cancelable) e.preventDefault(); app
 
 function onUp() {
   if(!_drag) return
+  hideResizeTip()
   const bar=document.querySelector(`.esc-shift-bar[data-eid="${_drag.eid}"]`)
   bar?.classList.remove('esc-dragging')
   if(_drag.moved){
     const s=_shifts[_drag.eid],orig=_origShifts[_drag.eid]
-    const back=s&&orig&&s.start_min===orig.start_min&&s.end_min===orig.end_min&&s.break_start_min===orig.break_start_min
+    // When SBs are explicitly dragged, update their natural positions
+    if(_drag.type==='sb1'||_drag.type==='sb2')
+      _sbNatural[_drag.eid]={ sb1: s.small_break_1_min, sb2: s.small_break_2_min }
+    if(_drag.type==='break')
+      _breakNatural[_drag.eid]=s.break_start_min
+    const back=s&&orig&&s.start_min===orig.start_min&&s.end_min===orig.end_min&&s.break_start_min===orig.break_start_min&&s.small_break_1_min===orig.small_break_1_min&&s.small_break_2_min===orig.small_break_2_min
     if(back){_dirty.delete(_drag.eid);markRowClean(_drag.eid);if(_dirty.size===0)hideSaveBar()}
     else{bar?.classList.add('esc-dirty-bar');_dirty.add(_drag.eid);markRowDirty(_drag.eid);showSaveBar()}
   }
@@ -882,17 +1043,85 @@ function onUp() {
 function applyDrag(cx) {
   const s=_shifts[_drag.eid]; if(!s) return
   const dMin=(cx-_drag.startX)/_drag.gridPx*GRID_DUR
+  const breakEnd = () => s.break_start_min + s.break_duration_minutes
+
   if(_drag.type==='bar'){
     const ns=snapMin(clamp(_drag.origStart+dMin,GRID_START,GRID_END-_drag.origDur))
     s.start_min=ns; s.end_min=ns+_drag.origDur
     s.break_start_min=clamp(ns+(_drag.origBreak-_drag.origStart),ns,ns+_drag.origDur-s.break_duration_minutes)
-  } else {
-    s.break_start_min=snapMin(clamp(_drag.origBreak+dMin,s.start_min,s.end_min-s.break_duration_minutes))
+    if(s.small_break_1_min!==null)
+      s.small_break_1_min=clamp(snapMin(ns+(_drag.origSb1-_drag.origStart)),ns,s.break_start_min-45)
+    if(s.small_break_2_min!==null)
+      s.small_break_2_min=clamp(snapMin(ns+(_drag.origSb2-_drag.origStart)),breakEnd()+30,s.end_min-75)
+  } else if(_drag.type==='break'){
+    // Hard bounds: break cannot move so far that SBs would exceed their absolute limits
+    const brkLo = s.small_break_1_min!==null ? s.start_min+45                              : s.start_min
+    const brkHi = s.small_break_2_min!==null ? s.end_min-s.break_duration_minutes-105      : s.end_min-s.break_duration_minutes
+    s.break_start_min=snapMin(clamp(_drag.origBreak+dMin,brkLo,brkHi))
+    // Spring back to natural positions (survive across multiple drop-and-redrag cycles)
+    const nat=_sbNatural[_drag.eid]??{sb1:_drag.origSb1,sb2:_drag.origSb2}
+    if(s.small_break_1_min!==null)
+      s.small_break_1_min=clamp(nat.sb1,s.start_min,s.break_start_min-45)
+    if(s.small_break_2_min!==null)
+      s.small_break_2_min=clamp(nat.sb2,breakEnd()+30,s.end_min-75)
+  } else if(_drag.type==='sb1'){
+    s.small_break_1_min=snapMin(clamp(_drag.origSb1+dMin,s.start_min,s.break_start_min-45))
+  } else if(_drag.type==='sb2'){
+    s.small_break_2_min=snapMin(clamp(_drag.origSb2+dMin,breakEnd()+30,s.end_min-75))
+  } else if(_drag.type==='resize'){
+    const MIN_DUR=390, MAX_DUR=540
+    s.end_min=clamp(Math.round(_drag.origEnd+dMin), s.start_min+MIN_DUR, Math.min(s.start_min+MAX_DUR,GRID_END))
+    const nat=_sbNatural[_drag.eid]??{sb1:_drag.origSb1,sb2:_drag.origSb2}
+    const brkNat=_breakNatural[_drag.eid]??_drag.origBreak
+    // Clamp break FIRST: ceiling ensures SB2 always has room (break_end+30+15+60 ≤ end_min)
+    const brkCeil=s.small_break_2_min!==null
+      ? s.end_min-s.break_duration_minutes-105
+      : s.end_min-s.break_duration_minutes
+    s.break_start_min=clamp(brkNat, s.start_min, brkCeil)
+    // Now clamp SB2 against the already-updated breakEnd
+    if(s.small_break_2_min!==null)
+      s.small_break_2_min=clamp(nat.sb2, breakEnd()+30, s.end_min-75)
+    // Clamp SB1 against the updated break
+    if(s.small_break_1_min!==null)
+      s.small_break_1_min=clamp(nat.sb1, s.start_min, s.break_start_min-45)
+    showResizeTip(s.end_min-s.start_min)
   }
-  const moved=_drag.type==='bar'?s.start_min!==_drag.origStart:s.break_start_min!==_drag.origBreak
+
+  const moved=_drag.type==='bar'?s.start_min!==_drag.origStart
+    :_drag.type==='break'?s.break_start_min!==_drag.origBreak
+    :_drag.type==='sb1'?s.small_break_1_min!==_drag.origSb1
+    :_drag.type==='sb2'?s.small_break_2_min!==_drag.origSb2
+    :s.end_min!==_drag.origEnd
   if(moved&&!_drag.moved){_drag.moved=true;_drag.ghostEl=_drag.gridEl?createGhost(_drag.type,_drag.eid,_drag.gridEl):null}
   patchShiftBar(_drag.eid); refreshAvailRow()
   if(_drag.ghostEl) updateGhostGradient(_drag.ghostEl,_drag.type,_drag.eid)
+
+  // Show push ghosts for small breaks when the main break crowds them
+  if(_drag.type==='break' && _drag.moved && _drag.gridEl) {
+    const SB_C='74,222,128'
+    const sbGrad=(delta)=>Math.abs(delta)<8?'':delta>0
+      ?`linear-gradient(to right,rgba(${SB_C},.28),transparent)`
+      :`linear-gradient(to right,transparent,rgba(${SB_C},.28))`
+    const nat=_sbNatural[_drag.eid]??{sb1:_drag.origSb1,sb2:_drag.origSb2}
+    if(s.small_break_1_min!==null&&nat.sb1!==null){
+      if(!_drag.ghostSb1El){
+        const g=document.createElement('div')
+        g.className='esc-drag-ghost esc-ghost-sb'; g.dataset.ghostEid=_drag.eid; g.dataset.ghostType='sb1-push'
+        g.style.left=minToPct(nat.sb1)+'%'; g.style.width=durToPct(15)+'%'
+        _drag.gridEl.appendChild(g); _drag.ghostSb1El=g
+      }
+      _drag.ghostSb1El.style.background=sbGrad(s.small_break_1_min-nat.sb1)
+    }
+    if(s.small_break_2_min!==null&&nat.sb2!==null){
+      if(!_drag.ghostSb2El){
+        const g=document.createElement('div')
+        g.className='esc-drag-ghost esc-ghost-sb'; g.dataset.ghostEid=_drag.eid; g.dataset.ghostType='sb2-push'
+        g.style.left=minToPct(nat.sb2)+'%'; g.style.width=durToPct(15)+'%'
+        _drag.gridEl.appendChild(g); _drag.ghostSb2El=g
+      }
+      _drag.ghostSb2El.style.background=sbGrad(s.small_break_2_min-nat.sb2)
+    }
+  }
 }
 
 function createGhost(type,eid,gridEl) {
@@ -900,20 +1129,22 @@ function createGhost(type,eid,gridEl) {
   if(ex) return ex
   const orig=_origShifts[eid]; if(!orig) return null
   const g=document.createElement('div')
-  g.className='esc-drag-ghost'+(type==='break'?' esc-ghost-break':'')
+  g.className='esc-drag-ghost'+(type==='break'?' esc-ghost-break':(type==='sb1'||type==='sb2')?' esc-ghost-sb':'')
   g.dataset.ghostEid=eid; g.dataset.ghostType=type
   if(type==='bar'){g.style.left=minToPct(orig.start_min)+'%';g.style.width=durToPct(orig.end_min-orig.start_min)+'%'}
-  else{g.style.left=minToPct(orig.break_start_min)+'%';g.style.width=durToPct(orig.break_duration_minutes)+'%'}
+  else if(type==='break'){g.style.left=minToPct(orig.break_start_min)+'%';g.style.width=durToPct(orig.break_duration_minutes)+'%'}
+  else if(type==='sb1'){g.style.left=minToPct(orig.small_break_1_min)+'%';g.style.width=durToPct(15)+'%'}
+  else if(type==='sb2'){g.style.left=minToPct(orig.small_break_2_min)+'%';g.style.width=durToPct(15)+'%'}
   gridEl.appendChild(g); return g
 }
 
 function updateGhostGradient(ghost,type,eid) {
   const orig=_origShifts[eid],cur=_shifts[eid]; if(!orig||!cur){ghost.style.background='';return}
-  const origMin=type==='bar'?orig.start_min:orig.break_start_min
-  const curMin =type==='bar'?cur.start_min :cur.break_start_min
+  const origMin=type==='bar'?orig.start_min:type==='break'?orig.break_start_min:type==='sb1'?orig.small_break_1_min:orig.small_break_2_min
+  const curMin =type==='bar'?cur.start_min :type==='break'?cur.break_start_min :type==='sb1'?cur.small_break_1_min :cur.small_break_2_min
   const delta=curMin-origMin
   if(Math.abs(delta)<SNAP/2){ghost.style.background='';return}
-  const c=type==='bar'?'22,163,74':'245,158,11'
+  const c=type==='bar'?'22,163,74':type==='break'?'245,158,11':'74,222,128'
   ghost.style.background=delta>0?`linear-gradient(to right,rgba(${c},.28),transparent)`:`linear-gradient(to right,transparent,rgba(${c},.28))`
 }
 
@@ -921,32 +1152,71 @@ function patchShiftBar(eid) {
   const s=_shifts[eid]; if(!s) return
   const bar=document.querySelector(`.esc-shift-bar[data-eid="${eid}"]`); if(!bar) return
   bar.style.left=minToPct(s.start_min)+'%'; bar.style.width=durToPct(s.end_min-s.start_min)+'%'
-  const brk=bar.querySelector('.esc-break-ind')
-  if(brk){
-    const dur=s.end_min-s.start_min
-    const bl=(((s.break_start_min-s.start_min)/dur)*100).toFixed(4)
-    const bw=((s.break_duration_minutes/dur)*100).toFixed(4)
-    brk.style.left=bl+'%'; brk.style.width=bw+'%'
-    const lbl=brk.querySelector('.esc-break-label'); if(lbl) lbl.textContent=minToTime(s.break_start_min)
-  }
+
+  const dur=s.end_min-s.start_min
+  const rp=(t)=>((t-s.start_min)/dur*100).toFixed(4)
+  const rd=(d)=>(d/dur*100).toFixed(4)
+  const breakEnd=s.break_start_min+s.break_duration_minutes
+  const sb1=s.small_break_1_min, sb2=s.small_break_2_min
+
   const st=bar.querySelector('.esc-start-time'); if(st) st.textContent=minToTime(s.start_min)
   const en=bar.querySelector('.esc-end-time');   if(en) en.textContent=minToTime(s.end_min)
-  const s1=bar.querySelector('.esc-seg-before'),s2=bar.querySelector('.esc-seg-after')
-  if(brk&&s1&&s2){
-    const dur=s.end_min-s.start_min
-    const blf=(s.break_start_min-s.start_min)/dur*100
-    const bwf=s.break_duration_minutes/dur*100
-    s1.style.width=blf.toFixed(4)+'%'; s1.textContent=durLabel(s.break_start_min-s.start_min)
-    s2.style.left=(blf+bwf).toFixed(4)+'%'; s2.textContent=durLabel(s.end_min-(s.break_start_min+s.break_duration_minutes))
+
+  /* Main break */
+  const brk=bar.querySelector('.esc-break-ind:not(.esc-small-break)')
+  if(brk){
+    brk.style.left=rp(s.break_start_min)+'%'; brk.style.width=rd(s.break_duration_minutes)+'%'
+    const lbl=brk.querySelector('.esc-break-label'); if(lbl) lbl.textContent=minToTime(s.break_start_min)
   }
+
+  /* Pre-break shadow */
+  const shadow=bar.querySelector('.esc-pre-break-shadow')
+  if(shadow){ shadow.style.left=rp(s.break_start_min-30)+'%'; shadow.style.width=rd(30)+'%' }
+
+  if(sb1!==null&&sb2!==null){
+    /* Small break 1 */
+    const sb1El=bar.querySelector('.esc-small-break:first-of-type,.esc-small-break[data-drag="sb1"],[data-drag="sb1"]')
+    if(sb1El){ sb1El.style.left=rp(sb1)+'%'; sb1El.style.width=rd(15)+'%'; const l=sb1El.querySelector('.esc-break-label'); if(l) l.textContent=minToTime(sb1) }
+    /* Small break 2 */
+    const sb2El=bar.querySelector('[data-drag="sb2"]')
+    if(sb2El){ sb2El.style.left=rp(sb2)+'%'; sb2El.style.width=rd(15)+'%'; const l=sb2El.querySelector('.esc-break-label'); if(l) l.textContent=minToTime(sb2) }
+    /* 4 segment labels */
+    const segs=[...bar.querySelectorAll('.esc-seg-label')]
+    if(segs[0]){ segs[0].style.width=rp(sb1)+'%'; segs[0].textContent=durLabel(sb1-s.start_min) }
+    if(segs[1]){ segs[1].style.left=rp(sb1+15)+'%'; segs[1].style.width=(rp(s.break_start_min)-rp(sb1+15))+'%'; segs[1].textContent=durLabel(s.break_start_min-(sb1+15)) }
+    if(segs[2]){ segs[2].style.left=rp(breakEnd)+'%'; segs[2].style.width=(rp(sb2)-rp(breakEnd))+'%'; segs[2].textContent=durLabel(sb2-breakEnd) }
+    if(segs[3]){ segs[3].style.left=rp(sb2+15)+'%'; segs[3].textContent=durLabel(s.end_min-(sb2+15)) }
+  } else {
+    /* Fallback 2-segment layout */
+    const segs=[...bar.querySelectorAll('.esc-seg-label')]
+    const blf=(s.break_start_min-s.start_min)/dur*100, bwf=s.break_duration_minutes/dur*100
+    if(segs[0]){ segs[0].style.width=blf.toFixed(4)+'%'; segs[0].textContent=durLabel(s.break_start_min-s.start_min) }
+    if(segs[1]){ segs[1].style.left=(blf+bwf).toFixed(4)+'%'; segs[1].textContent=durLabel(s.end_min-breakEnd) }
+  }
+
+  // Fade start-time when SB1 (or main break if no SBs) gets close to the left edge
+  requestAnimationFrame(() => {
+    if(!bar.isConnected) return
+    const st  = bar.querySelector('.esc-start-time')
+    const sb1 = bar.querySelector('[data-drag="sb1"]') ?? bar.querySelector('.esc-break-ind:not(.esc-small-break)')
+    if(!st||!sb1) return
+    const stR  = st.getBoundingClientRect()
+    const sb1R = sb1.getBoundingClientRect()
+    st.style.opacity = sb1R.left <= stR.right + 72 ? '0' : '1'
+  })
 }
 
 function refreshAvailRow() {
   /* Grand-total row (excludes sector subtotal slots) */
+  const allIds = _employees.map(e => e.id)
   document.querySelectorAll('#esc-avail-grid .esc-avail-slot').forEach((el, i) => {
-    const count = calcAvail(GRID_START + i * SLOT_MIN), total = _employees.length
-    const hue = total ? Math.round(count / total * 140) : 45
-    el.textContent = count; el.style.background = `hsl(${hue},48%,78%)`; el.style.color = `hsl(${hue},55%,38%)`
+    const sm    = GRID_START + i * SLOT_MIN
+    const count = calcAvail(sm), total = _employees.length
+    const pre   = calcPreBreakForGroup(sm, allIds)
+    const hue   = total ? Math.round(count / total * 140) : 45
+    el.classList.toggle('has-prebreak', pre > 0)
+    el.innerHTML = slotInner(count, pre)
+    el.style.background = `hsl(${hue},48%,78%)`; el.style.color = `hsl(${hue},55%,38%)`
   })
 
   /* Per-sector subtotal rows */
@@ -955,10 +1225,13 @@ function refreshAvailRow() {
     const empIds = emps.map(e => e.id)
     document.querySelectorAll(`.esc-sector-avail-slot[data-sector-id="${sector.id}"]`).forEach(el => {
       const slot  = parseInt(el.dataset.slot)
-      const count = calcAvailForGroup(GRID_START + slot * SLOT_MIN, empIds)
+      const sm    = GRID_START + slot * SLOT_MIN
+      const count = calcAvailForGroup(sm, empIds)
+      const pre   = calcPreBreakForGroup(sm, empIds)
       const total = emps.length
       const hue   = total ? Math.round(count / total * 120) : 45
-      el.textContent = count
+      el.classList.toggle('has-prebreak', pre > 0)
+      el.innerHTML = slotInner(count, pre)
       el.style.background = `hsl(${hue},38%,85%)`
       el.style.color      = `hsl(${hue},50%,30%)`
     })
@@ -1001,10 +1274,12 @@ async function saveOneEmployee(eid) {
   closeConfirmModal()
   const setAsDefault = $e('esc-set-default')?.checked ?? false
   const payload = {
-    start_time:  minToTime(s.start_min)+':00',
-    end_time:    minToTime(s.end_min)+':00',
-    break_start: minToTime(s.break_start_min)+':00',
-    validated:   true,
+    start_time:         minToTime(s.start_min)+':00',
+    end_time:           minToTime(s.end_min)+':00',
+    break_start:        minToTime(s.break_start_min)+':00',
+    small_break_1_start: s.small_break_1_min !== null ? minToTime(s.small_break_1_min)+':00' : null,
+    small_break_2_start: s.small_break_2_min !== null ? minToTime(s.small_break_2_min)+':00' : null,
+    validated:          true,
     updated_by: _user.id, updated_at: new Date().toISOString(),
   }
   let error
@@ -1037,6 +1312,8 @@ async function saveOneEmployee(eid) {
   if (error) { toast.error('Erro ao salvar', error.message); return }
   _shifts[eid] = { ..._shifts[eid], validated: true }
   _origShifts[eid] = { ..._shifts[eid] }
+  _sbNatural[eid]    = { sb1: _shifts[eid].small_break_1_min, sb2: _shifts[eid].small_break_2_min }
+  _breakNatural[eid] = _shifts[eid].break_start_min
   _dirty.delete(eid); markRowClean(eid)
   // Remove unvalidated glow/tooltip from DOM immediately
   const bar = document.querySelector(`.esc-shift-bar[data-eid="${eid}"]`)
@@ -1048,7 +1325,8 @@ async function saveOneEmployee(eid) {
 
 function discardOneEmployee(eid) {
   const orig=_origShifts[eid]; if(!orig) return
-  _shifts[eid]={...orig}; _dirty.delete(eid); markRowClean(eid)
+  _shifts[eid]={...orig}; _sbNatural[eid]={ sb1: orig.small_break_1_min, sb2: orig.small_break_2_min }; _breakNatural[eid]=orig.break_start_min
+  _dirty.delete(eid); markRowClean(eid)
   patchShiftBar(eid); refreshAvailRow()
   if(_dirty.size===0) hideSaveBar(); toast.success('Alteração descartada.')
 }
@@ -1064,10 +1342,12 @@ async function saveChanges() {
     const results = await Promise.all([..._dirty].map(eid => {
       const s = _shifts[eid]
       const payload = {
-        start_time:  minToTime(s.start_min)+':00',
-        end_time:    minToTime(s.end_min)+':00',
-        break_start: minToTime(s.break_start_min)+':00',
-        validated:   true,
+        start_time:          minToTime(s.start_min)+':00',
+        end_time:            minToTime(s.end_min)+':00',
+        break_start:         minToTime(s.break_start_min)+':00',
+        small_break_1_start: s.small_break_1_min !== null ? minToTime(s.small_break_1_min)+':00' : null,
+        small_break_2_start: s.small_break_2_min !== null ? minToTime(s.small_break_2_min)+':00' : null,
+        validated:           true,
         updated_by: _user.id, updated_at: new Date().toISOString(),
       }
       if (setAsDefault) {
