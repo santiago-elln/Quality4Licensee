@@ -671,6 +671,9 @@ function renderGrid() {
       <div id="esc-emp-rows">${empRowsHtml}</div>
     </div>`
   renderMetricOverlay()
+  requestAnimationFrame(() => {
+    document.querySelectorAll('.esc-shift-bar').forEach(fadeStartTime)
+  })
 }
 
 // ─── Metric overlay ───────────────────────────────────────────────────────────
@@ -1148,6 +1151,18 @@ function updateGhostGradient(ghost,type,eid) {
   ghost.style.background=delta>0?`linear-gradient(to right,rgba(${c},.28),transparent)`:`linear-gradient(to right,transparent,rgba(${c},.28))`
 }
 
+function fadeStartTime(bar) {
+  requestAnimationFrame(() => {
+    if(!bar.isConnected) return
+    const st  = bar.querySelector('.esc-start-time')
+    const sb1 = bar.querySelector('[data-drag="sb1"]') ?? bar.querySelector('.esc-break-ind:not(.esc-small-break)')
+    if(!st||!sb1) return
+    const stR  = st.getBoundingClientRect()
+    const sb1R = sb1.getBoundingClientRect()
+    st.style.opacity = sb1R.left <= stR.right + 72 ? '0' : '1'
+  })
+}
+
 function patchShiftBar(eid) {
   const s=_shifts[eid]; if(!s) return
   const bar=document.querySelector(`.esc-shift-bar[data-eid="${eid}"]`); if(!bar) return
@@ -1195,15 +1210,7 @@ function patchShiftBar(eid) {
   }
 
   // Fade start-time when SB1 (or main break if no SBs) gets close to the left edge
-  requestAnimationFrame(() => {
-    if(!bar.isConnected) return
-    const st  = bar.querySelector('.esc-start-time')
-    const sb1 = bar.querySelector('[data-drag="sb1"]') ?? bar.querySelector('.esc-break-ind:not(.esc-small-break)')
-    if(!st||!sb1) return
-    const stR  = st.getBoundingClientRect()
-    const sb1R = sb1.getBoundingClientRect()
-    st.style.opacity = sb1R.left <= stR.right + 72 ? '0' : '1'
-  })
+  fadeStartTime(bar)
 }
 
 function refreshAvailRow() {
