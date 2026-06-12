@@ -1,3 +1,8 @@
 .env
+.env.local
+.env.*.local
 js/data/
+js/config.local.js
 .claude
+.DS_Store
+Thumbs.db

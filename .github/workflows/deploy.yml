@@ -26,12 +26,16 @@ jobs:
       - name: Inject secrets into config
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
-          VITE_SUPABASE_PUBLIC_KEY: ${{ secrets.VITE_SUPABASE_PUBLIC_KEY }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
         run: |
+          if [ -z "${VITE_SUPABASE_URL}" ] || [ -z "${SUPABASE_PUBLISHABLE_KEY}" ]; then
+            echo "ERROR: one or both secrets are empty. Set VITE_SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY in repository Settings → Secrets and variables → Actions."
+            exit 1
+          fi
           sed -i "s|__VITE_SUPABASE_URL__|${VITE_SUPABASE_URL}|g" quality-monitoring/js/config.js
-          sed -i "s|__VITE_SUPABASE_PUBLIC_KEY__|${VITE_SUPABASE_PUBLIC_KEY}|g" quality-monitoring/js/config.js
+          sed -i "s|__SUPABASE_PUBLISHABLE_KEY__|${SUPABASE_PUBLISHABLE_KEY}|g" quality-monitoring/js/config.js
           if grep -q "__VITE_" quality-monitoring/js/config.js; then
-            echo "ERROR: placeholders not replaced — check VITE_SUPABASE_URL and VITE_SUPABASE_PUBLIC_KEY are set in repository secrets."
+            echo "ERROR: placeholders still present after substitution — check secret names match exactly."
             exit 1
           fi
 
