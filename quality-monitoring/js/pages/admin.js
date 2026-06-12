@@ -1719,37 +1719,21 @@ async function absorbUser() {
   const btn = document.getElementById('absorb-confirm');
   if (btn) { btn.disabled = true; btn.textContent = 'Absorvendo…'; }
 
-  /* Resolve sector → sector_group → department for profile fields */
+  /* Resolve sector → team → sector_group → department */
   const { data: sectorRow } = await supabase
     .from('sectors')
-    .select('id, sector_group_id, sector_groups(department_id)')
+    .select('id, team_id, teams(sector_group_id, sector_groups(department_id))')
     .eq('id', sectorId)
     .single();
-  const sectorGroupId = sectorRow?.sector_group_id ?? null;
-  const departmentId  = sectorRow?.sector_groups?.department_id ?? null;
-
-  /* Upsert profile — auth users coming from the unlinked tab have no profile yet */
-  const { error: profError } = await supabase.from('profiles').upsert({
-    id:             authUser.id,
-    name:           authUser.name,
-    role:           'colaborador',
-    access_level:   2,
-    sector_id:      sectorId,
-    sector_group_id: sectorGroupId,
-    department_id:  departmentId,
-    filter_by:      'supervisor',
-  }, { onConflict: 'id' });
-  if (profError) {
-    toast.error('Erro ao criar perfil', profError.message);
-    if (btn) { btn.disabled = false; btn.textContent = 'Absorver'; }
-    return;
-  }
+  const sectorGroupId = sectorRow?.teams?.sector_group_id ?? null;
+  const departmentId  = sectorRow?.teams?.sector_groups?.department_id ?? null;
 
   const { error } = await supabase.from('employees').insert({
-    id:        authUser.id,
-    name:      authUser.name,
-    sector_id: sectorId,
-    active:    true,
+    id:             authUser.id,
+    name:           authUser.name,
+    sector_id:      sectorId,
+    sector_group_id: sectorGroupId,
+    active:         true,
   });
 
   if (error) {
