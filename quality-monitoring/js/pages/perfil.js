@@ -190,7 +190,9 @@ export function render() {
             </div>
             <div>
               <div class="profile-hero__name">${_scopeLabel}</div>
-              <div class="profile-hero__meta">${subtitle}</div>
+              ${isIndividualView
+                ? `<div class="profile-hero__meta">${subtitle}</div>`
+                : `<a href="#consulta" class="profile-hero__meta">${subtitle}</a>`}
             </div>
           </div>
           <div class="profile-hero__filters">
@@ -288,8 +290,7 @@ export function render() {
                     ${o.criteriaName ? `<div class="obs-log-item__criteria">${o.criteriaName}</div>` : ''}
                     <div class="obs-log-item__text">${o.content}</div>
                     <div class="obs-log-item__meta">
-                      ${o.monDate ? formatDate(o.monDate) : ''}
-                      ${o.protocol ? ` · Prot. ${o.protocol}` : ''}
+                      ${!isIndividualView && o.employeeName ? `${o.employeeName} · ` : ''}${o.monDate ? formatDate(o.monDate) : ''}${o.protocol ? ` · Prot. ${o.protocol}` : ''}
                     </div>
                   </div>
                 </div>`).join('')
@@ -589,15 +590,18 @@ export async function init() {
       .in('monitoring_id', monIds)
       .order('id', { ascending: false })
       .limit(60);
+    const empNameMap = Object.fromEntries(_employees.map(e => [e.id, e.name]));
     _obsLog = (obsData ?? []).map(o => {
       const typeInfo = OBS_TYPE[o.observation_type?.code] ?? OBS_TYPE.default;
+      const empId    = monEmpMap[o.monitoring_id] ?? null;
       return {
         code:         typeInfo.code,
         criteriaName: o.eval_criteria?.name ?? null,
         content:      o.content ?? '',
         protocol:     o.service_chat?.protocol ?? null,
         monDate:      monDateMap[o.monitoring_id] ?? null,
-        employeeId:   monEmpMap[o.monitoring_id]  ?? null,
+        employeeId:   empId,
+        employeeName: empId ? (empNameMap[empId] ?? null) : null,
       };
     });
   }
