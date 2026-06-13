@@ -1,6 +1,6 @@
 .env
-.env.local
-.env.*.local
+.env
+.env
 js/data/
 js/config.local.js
 .claude

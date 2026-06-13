@@ -1983,11 +1983,20 @@ async function inviteUser() {
     return;
   }
 
-  const { data: existingInvite } = await supabase
-    .from('user_invitations').select('id').ilike('email', emailLower).maybeSingle();
+  const { data: hasAccount } = await supabase.rpc('email_has_account', { lookup_email: emailLower });
+  if (hasAccount) {
+    toast.warning('E-mail já cadastrado', 'Este e-mail já possui uma conta ativa no sistema.');
+    if (btn) { btn.disabled = false; btn.textContent = 'Convidar'; }
+    return;
+  }
 
-  if (existingInvite) {
-    toast.warning('Convite duplicado', 'Este e-mail já foi convidado anteriormente.');
+  const cooldownCutoff = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+  const { data: recentInvite } = await supabase
+    .from('user_invitations').select('id').ilike('email', emailLower)
+    .gte('created_at', cooldownCutoff).maybeSingle();
+
+  if (recentInvite) {
+    toast.warning('Convite duplicado', 'Um convite já foi enviado para este e-mail. Verifique o e-mail e caixa de spam, ou aguarde um pouco antes de tentar enviar novamente.');
     if (btn) { btn.disabled = false; btn.textContent = 'Convidar'; }
     return;
   }
@@ -2006,6 +2015,9 @@ async function inviteUser() {
     return;
   }
 
+  await supabase.from('user_invitations').insert({ email: emailLower, name });
+
+  if (btn) { btn.disabled = false; btn.textContent = 'Convidar'; }
   closeInviteModal();
   toast.success('Convite enviado', `Um e-mail de convite foi enviado para ${emailLower}.`);
 }
