@@ -1155,7 +1155,7 @@ function fadeStartTime(bar) {
   requestAnimationFrame(() => {
     if(!bar.isConnected) return
     const st  = bar.querySelector('.esc-start-time')
-    const sb1 = bar.querySelector('[data-drag="sb1"]') ?? bar.querySelector('.esc-break-ind:not(.esc-small-break)')
+    const sb1 = bar.querySelector('[data-drag="sb1"]') ?? bar.querySelector('.esc-break-ind.esc-small-break') ?? bar.querySelector('.esc-break-ind')
     if(!st||!sb1) return
     const stR  = st.getBoundingClientRect()
     const sb1R = sb1.getBoundingClientRect()
