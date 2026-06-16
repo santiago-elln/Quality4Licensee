@@ -68,6 +68,8 @@
 .role-badge--admin       { background: #1a2332; color: var(--brand-green-bright); }
 .role-badge--sysowner    { background: #000000; color: #facc15; }
 .role-badge--vip         { background: #cdffd6; color: #00da53; }
+.role-badge.org-role-edit-btn { cursor: pointer; outline-offset: 2px; }
+.role-badge.org-role-edit-btn:hover { filter: brightness(0.92); }
 
 /* Insight tags (profile page) */
 .insight-tag {

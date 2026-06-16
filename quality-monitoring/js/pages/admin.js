@@ -41,6 +41,7 @@ let _deactivationTarget  = null; // { profileId, name } — employee pending dea
 let _teamSupervisorTarget   = null; // { teamId, teamName }
 let _teamSupervisorProfiles = [];
 let _teamDeactivateTarget   = null; // { teamId, teamName, memberCount }
+let _roleEditTarget         = null; // { profileId, name }
 
 /* ── Donut color palette ──────────────────── */
 const EC_COLORS = [
@@ -1140,6 +1141,7 @@ function renderOrgTab(user) {
 
   const { department, teams, managers, emailMap, transfers = [] } = _orgData;
   const canSetLevel = can(currentUser, P.ADMIN_SET_ACCESS_LEVEL);
+  const canManage   = can(currentUser, P.ADMIN_CREATE_GROUPS);
   const myId        = currentUser?.id;
   const myLevel     = currentUser?.accessLevel ?? 0;
   const myTeams     = currentUser?.supervisedTeamIds ?? [];
@@ -1177,7 +1179,8 @@ function renderOrgTab(user) {
           <div class="org-node__name">${u.name}</div>
           <div class="org-node__meta">${u.role ?? '—'}${isSelf ? ' (você)' : ''}${emailMap[u.id] ? `<span class="org-node__email">${emailMap[u.id]}</span>` : ''}</div>
         </div>
-        <span class="role-badge role-badge--${roleClass(u.role)}">${u.role ?? '—'}</span>
+        <span class="role-badge role-badge--${roleClass(u.role)}${canManage && !isSelf ? ' org-role-edit-btn' : ''}"
+              ${canManage && !isSelf ? `data-id="${u.id}" data-name="${u.name.replace(/"/g,'&quot;')}" data-role="${u.role ?? ''}" title="Clique para alterar cargo"` : ''}>${u.role ?? '—'}</span>
         ${showStep ? levelStepper(u.id, u.access_level, u.name, false) : ''}
       </div></div>`;
   }).join('');
@@ -1396,6 +1399,40 @@ function renderOrgTab(user) {
         <div class="modal__footer">
           <button class="btn btn--ghost" id="transfer-req-cancel" type="button">Cancelar</button>
           <button class="btn btn--primary" id="transfer-req-confirm" type="button">Solicitar transferência</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Role edit modal -->
+    <div id="role-edit-modal" class="modal-overlay modal-overlay--hidden">
+      <div class="modal modal--sm">
+        <div class="modal__header">
+          <div class="modal__title">Alterar Cargo</div>
+          <button class="modal__close" id="role-edit-close" type="button">✕</button>
+        </div>
+        <div class="modal__body">
+          <p id="role-edit-msg" style="font-size:var(--text-sm);color:var(--text-secondary);margin-bottom:var(--space-4)"></p>
+          <div class="form-group" style="margin-bottom:0">
+            <label class="form-label">Cargo <span style="color:var(--error)">*</span></label>
+            <select id="role-edit-select" class="form-select">
+              <option value="">— selecione —</option>
+              <option value="colaborador">Colaborador</option>
+              <option value="supervisor">Supervisor</option>
+              <option value="supervisora">Supervisora</option>
+              <option value="analista">Analista</option>
+              <option value="gestor">Gestor</option>
+              <option value="gestora">Gestora</option>
+              <option value="coordenador">Coordenador</option>
+              <option value="coordenadora">Coordenadora</option>
+              <option value="admin">Admin</option>
+              <option value="sysowner">SysOwner</option>
+              <option value="VIP">VIP</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal__footer">
+          <button class="btn btn--ghost" id="role-edit-cancel" type="button">Cancelar</button>
+          <button class="btn btn--primary" id="role-edit-confirm" type="button">Salvar</button>
         </div>
       </div>
     </div>
@@ -2105,6 +2142,46 @@ function closeTeamDeactivateModal() {
   _teamDeactivateTarget = null;
 }
 
+/* ── Role edit modal ──────────────────────── */
+function openRoleEditModal(profileId, name, currentRole) {
+  _roleEditTarget = { profileId, name };
+  const msg = document.getElementById('role-edit-msg');
+  if (msg) msg.innerHTML = `Selecione o cargo de <strong>${name}</strong>.`;
+  const sel = document.getElementById('role-edit-select');
+  if (sel) sel.value = currentRole ?? '';
+  document.getElementById('role-edit-modal')?.classList.remove('modal-overlay--hidden');
+}
+
+function closeRoleEditModal() {
+  document.getElementById('role-edit-modal')?.classList.add('modal-overlay--hidden');
+  _roleEditTarget = null;
+}
+
+async function submitRoleEdit() {
+  if (!_roleEditTarget) return;
+  const { profileId, name } = _roleEditTarget;
+  const role = document.getElementById('role-edit-select')?.value;
+  if (!role) { toast.warning('Atenção', 'Selecione um cargo.'); return; }
+
+  const btn = document.getElementById('role-edit-confirm');
+  if (btn) { btn.disabled = true; btn.textContent = 'Salvando…'; }
+
+  const { error } = await supabase.from('profiles').update({ role }).eq('id', profileId);
+  if (error) {
+    toast.error('Erro ao alterar cargo', error.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Salvar'; }
+    return;
+  }
+
+  if (btn) { btn.disabled = false; btn.textContent = 'Salvar'; }
+  closeRoleEditModal();
+  toast.success('Cargo atualizado', `${name} agora é ${role}.`);
+  _orgData = null;
+  await loadOrgTabData();
+  document.getElementById('admin-tab-content').innerHTML = renderTab('org', getCurrentUser());
+  bindTabEvents();
+}
+
 async function confirmTeamDeactivate() {
   if (!_teamDeactivateTarget) return;
   const { teamId, teamName } = _teamDeactivateTarget;
@@ -2301,6 +2378,17 @@ function bindTabEvents() {
   document.getElementById('team-deactivate-modal')?.addEventListener('click',
     e => { if (e.target.id === 'team-deactivate-modal') closeTeamDeactivateModal(); });
   document.getElementById('team-deact-confirm')?.addEventListener('click', confirmTeamDeactivate);
+
+  /* ── Org tab — role edit ── */
+  document.querySelectorAll('.org-role-edit-btn').forEach(badge => {
+    badge.addEventListener('click', () =>
+      openRoleEditModal(badge.dataset.id, badge.dataset.name, badge.dataset.role));
+  });
+  document.getElementById('role-edit-close')?.addEventListener('click', closeRoleEditModal);
+  document.getElementById('role-edit-cancel')?.addEventListener('click', closeRoleEditModal);
+  document.getElementById('role-edit-modal')?.addEventListener('click',
+    e => { if (e.target.id === 'role-edit-modal') closeRoleEditModal(); });
+  document.getElementById('role-edit-confirm')?.addEventListener('click', submitRoleEdit);
 
   /* ── Org tab — new sector ── */
   document.getElementById('btn-new-sector')?.addEventListener('click', openNewSectorModal);
