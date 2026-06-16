@@ -143,13 +143,18 @@ export function roleName(accessLevel) {
 
 export function roleClass(role) {
   const map = {
-    sysowner: 'sysowner',
-    admin: 'admin',
-    coordenador: 'coordenador',
-    gestor: 'gestor',
-    analista: 'analista',
-    supervisor: 'supervisor',
-    colaborador: 'colaborador',
+    sysowner:     'sysowner',
+    admin:        'admin',
+    coordenador:  'coordenador',
+    coordenadora: 'coordenador',
+    gestor:       'gestor',
+    gestora:      'gestor',
+    analista:     'analista',
+    supervisor:   'supervisor',
+    supervisora:  'supervisor',
+    colaborador:  'colaborador',
+    vip:          'vip',
   };
-  return map[role?.toLowerCase()] ?? 'colaborador';
+  return (typeof role === 'string' ? map[role.toLowerCase()] : undefined) ?? 'colaborador';
 }
+

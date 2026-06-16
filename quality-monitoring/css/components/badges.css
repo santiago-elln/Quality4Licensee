@@ -66,6 +66,8 @@
 .role-badge--supervisor  { background: #fef3c7; color: #92400e; }
 .role-badge--colaborador { background: #f3f4f6; color: #374151; }
 .role-badge--admin       { background: #1a2332; color: var(--brand-green-bright); }
+.role-badge--sysowner    { background: #000000; color: #facc15; }
+.role-badge--vip         { background: #cdffd6; color: #00da53; }
 
 /* Insight tags (profile page) */
 .insight-tag {

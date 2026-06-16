@@ -1517,7 +1517,6 @@ async function applyLevelChanges() {
         const { error: e2 } = await supabase.from('profiles').upsert({
           id:              profileId,
           name:            empName,
-          role:            roleClass(newLevel),
           access_level:    newLevel,
           filter_by:       newLevel === 3 ? 'supervisor' : 'department',
           shifts_filter_by: newLevel === 3 ? 'group' : 'department',
