@@ -448,7 +448,7 @@ async function fetchDetail(monId) {
       service_chat(id, protocol, service_time, first_response_time, max_response_time, csat),
       topic_approval(obtained, topic:topic_id(id, item, points, eval_criteria_id)),
       monitoring_observation(
-        id, content,
+        id, content, eval_criteria_id,
         observation_type(code),
         eval_criteria(name),
         service_chat(protocol)
@@ -537,13 +537,18 @@ function renderDetail(data, rowData) {
   const obsHtml = (data.monitoring_observation ?? []).map(o => {
     const t = OBS[o.observation_type?.code] ?? OBS.default;
     return `
-      <div style="padding:var(--space-2) 0;border-bottom:1px solid var(--border-light);font-size:var(--text-xs)">
+      <div class="ro-obs-item"
+           data-obs-id="${o.id}"
+           data-obs-type-code="${o.observation_type?.code ?? 'default'}"
+           data-obs-criteria-id="${o.eval_criteria_id ?? ''}"
+           style="padding:var(--space-2) 0;border-bottom:1px solid var(--border-light);font-size:var(--text-xs)">
         <div style="display:flex;gap:var(--space-2);align-items:center;margin-bottom:2px">
-          <span style="font-weight:700;color:${t.color}">${t.label}</span>
-          ${o.eval_criteria?.name ? `<span style="color:var(--text-tertiary)">· ${o.eval_criteria.name}</span>` : ''}
+          <span class="ro-obs-type-label" style="font-weight:700;color:${t.color}">${t.label}</span>
+          <span class="ro-obs-criteria-name" style="color:var(--text-tertiary)">${o.eval_criteria?.name ? `· ${o.eval_criteria.name}` : ''}</span>
           ${o.service_chat?.protocol ? `<span style="color:var(--text-tertiary);font-family:var(--font-mono)">· ${o.service_chat.protocol}</span>` : ''}
+          ${canEditObs ? `<button class="ro-obs-delete-btn" style="margin-left:auto;background:none;border:none;cursor:pointer;color:var(--text-tertiary);padding:0 4px;line-height:1;font-size:13px" title="Excluir observação">✕</button>` : ''}
         </div>
-        <div>${o.content}</div>
+        <div class="ro-obs-content"${canEditObs ? ` style="cursor:pointer" title="Clique para editar"` : ''}>${o.content}</div>
       </div>`;
   }).join('') || `<div data-obs-empty style="color:var(--text-tertiary);font-size:var(--text-xs)">Nenhuma observação</div>`;
 
@@ -662,6 +667,22 @@ async function toggleDetail(monId, btn) {
       document.getElementById(`ro-obs-save-${monId}`)?.addEventListener('click', () =>
         saveNewObservation(monId, ref)
       );
+
+      /* Obs edit / delete */
+      const obsList = document.getElementById(`ro-obs-list-${monId}`);
+      obsList?.addEventListener('click', e => {
+        const delBtn = e.target.closest('.ro-obs-delete-btn');
+        if (delBtn) {
+          const item = delBtn.closest('.ro-obs-item');
+          if (item) openDeleteObsModal(item.dataset.obsId, item);
+          return;
+        }
+        const content = e.target.closest('.ro-obs-content');
+        if (content) {
+          const item = content.closest('.ro-obs-item');
+          if (item) openEditObsModal(item, monId, ref);
+        }
+      });
     });
     document.getElementById(`ro-add-sc-btn-${monId}`)?.addEventListener('click', () =>
       openAddScModal(monId, data.employee_id)
@@ -1200,15 +1221,28 @@ async function saveNewObservation(monId, ref) {
     const criteriaText = criteriaEl?.value
       ? (criteriaEl.options[criteriaEl.selectedIndex]?.text ?? '') : '';
 
+    const { data: newObsRow } = await supabase
+      .from('monitoring_observation')
+      .select('id, eval_criteria_id, observation_type(code)')
+      .eq('monitoring_id', monId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
     const bubble = document.createElement('div');
+    bubble.className = 'ro-obs-item';
+    bubble.dataset.obsId = newObsRow?.id ?? '';
+    bubble.dataset.obsTypeCode = newObsRow?.observation_type?.code ?? 'default';
+    bubble.dataset.obsCriteriaId = newObsRow?.eval_criteria_id ?? '';
     bubble.style.cssText = 'padding:var(--space-2) 0;border-bottom:1px solid var(--border-light);font-size:var(--text-xs)';
     bubble.innerHTML = `
       <div style="display:flex;gap:var(--space-2);align-items:center;margin-bottom:2px">
-        <span style="font-weight:700;color:${t.color}">${t.label}</span>
-        ${criteriaText ? `<span style="color:var(--text-tertiary)">· ${criteriaText}</span>` : ''}
-        ${protoText    ? `<span style="color:var(--text-tertiary);font-family:var(--font-mono)">· ${protoText}</span>` : ''}
+        <span class="ro-obs-type-label" style="font-weight:700;color:${t.color}">${t.label}</span>
+        <span class="ro-obs-criteria-name" style="color:var(--text-tertiary)">${criteriaText ? `· ${criteriaText}` : ''}</span>
+        ${protoText ? `<span style="color:var(--text-tertiary);font-family:var(--font-mono)">· ${protoText}</span>` : ''}
+        <button class="ro-obs-delete-btn" style="margin-left:auto;background:none;border:none;cursor:pointer;color:var(--text-tertiary);padding:0 4px;line-height:1;font-size:13px" title="Excluir observação">✕</button>
       </div>
-      <div>${text}</div>`;
+      <div class="ro-obs-content" style="cursor:pointer" title="Clique para editar">${text}</div>`;
     bubble.animate(
       [{ opacity: 0, transform: 'translateY(-6px)' }, { opacity: 1, transform: 'translateY(0)' }],
       { duration: 200, easing: 'ease', fill: 'forwards' }
@@ -1217,6 +1251,171 @@ async function saveNewObservation(monId, ref) {
   }
 
   toast.success('Observação adicionada');
+}
+
+/* ── Edit / delete observation ───────────── */
+const OBS_CODE_TO_KEY = { default: 'G', improvable_by: 'O', excelled_by: 'A', failed_by: 'E' };
+const OBS_KEY_TO_CODE = { G: 'default', O: 'improvable_by', A: 'excelled_by', E: 'failed_by' };
+const OBS_INFO_EDIT = {
+  G: { label: 'Geral',        color: 'var(--text-secondary)' },
+  O: { label: 'Oportunidade', color: '#2563eb' },
+  A: { label: 'Acerto',       color: 'var(--brand-green-dark)' },
+  E: { label: 'Erro',         color: 'var(--color-danger)' },
+};
+
+function openEditObsModal(obsEl, monId, ref) {
+  document.getElementById('ro-edit-obs-modal')?.remove();
+
+  const obsId          = obsEl.dataset.obsId;
+  const currentTypeKey = OBS_CODE_TO_KEY[obsEl.dataset.obsTypeCode] ?? 'G';
+  const currentCrId    = obsEl.dataset.obsCriteriaId ?? '';
+  const currentContent = obsEl.querySelector('.ro-obs-content')?.textContent ?? '';
+
+  const modal = document.createElement('div');
+  modal.id = 'ro-edit-obs-modal';
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="modal" style="max-width:480px">
+      <div class="modal__header">
+        <div class="modal__title">Editar Observação</div>
+        <button class="modal__close" id="ro-edit-obs-close">✕</button>
+      </div>
+      <div class="modal__body" style="display:flex;flex-direction:column;gap:var(--space-3)">
+        <div class="form-group" style="margin-bottom:0">
+          <label class="form-label">Tipo</label>
+          <select class="form-select" id="ro-edit-obs-type">
+            <option value="G"${currentTypeKey==='G'?' selected':''}>Genérico</option>
+            <option value="O"${currentTypeKey==='O'?' selected':''}>Oportunidade</option>
+            <option value="A"${currentTypeKey==='A'?' selected':''}>Acerto</option>
+            <option value="E"${currentTypeKey==='E'?' selected':''}>Erro</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label class="form-label">Critério</label>
+          <select class="form-select" id="ro-edit-obs-criteria">
+            <option value="">— nenhum —</option>
+            ${ref.evalCriteria.map(c => `<option value="${c.id}"${c.id===currentCrId?' selected':''}>${c.name}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label class="form-label">Observação <span class="required">*</span></label>
+          <textarea class="form-input" id="ro-edit-obs-text" rows="3"
+            style="resize:none;font-family:var(--font-sans)">${currentContent}</textarea>
+        </div>
+      </div>
+      <div class="modal__footer">
+        <button class="btn btn--ghost" id="ro-edit-obs-cancel">Cancelar</button>
+        <button class="btn btn--primary" id="ro-edit-obs-save">Salvar</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+
+  const close = () => modal.remove();
+  document.getElementById('ro-edit-obs-close')?.addEventListener('click', close);
+  document.getElementById('ro-edit-obs-cancel')?.addEventListener('click', close);
+  modal.addEventListener('click', e => { if (e.target === modal) close(); });
+  document.getElementById('ro-edit-obs-save')?.addEventListener('click', () =>
+    saveEditedObservation(obsId, obsEl, ref, close)
+  );
+}
+
+async function saveEditedObservation(obsId, obsEl, ref, close) {
+  const typeKey    = document.getElementById('ro-edit-obs-type')?.value ?? 'G';
+  const criteriaEl = document.getElementById('ro-edit-obs-criteria');
+  const criteriaId = criteriaEl?.value || null;
+  const text       = document.getElementById('ro-edit-obs-text')?.value.trim();
+  if (!text) { toast.warning('Atenção', 'Preencha a observação.'); return; }
+
+  const typeId = ref.obsTypeMap[typeKey] ?? null;
+  const btn    = document.getElementById('ro-edit-obs-save');
+  if (btn) { btn.disabled = true; btn.textContent = 'Salvando…'; }
+
+  const { error } = await supabase.from('monitoring_observation').update({
+    content:             text,
+    observation_type_id: typeId,
+    eval_criteria_id:    criteriaId,
+  }).eq('id', obsId);
+
+  if (error) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Salvar'; }
+    toast.error('Erro ao salvar', error.message);
+    return;
+  }
+
+  const t = OBS_INFO_EDIT[typeKey] ?? OBS_INFO_EDIT.G;
+  obsEl.dataset.obsTypeCode   = OBS_KEY_TO_CODE[typeKey] ?? 'default';
+  obsEl.dataset.obsCriteriaId = criteriaId ?? '';
+
+  const typeSpan = obsEl.querySelector('.ro-obs-type-label');
+  if (typeSpan) { typeSpan.textContent = t.label; typeSpan.style.color = t.color; }
+
+  const crSpan = obsEl.querySelector('.ro-obs-criteria-name');
+  if (crSpan) {
+    const crName = criteriaId ? (criteriaEl?.options[criteriaEl?.selectedIndex]?.text ?? '') : '';
+    crSpan.textContent = crName ? `· ${crName}` : '';
+  }
+
+  const contentEl = obsEl.querySelector('.ro-obs-content');
+  if (contentEl) contentEl.textContent = text;
+
+  close();
+  toast.success('Observação atualizada');
+}
+
+function openDeleteObsModal(obsId, obsEl) {
+  document.getElementById('ro-del-obs-modal')?.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'ro-del-obs-modal';
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="modal" style="max-width:380px">
+      <div class="modal__header">
+        <div class="modal__title">Excluir observação?</div>
+      </div>
+      <div class="modal__body">
+        <p style="color:var(--text-secondary);font-size:var(--text-sm)">Esta ação é irreversível.</p>
+      </div>
+      <div class="modal__footer" style="justify-content:flex-end">
+        <button class="btn btn--ghost" id="ro-del-obs-cancel">Cancelar</button>
+        <button class="btn" id="ro-del-obs-confirm"
+                style="background:var(--color-danger);color:#fff;border:none">Excluir</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+
+  const close = () => modal.remove();
+  document.getElementById('ro-del-obs-cancel')?.addEventListener('click', close);
+  modal.addEventListener('click', e => { if (e.target === modal) close(); });
+  document.getElementById('ro-del-obs-confirm')?.addEventListener('click', () =>
+    deleteObservation(obsId, obsEl, close)
+  );
+}
+
+async function deleteObservation(obsId, obsEl, close) {
+  const btn = document.getElementById('ro-del-obs-confirm');
+  if (btn) { btn.disabled = true; btn.textContent = 'Excluindo…'; }
+
+  const { error } = await supabase.from('monitoring_observation').delete().eq('id', obsId);
+
+  if (error) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Excluir'; }
+    toast.error('Erro ao excluir', error.message);
+    return;
+  }
+
+  close();
+  obsEl.animate(
+    [{ opacity: 1 }, { opacity: 0 }],
+    { duration: 180, easing: 'ease', fill: 'forwards' }
+  ).onfinish = () => {
+    const container = obsEl.closest('[id^="ro-obs-list-"]');
+    obsEl.remove();
+    if (container && !container.querySelector('.ro-obs-item')) {
+      container.innerHTML = `<div data-obs-empty style="color:var(--text-tertiary);font-size:var(--text-xs)">Nenhuma observação</div>`;
+    }
+  };
+  toast.success('Observação excluída');
 }
 
 /* ── init ─────────────────────────────────── */
