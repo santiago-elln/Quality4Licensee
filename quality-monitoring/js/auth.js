@@ -43,7 +43,8 @@ export async function setViewAsEmployee(employeeId) {
   const { data: employee } = await supabase
     .from('employees')
     .select('id, name')
-    .eq('auth_user_id', employeeId)
+    // employees.id = auth.users.id for user-linked records (see buildUser)
+    .eq('id', employeeId)
     .single();
 
   _viewAsUser = {
@@ -80,10 +81,11 @@ export async function setViewAs(employeeId) {
       .select('id')
       .eq('supervisor_id', employeeId)
       .eq('active', true),
+    // employees.id = auth.users.id for user-linked records (see buildUser)
     supabase
       .from('employees')
       .select('id, name')
-      .eq('auth_user_id', employeeId)
+      .eq('id', employeeId)
       .single(),
   ]);
 

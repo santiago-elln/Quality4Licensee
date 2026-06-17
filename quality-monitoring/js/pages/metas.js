@@ -91,9 +91,13 @@ async function fetchPlans() {
      target a scope I belong to".
 
      Two kinds of visibility:
-       · Manager scope  — supervisors see every plan within their supervised
-         teams (and the employees in them), regardless of emp_visible, because
-         they manage those plans.
+       · Manager scope  — a supervisor sees every plan targeting any level of
+         the hierarchy her teams roll up into, regardless of emp_visible:
+           - her supervised teams                 (action_plans scope_type 'team')
+           - the employees on those teams          (employees.team_id)
+           - the sector groups of those teams      (teams.sector_group_id)
+           - the sectors pointing at those teams   (sectors.team_id)
+           - her own department                    (profiles.department_id)
        · Member scope   — any user sees plans targeting a scope they belong to
          (their own record, team, sector, sector group, department), but only
          when the plan is marked visible to the collaborator (emp_visible). */
@@ -110,14 +114,29 @@ async function fetchPlans() {
           .eq('id', _currentUser.employeeId).maybeSingle()
       : Promise.resolve({ data: null });
 
-    /* Employees within supervised teams → the supervisor can see their plans. */
-    const teamEmpsPromise = teamIds.length
-      ? supabase.from('employees').select('id').eq('active', true).in('team_id', teamIds)
-      : Promise.resolve({ data: [] });
+    /* Resolve the full hierarchy reachable from the supervised teams so plans
+       scoped to a sector / sector group / department are surfaced too. */
+    const empty = Promise.resolve({ data: [] });
+    const [
+      { data: me },
+      { data: teamEmps },
+      { data: supTeams },
+      { data: supSectors },
+    ] = await Promise.all([
+      mePromise,
+      teamIds.length ? supabase.from('employees').select('id').eq('active', true).in('team_id', teamIds) : empty,
+      teamIds.length ? supabase.from('teams').select('sector_group_id').in('id', teamIds)                 : empty,
+      teamIds.length ? supabase.from('sectors').select('id').eq('active', true).in('team_id', teamIds)     : empty,
+    ]);
 
-    const [{ data: me }, { data: teamEmps }] = await Promise.all([mePromise, teamEmpsPromise]);
+    managerScope = new Set([
+      ...teamIds,
+      ...(teamEmps   ?? []).map(e => e.id),
+      ...(supSectors ?? []).map(s => s.id),
+      ...(supTeams   ?? []).map(t => t.sector_group_id).filter(Boolean),
+    ]);
+    if (teamIds.length && _currentUser?.departmentId) managerScope.add(_currentUser.departmentId);
 
-    managerScope = new Set([...teamIds, ...(teamEmps ?? []).map(e => e.id)]);
     const memberScope = me
       ? [me.id, me.team_id, me.sector_id, me.sector_group_id, me.department_id].filter(Boolean)
       : [];
