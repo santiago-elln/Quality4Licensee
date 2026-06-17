@@ -144,6 +144,11 @@ export function render() {
 
   const isIndividualView = !!_employeeId;
 
+  /* Back-to-team link only makes sense for users who actually have a team
+     scope to return to (supervisors or dept-wide), not a self-only employee. */
+  const canGoBack = isIndividualView &&
+    (can(_user, P.GLOBAL_VIEW_DEPT) || _user?.supervisedTeamIds?.length > 0);
+
   /* Subtitle: reflect filtered count */
   const subtitle = isIndividualView
     ? 'Colaborador'
@@ -166,7 +171,7 @@ export function render() {
       <div class="profile-hero">
         <div class="profile-hero__top profile-hero__top--team">
           <div class="profile-hero__team-info">
-            ${isIndividualView ? `
+            ${canGoBack ? `
             <a href="#perfil" class="profile-hero__back" title="Voltar à equipe">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                    stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
@@ -396,11 +401,16 @@ function bindFilters() {
 export async function init() {
   const user    = getCurrentUser();
   _user         = user;
-  _employeeId   = getRouteParams().id || null;
   const isGlobal = can(user, P.GLOBAL_VIEW_DEPT);
   const hasTeam  = user?.supervisedTeamIds?.length > 0;
 
-  if (!isGlobal && !hasTeam && !_employeeId) {
+  /* Plain employees (no supervised team, no dept-wide access) may only ever
+     see their own record. Pin the view to their own employee id and ignore
+     any route param so they can't view another colaborador via the URL. */
+  const isSelfOnly = !isGlobal && !hasTeam;
+  _employeeId = isSelfOnly ? (user?.employeeId ?? null) : (getRouteParams().id || null);
+
+  if (isSelfOnly && !_employeeId) {
     const main = document.getElementById('main-content');
     if (main) main.innerHTML = `
       <div class="page-enter"
@@ -501,7 +511,7 @@ export async function init() {
     .select('id, name, sector_id, sector_group_id')
     .eq('active', true)
     .order('name');
-  if (!isGlobal) empQuery = empQuery.in('team_id', user.supervisedTeamIds);
+  if (hasTeam && !isGlobal) empQuery = empQuery.in('team_id', user.supervisedTeamIds);
   if (_employeeId) empQuery = empQuery.eq('id', _employeeId);
 
   const [scopeLabel, { data: empData }] = await Promise.all([

@@ -64,14 +64,6 @@ const ACTIVE_TABLES = new Set(['departments', 'sectors', 'teams', 'employees', '
 /* ── Data fetch ───────────────────────────── */
 async function fetchPlans() {
   const globalScope = can(_currentUser, P.GLOBAL_VIEW_DEPT);
-  const teamIds     = globalScope ? null : (_currentUser?.supervisedTeamIds ?? []);
-
-  /* Non-global users with no teams: skip the DB round-trip */
-  if (!globalScope && !teamIds.length) {
-    _plans = [];
-    _scopeNames = {};
-    return;
-  }
 
   let query = supabase
     .from('action_plans')
@@ -93,21 +85,58 @@ async function fetchPlans() {
     .eq('active', true)
     .order('created_at', { ascending: false });
 
-  /* For non-global users, restrict to scope IDs within their teams.
-     RLS cannot do this because it always runs under the real authenticated JWT. */
+  /* For non-global users, restrict to the scope IDs they're allowed to see.
+     This must run in app code: RLS always runs under the real authenticated
+     JWT, so it can't express "plans within my supervised teams OR plans that
+     target a scope I belong to".
+
+     Two kinds of visibility:
+       · Manager scope  — supervisors see every plan within their supervised
+         teams (and the employees in them), regardless of emp_visible, because
+         they manage those plans.
+       · Member scope   — any user sees plans targeting a scope they belong to
+         (their own record, team, sector, sector group, department), but only
+         when the plan is marked visible to the collaborator (emp_visible). */
+  let managerScope = new Set();
   if (!globalScope) {
-    const { data: empRows } = await supabase
-      .from('employees').select('id').eq('active', true).in('team_id', teamIds);
-    const empIds = (empRows ?? []).map(e => e.id);
-    query = query.in('scope_id', [...teamIds, ...empIds]);
+    const teamIds = _currentUser?.supervisedTeamIds ?? [];
+
+    /* The current user's own memberships — own employee id + hierarchy FKs.
+       Read straight from employees so it works even for users with no profile
+       row (where _currentUser.sectorId/etc. are null). */
+    const mePromise = _currentUser?.employeeId
+      ? supabase.from('employees')
+          .select('id, team_id, sector_id, sector_group_id, department_id')
+          .eq('id', _currentUser.employeeId).maybeSingle()
+      : Promise.resolve({ data: null });
+
+    /* Employees within supervised teams → the supervisor can see their plans. */
+    const teamEmpsPromise = teamIds.length
+      ? supabase.from('employees').select('id').eq('active', true).in('team_id', teamIds)
+      : Promise.resolve({ data: [] });
+
+    const [{ data: me }, { data: teamEmps }] = await Promise.all([mePromise, teamEmpsPromise]);
+
+    managerScope = new Set([...teamIds, ...(teamEmps ?? []).map(e => e.id)]);
+    const memberScope = me
+      ? [me.id, me.team_id, me.sector_id, me.sector_group_id, me.department_id].filter(Boolean)
+      : [];
+
+    const allowed = [...new Set([...managerScope, ...memberScope])];
+    if (!allowed.length) { _plans = []; _scopeNames = {}; return; }
+    query = query.in('scope_id', allowed);
   }
 
   const { data, error } = await query;
   if (error) { console.error('[metas] fetch:', error); _plans = []; return; }
-  _plans = (data ?? []).map(p => ({
-    ...p,
-    action_steps: (p.action_steps ?? []).filter(s => s.active !== false),
-  }));
+  _plans = (data ?? [])
+    /* Member-scope plans only reach the collaborator when emp_visible; plans in
+       a manager's own scope are always shown; global users see everything. */
+    .filter(p => globalScope || managerScope.has(p.scope_id) || p.emp_visible)
+    .map(p => ({
+      ...p,
+      action_steps: (p.action_steps ?? []).filter(s => s.active !== false),
+    }));
   _scopeNames = await resolveScopeNames(_plans);
 }
 
