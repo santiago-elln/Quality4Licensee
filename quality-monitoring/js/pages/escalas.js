@@ -235,6 +235,7 @@ export function render() {
           <button class="esc-metric-btn" data-metric="tme">TME</button>
           <button class="esc-metric-btn" data-metric="tma">TMA</button>
           <button class="esc-metric-btn" data-metric="csat">CSAT</button>
+          <button class="esc-metric-btn" data-metric="vol">VOL</button>
         </div>
       </div>
       <div id="esc-sector-tabs" class="esc-sector-tabs"></div>
@@ -761,21 +762,23 @@ async function loadAllSectorMetrics() {
       }
       const sid=row.sector_id
       if(!groups[sid]) groups[sid]={}
-      if(!groups[sid][row.hour]) groups[sid][row.hour]={tme:[],tma:[],csat:[]}
+      if(!groups[sid][row.hour]) groups[sid][row.hour]={tme:[],tma:[],csat:[],vol:[]}
       if(row.tme!=null) groups[sid][row.hour].tme.push(row.tme)
       if(row.tma!=null) groups[sid][row.hour].tma.push(row.tma)
       if(row.csat!=null) groups[sid][row.hour].csat.push(row.csat)
+      if(row.volume!=null) groups[sid][row.hour].vol.push(row.volume)
     }
     const avg=arr=>arr.length?arr.reduce((a,b)=>a+b,0)/arr.length:0
     const result={}
     for(const [sid,hours] of Object.entries(groups)){
-      result[sid]={tme:Array(12).fill(0),tma:Array(12).fill(0),csat:Array(12).fill(0)}
+      result[sid]={tme:Array(12).fill(0),tma:Array(12).fill(0),csat:Array(12).fill(0),vol:Array(12).fill(0)}
       for(let h=8;h<=19;h++){
         const g=hours[h]; if(!g) continue
         const i=h-8
         result[sid].tme[i]=Math.round(avg(g.tme))
         result[sid].tma[i]=Math.round(avg(g.tma))
         result[sid].csat[i]=+avg(g.csat).toFixed(2)
+        result[sid].vol[i]=Math.round(avg(g.vol))
       }
     }
     return result
@@ -783,7 +786,7 @@ async function loadAllSectorMetrics() {
 
   /* Try the selected period first, filtered to target weekday */
   const {data,error}=await supabase.from('sector_metrics')
-    .select('sector_id,date,hour,tme,tma,csat')
+    .select('sector_id,date,hour,tme,tma,csat,volume')
     .in('sector_id',sectorIds)
     .gte('date',_selectedDateRange.from)
     .lte('date',_selectedDateRange.to)
@@ -802,7 +805,7 @@ async function loadAllSectorMetrics() {
   if(!latest?.date) return {}
 
   const {data:fbData,error:fbError}=await supabase.from('sector_metrics')
-    .select('sector_id,date,hour,tme,tma,csat')
+    .select('sector_id,date,hour,tme,tma,csat,volume')
     .in('sector_id',sectorIds)
     .eq('date',latest.date)
     .gte('hour',8).lte('hour',19)
@@ -814,12 +817,14 @@ async function loadAllSectorMetrics() {
 
 /* Average the per-sector metrics objects for a list of sector IDs into one combined object. */
 function mergeMetrics(allMetrics, sectorIds) {
-  const merged={tme:Array(12).fill(0),tma:Array(12).fill(0),csat:Array(12).fill(0)}
+  const merged={tme:Array(12).fill(0),tma:Array(12).fill(0),csat:Array(12).fill(0),vol:Array(12).fill(0)}
   let count=0
   for(const sid of sectorIds){
     const m=allMetrics[sid]; if(!m) continue
     count++
-    for(let i=0;i<12;i++){merged.tme[i]+=m.tme[i];merged.tma[i]+=m.tma[i];merged.csat[i]+=m.csat[i]}
+    /* tme/tma/csat are rates → averaged across sectors below; vol is a customer
+       count → summed across the group's sectors (not divided). */
+    for(let i=0;i<12;i++){merged.tme[i]+=m.tme[i];merged.tma[i]+=m.tma[i];merged.csat[i]+=m.csat[i];merged.vol[i]+=m.vol[i]}
   }
   if(!count) return null
   if(count>1) for(let i=0;i<12;i++){
@@ -833,11 +838,12 @@ function mergeMetrics(allMetrics, sectorIds) {
 function attachMetricOverlay(containerEl, metrics, totalH, overlayId) {
   const rowH=parseInt(getComputedStyle(document.documentElement).getPropertyValue('--esc-row-h'))||38
   const maxH=totalH-rowH*0.02
-  const tmeMax=Math.max(...metrics.tme,1), tmaMax=Math.max(...metrics.tma,1)
+  const tmeMax=Math.max(...metrics.tme,1), tmaMax=Math.max(...metrics.tma,1), volMax=Math.max(...metrics.vol,1)
   const cfg={
     tme: {data:metrics.tme, pxPerUnit:maxH/tmeMax,   rgb:'59,130,246',  label:'TME',  fmt:v=>fmtSec(v)},
     tma: {data:metrics.tma, pxPerUnit:maxH/tmaMax,   rgb:'139,92,246',  label:'TMA',  fmt:v=>fmtSec(v)},
     csat:{data:metrics.csat,pxPerUnit:totalH,          rgb:'245,158,11', label:'CSAT', fmt:v=>Math.round(v*100)+'pp'},
+    vol: {data:metrics.vol, pxPerUnit:maxH/volMax,   rgb:'16,185,129',  label:'VOL',  fmt:v=>`${v} cli/h`},
   }
   const overlay=document.createElement('div')
   if(overlayId) overlay.id=overlayId

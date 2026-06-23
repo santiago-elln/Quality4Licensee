@@ -117,6 +117,7 @@
 .esc-metric-btn.active[data-metric="tme"]  { background: #dbeafe; color: #1d4ed8; border-color: #93c5fd; }
 .esc-metric-btn.active[data-metric="tma"]  { background: #ede9fe; color: #6d28d9; border-color: #c4b5fd; }
 .esc-metric-btn.active[data-metric="csat"] { background: #fef3c7; color: #b45309; border-color: #fcd34d; }
+.esc-metric-btn.active[data-metric="vol"]  { background: #d1fae5; color: #047857; border-color: #6ee7b7; }
 
 .esc-metrics-warn {
   display: none;
@@ -326,6 +327,7 @@
 .esc-mt-label.esc-mt-tme  { background: rgba(59,130,246,.22); color: #93c5fd; }
 .esc-mt-label.esc-mt-tma  { background: rgba(139,92,246,.22); color: #c4b5fd; }
 .esc-mt-label.esc-mt-csat { background: rgba(245,158,11,.22); color: #fcd34d; }
+.esc-mt-label.esc-mt-vol  { background: rgba(16,185,129,.22); color: #6ee7b7; }
 .esc-mt-value { font-size: 13px; font-weight: 700; color: white; }
 
 /* ─── Employee rows ───────────────────────────────────────── */
