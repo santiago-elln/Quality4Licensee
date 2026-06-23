@@ -746,48 +746,68 @@ function aggregateHourlyMetrics(rows) {
 
 
 async function loadAllSectorMetrics() {
-  if(!_deptSectors.length||!_selectedDateRange.from) return {}
-  const sectorIds=_deptSectors.map(s=>s.id)
+  if(!_sectorGroups.length||!_selectedDateRange.from) return {}
+  const groupIds=_sectorGroups.map(g=>g.id)
+  const SELECT='sector_group_id,sector_id,date,hour,tme,tma,csat,volume'
 
   /* Weekday of the display date (local time) */
   const [y,mo,d]=_selectedDate.split('-').map(Number)
   const targetWeekday=new Date(y,mo-1,d).getDay()
 
+  /* Aggregate rows → { sectorGroupId: combinedSeries }. Metrics are now keyed
+     on sector_group; a group may carry a single shared series (sector_id NULL)
+     or one series per sector (sector_id set). Two levels:
+       1. average each (group, sector) sub-series across the matching days;
+       2. combine a group's sub-series into one — rates averaged, volume summed
+          (a group's hourly volume is the sum of its sectors). */
   const aggregate=(rows, weekdayFilter)=>{
-    const groups={}
+    const buckets={}  // gid → sectorKey → hour → {tme,tma,csat,vol}[]
     for(const row of rows){
       if(weekdayFilter!=null){
         const [ry,rm,rd]=row.date.split('-').map(Number)
         if(new Date(ry,rm-1,rd).getDay()!==weekdayFilter) continue
       }
-      const sid=row.sector_id
-      if(!groups[sid]) groups[sid]={}
-      if(!groups[sid][row.hour]) groups[sid][row.hour]={tme:[],tma:[],csat:[],vol:[]}
-      if(row.tme!=null) groups[sid][row.hour].tme.push(row.tme)
-      if(row.tma!=null) groups[sid][row.hour].tma.push(row.tma)
-      if(row.csat!=null) groups[sid][row.hour].csat.push(row.csat)
-      if(row.volume!=null) groups[sid][row.hour].vol.push(row.volume)
+      const gid=row.sector_group_id, sk=row.sector_id ?? '∅'
+      if(!buckets[gid]) buckets[gid]={}
+      if(!buckets[gid][sk]) buckets[gid][sk]={}
+      if(!buckets[gid][sk][row.hour]) buckets[gid][sk][row.hour]={tme:[],tma:[],csat:[],vol:[]}
+      const b=buckets[gid][sk][row.hour]
+      if(row.tme!=null) b.tme.push(row.tme)
+      if(row.tma!=null) b.tma.push(row.tma)
+      if(row.csat!=null) b.csat.push(row.csat)
+      if(row.volume!=null) b.vol.push(row.volume)
     }
     const avg=arr=>arr.length?arr.reduce((a,b)=>a+b,0)/arr.length:0
     const result={}
-    for(const [sid,hours] of Object.entries(groups)){
-      result[sid]={tme:Array(12).fill(0),tma:Array(12).fill(0),csat:Array(12).fill(0),vol:Array(12).fill(0)}
-      for(let h=8;h<=19;h++){
-        const g=hours[h]; if(!g) continue
-        const i=h-8
-        result[sid].tme[i]=Math.round(avg(g.tme))
-        result[sid].tma[i]=Math.round(avg(g.tma))
-        result[sid].csat[i]=+avg(g.csat).toFixed(2)
-        result[sid].vol[i]=Math.round(avg(g.vol))
+    for(const [gid,sectors] of Object.entries(buckets)){
+      /* (1) per-(group,sector) series, averaged across days */
+      const subs=Object.values(sectors).map(hours=>{
+        const s={tme:Array(12).fill(0),tma:Array(12).fill(0),csat:Array(12).fill(0),vol:Array(12).fill(0)}
+        for(let h=8;h<=19;h++){
+          const g=hours[h]; if(!g) continue
+          const i=h-8
+          s.tme[i]=Math.round(avg(g.tme)); s.tma[i]=Math.round(avg(g.tma))
+          s.csat[i]=+avg(g.csat).toFixed(2); s.vol[i]=Math.round(avg(g.vol))
+        }
+        return s
+      })
+      /* (2) combine sub-series: rates averaged, volume summed */
+      const merged={tme:Array(12).fill(0),tma:Array(12).fill(0),csat:Array(12).fill(0),vol:Array(12).fill(0)}
+      for(const s of subs) for(let i=0;i<12;i++){merged.tme[i]+=s.tme[i];merged.tma[i]+=s.tma[i];merged.csat[i]+=s.csat[i];merged.vol[i]+=s.vol[i]}
+      if(subs.length>1) for(let i=0;i<12;i++){
+        merged.tme[i]=Math.round(merged.tme[i]/subs.length)
+        merged.tma[i]=Math.round(merged.tma[i]/subs.length)
+        merged.csat[i]=+(merged.csat[i]/subs.length).toFixed(2)
       }
+      result[gid]=merged
     }
     return result
   }
 
   /* Try the selected period first, filtered to target weekday */
   const {data,error}=await supabase.from('sector_metrics')
-    .select('sector_id,date,hour,tme,tma,csat,volume')
-    .in('sector_id',sectorIds)
+    .select(SELECT)
+    .in('sector_group_id',groupIds)
     .gte('date',_selectedDateRange.from)
     .lte('date',_selectedDateRange.to)
     .gte('hour',8).lte('hour',19)
@@ -800,13 +820,13 @@ async function loadAllSectorMetrics() {
 
   /* Fallback: latest available date, no weekday filter */
   const {data:latest}=await supabase.from('sector_metrics')
-    .select('date').in('sector_id',sectorIds)
+    .select('date').in('sector_group_id',groupIds)
     .order('date',{ascending:false}).limit(1).single()
   if(!latest?.date) return {}
 
   const {data:fbData,error:fbError}=await supabase.from('sector_metrics')
-    .select('sector_id,date,hour,tme,tma,csat,volume')
-    .in('sector_id',sectorIds)
+    .select(SELECT)
+    .in('sector_group_id',groupIds)
     .eq('date',latest.date)
     .gte('hour',8).lte('hour',19)
   if(fbError||!fbData?.length) return {}
@@ -815,7 +835,8 @@ async function loadAllSectorMetrics() {
   return aggregate(fbData, null)  // no weekday filter on fallback
 }
 
-/* Average the per-sector metrics objects for a list of sector IDs into one combined object. */
+/* Combine several metric series (looked up by key) into one: rates averaged,
+   volume summed. Used to fold multiple sector_groups into a single overlay. */
 function mergeMetrics(allMetrics, sectorIds) {
   const merged={tme:Array(12).fill(0),tma:Array(12).fill(0),csat:Array(12).fill(0),vol:Array(12).fill(0)}
   let count=0
@@ -877,8 +898,7 @@ async function renderSectorMetricOverlays() {
     const emps=_employees.filter(e=>e.sector_group_id===group.id)
     if(!emps.length) continue
 
-    const groupSectorIds=[...new Set(emps.map(e=>e.sector_id).filter(Boolean))]
-    const metrics=mergeMetrics(allMetrics, groupSectorIds)
+    const metrics=allMetrics[group.id]
     if(!metrics) continue
 
     attachMetricOverlay(rowsEl, metrics, emps.length*rowH, group.id)
@@ -891,17 +911,17 @@ async function renderMetricOverlay() {
   hideMetricTooltip(); hideMetricsWarn()
   if(_viewMode!=='analysis'||!_activeMetrics.size||!$e('esc-emp-rows')) return
 
-  /* Per-sector overlays for global mode */
-  if(can(_user, P.GLOBAL_VIEW_DEPT) && _deptSectors.length > 1) {
+  /* Per-group overlays when the grid is split into sector_group sections
+     (those .esc-sector-rows wrappers only exist when _sectorGroups.length > 1) */
+  if(can(_user, P.GLOBAL_VIEW_DEPT) && _sectorGroups.length > 1) {
     await renderSectorMetricOverlays()
     return
   }
 
-  /* Single overlay (supervisor mode — one sector_group, no esc-sector-rows wrappers in DOM) */
+  /* Single combined overlay (one sector_group section in the DOM) */
   const allMetrics=await loadAllSectorMetrics()
   if(_viewMode!=='analysis'||!_activeMetrics.size) return
-  const sectorIds=_deptSectors.map(s=>s.id)
-  const metricsData=mergeMetrics(allMetrics, sectorIds)
+  const metricsData=mergeMetrics(allMetrics, _sectorGroups.map(g=>g.id))
   if(!metricsData) return
   const empRowsEl=$e('esc-emp-rows'); if(!empRowsEl) return
   const rowH=parseInt(getComputedStyle(document.documentElement).getPropertyValue('--esc-row-h'))||38
@@ -1282,6 +1302,11 @@ function markRowClean(eid){
   document.querySelector(`.esc-shift-bar[data-eid="${eid}"]`)?.classList.remove('esc-dirty-bar')
 }
 
+/* An RLS-filtered UPDATE returns 0 rows with NO error (the row is invisible to
+   the user under the policy's USING clause), so a permission problem can look
+   like a successful save. We detect that via count:'exact' and surface it. */
+const SAVE_DENIED_MSG = 'Sem permissão para salvar, ou nenhum registro foi alterado.'
+
 async function saveOneEmployee(eid) {
   const s = _shifts[eid]; if (!s) return
   closeConfirmModal()
@@ -1298,7 +1323,9 @@ async function saveOneEmployee(eid) {
   let error
   if (setAsDefault) {
     if (s.default_shift_id) {
-      ;({ error } = await supabase.from('shifts').update(payload).eq('id', s.default_shift_id))
+      const { error: e, count } = await supabase.from('shifts')
+        .update(payload, { count: 'exact' }).eq('id', s.default_shift_id)
+      error = e ?? (count ? null : { message: SAVE_DENIED_MSG })
     } else {
       const { data: inserted, error: err } = await supabase.from('shifts')
         .insert({ ...payload, employee_id: eid, is_default: true, date: null,
@@ -1311,7 +1338,9 @@ async function saveOneEmployee(eid) {
     if (!error) delete _defaultShiftCache[eid]  // invalidate so next load re-fetches
   } else {
     if (s.date_shift_id) {
-      ;({ error } = await supabase.from('shifts').update(payload).eq('id', s.date_shift_id))
+      const { error: e, count } = await supabase.from('shifts')
+        .update(payload, { count: 'exact' }).eq('id', s.date_shift_id)
+      error = e ?? (count ? null : { message: SAVE_DENIED_MSG })
     } else {
       const { data: inserted, error: err } = await supabase.from('shifts')
         .insert({ ...payload, employee_id: eid, date: _selectedDate, is_default: false,
@@ -1363,22 +1392,25 @@ async function saveChanges() {
         validated:           true,
         updated_by: _user.id, updated_at: new Date().toISOString(),
       }
+      /* count:'exact' so an RLS-filtered no-op (0 rows, no error) is detected
+         as a failure instead of masquerading as a successful save. */
       if (setAsDefault) {
         /* Update or insert the employee's default shift */
         return s.default_shift_id
-          ? supabase.from('shifts').update(payload).eq('id', s.default_shift_id)
+          ? supabase.from('shifts').update(payload, { count: 'exact' }).eq('id', s.default_shift_id)
           : supabase.from('shifts').insert({ ...payload, employee_id: eid,
-              is_default: true, date: null, break_duration_minutes: s.break_duration_minutes })
+              is_default: true, date: null, break_duration_minutes: s.break_duration_minutes }, { count: 'exact' })
       } else {
         /* Update or insert a date-specific shift for the selected date */
         return s.date_shift_id
-          ? supabase.from('shifts').update(payload).eq('id', s.date_shift_id)
+          ? supabase.from('shifts').update(payload, { count: 'exact' }).eq('id', s.date_shift_id)
           : supabase.from('shifts').insert({ ...payload, employee_id: eid,
-              is_default: false, date: _selectedDate, break_duration_minutes: s.break_duration_minutes })
+              is_default: false, date: _selectedDate, break_duration_minutes: s.break_duration_minutes }, { count: 'exact' })
       }
     }))
-    const failed = results.filter(r => r.error)
-    if (failed.length) throw new Error(failed[0].error.message)
+    /* A write with no error but 0 rows affected = RLS denied it silently. */
+    const failed = results.filter(r => r.error || !r.count)
+    if (failed.length) throw new Error(failed.find(r => r.error)?.error?.message ?? SAVE_DENIED_MSG)
     /* Invalidate cache for any employees whose default was just written */
     if (setAsDefault) for (const eid of _dirty) delete _defaultShiftCache[eid]
     _dirty.clear(); hideSaveBar()

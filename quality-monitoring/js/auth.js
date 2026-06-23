@@ -42,8 +42,10 @@ export function clearViewAs() {
 export async function setViewAsEmployee(employeeId) {
   const { data: employee } = await supabase
     .from('employees')
-    .select('id, name')
-    // employees.id = auth.users.id for user-linked records (see buildUser)
+    // employees.id = auth.users.id for user-linked records (see buildUser).
+    // Pull the org membership so the impersonated collaborator is scoped to
+    // their real sector/group/department (pages like escalas filter on these).
+    .select('id, name, sector_id, sector_group_id, department_id')
     .eq('id', employeeId)
     .single();
 
@@ -54,10 +56,10 @@ export async function setViewAsEmployee(employeeId) {
     role:              null,
     accessLevel:       2,
     isClaimed:         true,
-    employeeId:        employee?.id ?? null,
-    departmentId:      null,
-    sectorId:          null,
-    sectorGroupId:     null,
+    employeeId:        employee?.id              ?? null,
+    departmentId:      employee?.department_id   ?? null,
+    sectorId:          employee?.sector_id       ?? null,
+    sectorGroupId:     employee?.sector_group_id ?? null,
     filterBy:          null,
     shiftsFilterBy:    null,
     supervisedTeamIds: [],
