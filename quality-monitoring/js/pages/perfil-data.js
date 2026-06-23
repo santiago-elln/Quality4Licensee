@@ -205,9 +205,10 @@ export async function loadEmployeeData({ employees, since, canViewObs }) {
 }
 
 /* ── Render fragment: hero stats row ───────────────── */
-/* csatOverride: pass a number/null to display that CSAT instead of deriving it
-   from the monitorings (used by teams.js when a sector_group reads CSAT from an
-   external source). Leave undefined to compute from `mons` as usual. */
+/* csatOverride: pass { pct, nps } to source the survey metrics externally
+   (used by teams.js for sector_groups whose CSAT/NPS come from Firestore) — CSAT
+   renders as a top-2-box percentage and an NPS card is added. Leave undefined to
+   derive CSAT from `mons` (star average), as perfil does. */
 export function statsBlock(mons, empCount, csatOverride) {
   const count    = mons.length;
   const avgPct   = count ? Math.round(mons.reduce((s, m) => s + m.pct, 0) / count) : 0;
@@ -216,9 +217,22 @@ export function statsBlock(mons, empCount, csatOverride) {
   const computedCsat = csatVals.length
     ? Math.round(csatVals.reduce((a, b) => a + b, 0) / csatVals.length * 10) / 10
     : null;
-  const avgCsat = csatOverride === undefined ? computedCsat : csatOverride;
+
+  /* External (Firestore) source: csatOverride is { pct, nps } — CSAT is shown as
+     a top-2-box percentage and an NPS card is added. Otherwise CSAT is the
+     monitoring-derived average shown in stars (default; used by perfil). */
+  const external = csatOverride !== undefined && csatOverride !== null;
+  const csatHtml = external
+    ? (csatOverride.pct != null ? `${csatOverride.pct}%` : '—')
+    : (computedCsat ? `${computedCsat} ★` : '—');
+  const csatLbl = external ? 'CSAT' : 'CSAT médio';
+  const npsCard = external ? `
+      <div class="profile-stat">
+        <div class="profile-stat__val" id="hero-nps-stat">${csatOverride.nps != null ? csatOverride.nps + '%' : '—'}</div>
+        <div class="profile-stat__lbl">NPS</div>
+      </div>` : '';
   return `
-    <div class="profile-hero__stats">
+    <div class="profile-hero__stats${external ? ' profile-hero__stats--6' : ''}">
       <div class="profile-stat">
         <div class="profile-stat__val">${count}</div>
         <div class="profile-stat__lbl">Monitorias</div>
@@ -228,9 +242,10 @@ export function statsBlock(mons, empCount, csatOverride) {
         <div class="profile-stat__lbl">Aproveit. médio</div>
       </div>
       <div class="profile-stat">
-        <div class="profile-stat__val" id="hero-csat-stat">${avgCsat ? avgCsat + ' ★' : '—'}</div>
-        <div class="profile-stat__lbl">CSAT médio</div>
+        <div class="profile-stat__val" id="hero-csat-stat">${csatHtml}</div>
+        <div class="profile-stat__lbl">${csatLbl}</div>
       </div>
+      ${npsCard}
       <div class="profile-stat">
         <div class="profile-stat__val" style="color:${zeroed > 0 ? 'var(--color-danger)' : 'inherit'}">${zeroed}</div>
         <div class="profile-stat__lbl">Zeradas</div>

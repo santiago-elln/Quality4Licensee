@@ -36,7 +36,7 @@ let _analyticalNoteTypes = [];
    (fe484ccb-2b8f-48b5-a23c-d5135e8c3abe); other groups will migrate later.
    Only privileged viewers (global / multi-team managers) read this source. */
 const EXEC_SG_ID = 'fe484ccb-2b8f-48b5-a23c-d5135e8c3abe';
-let _firestoreCsat    = null;  // number | null — avg CSAT over current window
+let _firestoreStats   = null;  // { pct, nps } | null — survey metrics for the window
 let _firestoreCsatKey = null;  // `${from}|${to}` the cached value belongs to
 
 /* Team-view data cache */
@@ -100,7 +100,7 @@ export function render() {
      async fetch for this window lands (maybeLoadFirestoreCsat patches it in);
      `undefined` keeps the normal Supabase-derived value for everyone else. */
   const csatOverride = viewerUsesFirestoreCsat(_user)
-    ? (_firestoreCsatKey === `${_dateFrom}|${_dateTo}` ? _firestoreCsat : null)
+    ? (_firestoreCsatKey === `${_dateFrom}|${_dateTo}` ? _firestoreStats : { pct: null, nps: null })
     : undefined;
 
   return `
@@ -174,17 +174,25 @@ async function maybeLoadFirestoreCsat() {
     });
     if (error) throw error;
 
-    const vals = (data?.records ?? []).map(r => Number(r.csat)).filter(v => v > 0);
-    const avg  = vals.length
-      ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length * 10) / 10
-      : null;
+    const recs = data?.records ?? [];
+    /* CSAT = % of responses rating 4 or 5 (top-2-box). */
+    const csatResp = recs.filter(r => Number(r.csat) >= 1 && Number(r.csat) <= 5);
+    const top2     = csatResp.filter(r => Number(r.csat) >= 4).length;
+    const pct      = csatResp.length ? Math.round(top2 / csatResp.length * 100) : null;
+    /* NPS = (promoters[9–10] − detractors[0–6]) / total, as a −100…100 score. */
+    const npsResp    = recs.filter(r => Number.isFinite(Number(r.nps)));
+    const promoters  = npsResp.filter(r => Number(r.nps) >= 9).length;
+    const detractors = npsResp.filter(r => Number(r.nps) <= 6).length;
+    const nps        = npsResp.length ? Math.round((promoters - detractors) / npsResp.length * 100) : null;
 
     /* Drop the result if the window changed while the request was in flight. */
     if (`${_dateFrom}|${_dateTo}` !== key) return;
-    _firestoreCsat    = avg;
+    _firestoreStats   = { pct, nps };
     _firestoreCsatKey = key;
-    const el = document.getElementById('hero-csat-stat');
-    if (el) el.textContent = avg ? `${avg} ★` : '—';
+    const csatEl = document.getElementById('hero-csat-stat');
+    if (csatEl) csatEl.textContent = pct != null ? `${pct}%` : '—';
+    const npsEl = document.getElementById('hero-nps-stat');
+    if (npsEl) npsEl.textContent = nps != null ? `${nps}%` : '—';
   } catch (err) {
     console.error('[teams] firestore CSAT:', err);
   }
@@ -245,7 +253,7 @@ export async function init() {
   _obsLog              = [];
   _analyticalNoteTypes = [];
   _scopeLabel          = '';
-  _firestoreCsat       = null;
+  _firestoreStats      = null;
   _firestoreCsatKey    = null;
   _calPicker?.destroy();
   _calPicker = null;

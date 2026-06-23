@@ -218,6 +218,8 @@
   grid-template-columns: repeat(5, 1fr);
   border-top: 1px solid var(--border);
 }
+/* External source (Firestore) adds an NPS card → 6 stats in one row. */
+.profile-hero__stats--6 { grid-template-columns: repeat(6, 1fr); }
 .profile-stat {
   padding: var(--space-4) var(--space-5);
   border-right: 1px solid var(--border-light);
