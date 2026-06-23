@@ -49,6 +49,7 @@ const ICONS = {
   'consulta':        'mag-glass.png',
   'registros':       'sheet.png',
   'perfil':          'user.png',
+  'teams':           'user.png',
   'escalas':         'shifts.png',
   'admin':           'gear.png',
 };
@@ -112,7 +113,13 @@ function buildNav(user, item, sep) {
     can(user, P.SIDEBAR_NEW_MONITORING) && item('nova-monitoria', 'Nova Monitoria',  'nova-monitoria'),
     can(user, P.SIDEBAR_CONSULT)        && item('consulta',       'Consulta',         'consulta'),
     can(user, P.SIDEBAR_RECORDS)        && item('registros',      'Registros',        'registros'),
-    can(user, P.SIDEBAR_PROFILE)        && item('perfil', 'Perfil', 'perfil', user.employeeId ? { id: user.employeeId } : null),
+    can(user, P.SIDEBAR_PROFILE) && (
+      /* Staff (dept-wide or supervises a team) get the team aggregate;
+         a plain colaborador gets their own individual profile. */
+      (can(user, P.GLOBAL_VIEW_DEPT) || user?.supervisedTeamIds?.length > 0)
+        ? item('teams', 'Equipe', 'teams')
+        : item('perfil', 'Perfil', 'perfil', user.employeeId ? { id: user.employeeId } : null)
+    ),
   ].filter(Boolean).join('');
 
   const analiseItems = [

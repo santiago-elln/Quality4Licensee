@@ -18,6 +18,7 @@ import * as DashboardPage        from './pages/dashboard.js';
 import * as NovaMonitoriaPage    from './pages/nova-monitoria.js';
 import * as ConsultaPage         from './pages/consulta.js';
 import * as PerfilPage           from './pages/perfil.js';
+import * as TeamsPage            from './pages/teams.js';
 import * as RegistrosPage        from './pages/registros.js';
 import * as AIPage               from './pages/ai-analise.js';
 import * as AdminPage            from './pages/admin.js';
@@ -84,6 +85,7 @@ const PAGE_MAP = new Map([
   ['nova-monitoria',   NovaMonitoriaPage],
   ['consulta',         ConsultaPage],
   ['perfil',           PerfilPage],
+  ['teams',            TeamsPage],
   ['registros',        RegistrosPage],
   ['ai-analise',       AIPage],
   ['admin',            AdminPage],
@@ -162,6 +164,7 @@ async function bootstrap() {
     ['consulta',        P.SIDEBAR_CONSULT],
     ['registros',       P.SIDEBAR_RECORDS],
     ['perfil',          P.SIDEBAR_PROFILE],
+    ['teams',           P.SIDEBAR_PROFILE],
     ['dashboard',       P.SIDEBAR_DASHBOARD],
     ['comparacao',      P.SIDEBAR_COMPARATIVE],
     ['ai-analise',      P.SIDEBAR_AI],
