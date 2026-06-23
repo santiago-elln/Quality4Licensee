@@ -1,5 +1,7 @@
 .env
 db/
+docs/
+/supabase
 js/data/
 js/config.local.js
 .claude

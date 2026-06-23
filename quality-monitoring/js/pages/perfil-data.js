@@ -205,14 +205,18 @@ export async function loadEmployeeData({ employees, since, canViewObs }) {
 }
 
 /* ── Render fragment: hero stats row ───────────────── */
-export function statsBlock(mons, empCount) {
+/* csatOverride: pass a number/null to display that CSAT instead of deriving it
+   from the monitorings (used by teams.js when a sector_group reads CSAT from an
+   external source). Leave undefined to compute from `mons` as usual. */
+export function statsBlock(mons, empCount, csatOverride) {
   const count    = mons.length;
   const avgPct   = count ? Math.round(mons.reduce((s, m) => s + m.pct, 0) / count) : 0;
   const zeroed   = mons.filter(m => m.zeroed).length;
   const csatVals = mons.filter(m => m.avgCsat).map(m => m.avgCsat);
-  const avgCsat  = csatVals.length
+  const computedCsat = csatVals.length
     ? Math.round(csatVals.reduce((a, b) => a + b, 0) / csatVals.length * 10) / 10
     : null;
+  const avgCsat = csatOverride === undefined ? computedCsat : csatOverride;
   return `
     <div class="profile-hero__stats">
       <div class="profile-stat">
@@ -224,7 +228,7 @@ export function statsBlock(mons, empCount) {
         <div class="profile-stat__lbl">Aproveit. médio</div>
       </div>
       <div class="profile-stat">
-        <div class="profile-stat__val">${avgCsat ? avgCsat + ' ★' : '—'}</div>
+        <div class="profile-stat__val" id="hero-csat-stat">${avgCsat ? avgCsat + ' ★' : '—'}</div>
         <div class="profile-stat__lbl">CSAT médio</div>
       </div>
       <div class="profile-stat">

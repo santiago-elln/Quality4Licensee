@@ -31,12 +31,26 @@ let _monNoteTypes        = new Map();
 let _obsLog              = [];
 let _analyticalNoteTypes = [];
 
+/* CSAT sourced from Firestore `responses` (via the csat-responses edge fn).
+   The collection currently represents sector_group "Executivos & Acima"
+   (fe484ccb-2b8f-48b5-a23c-d5135e8c3abe); other groups will migrate later.
+   Only privileged viewers (global / multi-team managers) read this source. */
+const EXEC_SG_ID = 'fe484ccb-2b8f-48b5-a23c-d5135e8c3abe';
+let _firestoreCsat    = null;  // number | null — avg CSAT over current window
+let _firestoreCsatKey = null;  // `${from}|${to}` the cached value belongs to
+
 /* Team-view data cache */
 let _teamCache = null;
 const TEAM_CACHE_TTL = 5 * 60 * 1000; // 5 min
 
 function isStaff(user) {
   return can(user, P.GLOBAL_VIEW_DEPT) || (user?.supervisedTeamIds?.length > 0);
+}
+
+/* Which viewers read CSAT from Firestore instead of Supabase:
+   department-wide viewers and anyone who manages at least one team. */
+function viewerUsesFirestoreCsat(user) {
+  return can(user, P.GLOBAL_VIEW_DEPT) || (user?.supervisedTeamIds?.length >= 1);
 }
 
 /* ── computeFiltered (sector + date) ────────── */
@@ -82,6 +96,13 @@ export function render() {
   const filteredEmpIds = new Set(emps.map(e => e.id));
   const filteredObs = _obsLog.filter(o => !o.employeeId || filteredEmpIds.has(o.employeeId));
 
+  /* CSAT override: privileged viewers read it from Firestore. `null` until the
+     async fetch for this window lands (maybeLoadFirestoreCsat patches it in);
+     `undefined` keeps the normal Supabase-derived value for everyone else. */
+  const csatOverride = viewerUsesFirestoreCsat(_user)
+    ? (_firestoreCsatKey === `${_dateFrom}|${_dateTo}` ? _firestoreCsat : null)
+    : undefined;
+
   return `
     <div class="profile-page page-enter">
       <!-- Hero -->
@@ -111,7 +132,7 @@ export function render() {
             ${calTriggerHtml('prof-date-picker', _dateFrom, _dateTo)}
           </div>
         </div>
-        ${statsBlock(mons, emps.length)}
+        ${statsBlock(mons, emps.length, csatOverride)}
       </div>
 
       ${chartsRow(catBreakdown, _analyticalNoteTypes)}
@@ -136,6 +157,37 @@ function reloadPage() {
     radarLabel: 'Equipe',
   });
   bindFilters();
+  maybeLoadFirestoreCsat();
+}
+
+/* ── Firestore CSAT (Executivos & Acima) ─────────
+   Fetch the survey CSAT for the current date window and patch the hero stat
+   in place. Gated to privileged viewers; cached per window to avoid refetch. */
+async function maybeLoadFirestoreCsat() {
+  if (!viewerUsesFirestoreCsat(_user)) return;
+  const key = `${_dateFrom}|${_dateTo}`;
+  if (_firestoreCsatKey === key) return;  // already loaded for this window
+
+  try {
+    const { data, error } = await supabase.functions.invoke('csat-responses', {
+      body: { from: _dateFrom, to: _dateTo },
+    });
+    if (error) throw error;
+
+    const vals = (data?.records ?? []).map(r => Number(r.csat)).filter(v => v > 0);
+    const avg  = vals.length
+      ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length * 10) / 10
+      : null;
+
+    /* Drop the result if the window changed while the request was in flight. */
+    if (`${_dateFrom}|${_dateTo}` !== key) return;
+    _firestoreCsat    = avg;
+    _firestoreCsatKey = key;
+    const el = document.getElementById('hero-csat-stat');
+    if (el) el.textContent = avg ? `${avg} ★` : '—';
+  } catch (err) {
+    console.error('[teams] firestore CSAT:', err);
+  }
 }
 
 /* ── bindFilters ────────────────────────────── */
@@ -193,6 +245,8 @@ export async function init() {
   _obsLog              = [];
   _analyticalNoteTypes = [];
   _scopeLabel          = '';
+  _firestoreCsat       = null;
+  _firestoreCsatKey    = null;
   _calPicker?.destroy();
   _calPicker = null;
 
