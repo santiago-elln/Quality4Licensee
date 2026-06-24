@@ -36,6 +36,7 @@ export const P = Object.freeze({
   ADMIN_GLOBAL_VIEW:       'Admin.hasGlobalView',
   ADMIN_SET_ACCESS_LEVEL:  'Admin.canSetAccessLevel',
   ADMIN_INVITE_USER:       'Admin.canInviteUser',
+  ADMIN_FILTER_DEPTS:      'Admin.canFilterDepts',
 
   /* Global */
   GLOBAL_VIEW_DEPT:      'Global.canViewDept',
@@ -74,6 +75,7 @@ export const PERMISSION_LABELS = Object.freeze({
   [P.ADMIN_GLOBAL_VIEW]:       'Admin — Visualizar departamento inteiro',
   [P.ADMIN_SET_ACCESS_LEVEL]:  'Admin — Alterar Nível de Acesso',
   [P.ADMIN_INVITE_USER]:       'Admin — Convidar Usuário',
+  [P.ADMIN_FILTER_DEPTS]:      'Admin — Filtrar por departamento (ver toda a organização)',
   [P.GLOBAL_VIEW_DEPT]:       'Global — Ver todo o departamento',
   [P.CROSS_DEPT_VIEW]:        'Global — Ver outros departamentos',
   [P.GLOBAL_VIEW_AS]:         'Global — Visualizar como outro usuário',
@@ -214,6 +216,7 @@ export const DEFAULT_PERMISSIONS_BY_LEVEL = Object.freeze({
     P.ADMIN_GLOBAL_VIEW,
     P.ADMIN_SET_ACCESS_LEVEL,
     P.ADMIN_INVITE_USER,
+    P.ADMIN_FILTER_DEPTS,
     P.GLOBAL_VIEW_AS,
     P.SIDEBAR_NEW_MONITORING,
     P.SIDEBAR_CONSULT,

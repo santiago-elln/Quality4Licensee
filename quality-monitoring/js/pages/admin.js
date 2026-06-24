@@ -14,6 +14,11 @@ let _catalogTab          = 'eval_criteria';
 let _catalogData         = null;
 let _catalogSgFilter     = null;  // selected sector_group id (null = show all)
 let _copyFromSourceSgId  = null;
+/* Page-level department scope for P.ADMIN_FILTER_DEPTS holders (level 9). Drives ALL
+   tabs; null = fall back to the user's own department. */
+let _adminDeptScope      = null;  // selected department id
+let _allDepartments      = [];    // active departments, for the page-level selector & manage modal
+let _deptMgrDirty        = false; // dept create/rename/deactivate happened → refresh selector on modal close
 let _editState   = null;   // { table, row } — row=null means new
 let _deactState  = null;   // { table, id, name }
 let _donutChart  = null;
@@ -155,13 +160,45 @@ function _sgLinksOf(table, itemId) {
 
 function _sgMatchFn(table) {
   const junc = SG_JUNCTION[table];
-  if (!junc || !_catalogSgFilter) return () => true;
-  const linked = new Set(
-    (_catalogData?.sg_links?.[table] ?? [])
-      .filter(l => l.sector_group_id === _catalogSgFilter)
-      .map(l => l[junc.col])
-  );
+  if (!junc) return () => true;
+  const links = _catalogData?.sg_links?.[table] ?? [];
+  if (_catalogSgFilter) {
+    const linked = new Set(links.filter(l => l.sector_group_id === _catalogSgFilter).map(l => l[junc.col]));
+    return item => linked.has(item.id);
+  }
+  /* No specific group selected: when a department scope is active, limit items to the
+     union of links across that department's sector_groups (option-1 scoping). */
+  const scopeDept = catalogScopeDeptId();
+  if (!scopeDept) return () => true;
+  const deptSgIds = new Set((_catalogData?.sector_groups ?? [])
+    .filter(sg => sg.department_id === scopeDept).map(sg => sg.id));
+  const linked = new Set(links.filter(l => deptSgIds.has(l.sector_group_id)).map(l => l[junc.col]));
   return item => linked.has(item.id);
+}
+
+/* ── Department scope (page-level, P.ADMIN_FILTER_DEPTS / level 9) ─────────── */
+function canFilterDepts(user) { return can(user ?? getRealUser(), P.ADMIN_FILTER_DEPTS); }
+
+/* Effective department for Organograma: chosen page scope, else the user's own. */
+function effectiveDeptId() {
+  const user = getCurrentUser();
+  return canFilterDepts(user) ? (_adminDeptScope ?? user.departmentId ?? null) : user.departmentId;
+}
+
+/* Catalog (Critérios) scope. null for non-filter users preserves the legacy global view. */
+function catalogScopeDeptId() {
+  const user = getCurrentUser();
+  return canFilterDepts(user) ? (_adminDeptScope ?? user.departmentId ?? null) : null;
+}
+
+const escAttr = s => String(s ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+
+function deptScopeOptionsHtml() {
+  const sel = _adminDeptScope ?? getRealUser()?.departmentId ?? null;
+  const placeholder = sel ? '' : `<option value="" selected disabled>Selecione um departamento…</option>`;
+  return placeholder + _allDepartments
+    .map(d => `<option value="${d.id}" ${d.id === sel ? 'selected' : ''}>${escAttr(d.name)}</option>`)
+    .join('');
 }
 
 /* ── render() ─────────────────────────────── */
@@ -185,12 +222,21 @@ export function render() {
 
       <div id="page-donut-slot" class="admin-page__donut-slot"></div>
 
-      <div class="admin-tabs">
-        ${can(user, P.ADMIN_VIEW_STRUCT) ? `
-          <button class="admin-tab ${_activeTab==='org'   ? 'active':''}" data-tab="org">🏢 Organograma</button>
-          <button class="admin-tab ${_activeTab==='users' ? 'active':''}" data-tab="users">👥 Usuários</button>
-        ` : ''}
-        <button class="admin-tab ${_activeTab==='catalog' ? 'active':''}" data-tab="catalog">📋 Critérios</button>
+      <div class="admin-tabs-row" style="position:relative">
+        <div class="admin-tabs">
+          ${can(user, P.ADMIN_VIEW_STRUCT) ? `
+            <button class="admin-tab ${_activeTab==='org'   ? 'active':''}" data-tab="org">🏢 Organograma</button>
+            <button class="admin-tab ${_activeTab==='users' ? 'active':''}" data-tab="users">👥 Usuários</button>
+          ` : ''}
+          <button class="admin-tab ${_activeTab==='catalog' ? 'active':''}" data-tab="catalog">📋 Critérios</button>
+        </div>
+        ${canFilterDepts(user) ? `
+          <div class="admin-dept-scope" style="position:absolute;right:0;top:2px;display:flex;align-items:center;gap:var(--space-2)">
+            <select class="form-select" id="admin-dept-scope" title="Departamento (afeta Organograma e Critérios)" style="min-width:210px">
+              ${deptScopeOptionsHtml()}
+            </select>
+            <button class="btn btn--sm btn--ghost" id="btn-manage-depts" type="button" title="Criar, renomear ou desativar departamentos">⚙ Departamentos</button>
+          </div>` : ''}
       </div>
 
       <div id="admin-tab-content">
@@ -213,6 +259,24 @@ export function render() {
         </div>
       </div>
     </div>
+
+    ${canFilterDepts(user) ? `
+    <!-- Department management modal (create / rename / deactivate) -->
+    <div id="dept-mgr-modal" class="modal-overlay modal-overlay--hidden">
+      <div class="modal modal--sm">
+        <div class="modal__header">
+          <div class="modal__title">Departamentos</div>
+          <button class="modal__close" id="dept-mgr-close" type="button">✕</button>
+        </div>
+        <div class="modal__body">
+          <div style="display:flex;gap:var(--space-2);margin-bottom:var(--space-4)">
+            <input id="dept-mgr-new-name" type="text" class="input" placeholder="Novo departamento…" autocomplete="off" style="flex:1">
+            <button class="btn btn--primary btn--sm" id="dept-mgr-create" type="button">Criar</button>
+          </div>
+          <div id="dept-mgr-list"></div>
+        </div>
+      </div>
+    </div>` : ''}
 
     <!-- Edit modal -->
     <div id="catalog-edit-modal" class="modal-overlay modal-overlay--hidden">
@@ -299,13 +363,21 @@ function renderCatalogTab() {
 function renderCatalogContent() {
   const user    = getCurrentUser();
   const canEdit = can(user, P.ADMIN_UPDATE_CRITERIA);
-  const cfg     = CATALOG[_catalogTab];
-  const allRows = _catalogData?.[_catalogTab] ?? [];
-  const sgs     = _catalogData?.sector_groups ?? [];
+  const cfg      = CATALOG[_catalogTab];
+  const allRows  = _catalogData?.[_catalogTab] ?? [];
+  const scopeDept = catalogScopeDeptId();
+  /* Sector-group dropdown is limited to the active department's groups (option-1 scoping) */
+  const sgs      = scopeDept
+    ? (_catalogData?.sector_groups ?? []).filter(sg => sg.department_id === scopeDept)
+    : (_catalogData?.sector_groups ?? []);
   const hasSgScope = !!SG_JUNCTION[_catalogTab];
 
-  /* Filter rows by selected sector_group (for junction-scoped tables) */
+  /* Filter rows by selected sector_group / department (for junction-scoped tables) */
   let displayRows = hasSgScope ? allRows.filter(_sgMatchFn(_catalogTab)) : allRows;
+  /* observation_type carries department_id directly — scope it to the active department */
+  if (_catalogTab === 'observation_type' && scopeDept) {
+    displayRows = displayRows.filter(r => r.department_id === scopeDept);
+  }
 
   const eff = {
     canAdd:    cfg.canAdd    && canEdit,
@@ -432,7 +504,7 @@ async function fetchCatalog() {
     supabase.from('error_type').select('id, name, critical, active').order('name'),
     supabase.from('analytical_note_type').select('id, name, active').order('name'),
     supabase.from('departments').select('id, name').eq('active', true).order('name'),
-    supabase.from('sector_groups').select('id, name').order('name'),
+    supabase.from('sector_groups').select('id, name, department_id').order('name'),
     supabase.from('sector_group_eval_criteria').select('sector_group_id, eval_criteria_id'),
     supabase.from('sector_group_topic').select('sector_group_id, topic_id'),
     supabase.from('sector_group_error_type').select('sector_group_id, error_type_id'),
@@ -987,8 +1059,10 @@ function bindModalEvents() {
 /* ── Org tab data load ────────────────────── */
 async function loadOrgTabData() {
   const user      = getCurrentUser();
-  const deptId    = user.departmentId;
   const isGlobal  = can(user, P.ADMIN_GLOBAL_VIEW) && can(user, P.CROSS_DEPT_VIEW);
+  /* Filter-capable users (level 9) can point the tree at any department via the
+     page-level scope; everyone else is pinned to their own. */
+  const deptId    = effectiveDeptId();
 
   /* supervisedTeamIds already resolved by buildUser() — no extra query needed */
   const supervisedTeamIds = isGlobal ? null : (user.supervisedTeamIds ?? []);
@@ -1805,6 +1879,15 @@ async function absorbUser() {
 export async function init() {
   bindModalEvents();
 
+  /* Page-level department scope (level 9): load the department list, fill the
+     selector (render() ran before this fetch), and bind its events once. */
+  if (canFilterDepts(getRealUser())) {
+    if (!_allDepartments.length) await refreshAllDepartments();
+    const sel = document.getElementById('admin-dept-scope');
+    if (sel) sel.innerHTML = deptScopeOptionsHtml();
+    bindDeptScopeEvents();
+  }
+
   document.querySelectorAll('.admin-tab').forEach(btn => {
     btn.addEventListener('click', async () => {
       if (_donutChart) { _donutChart.destroy(); _donutChart = null; }
@@ -2061,8 +2144,7 @@ async function inviteUser() {
 /* ── Team supervisor change ───────────────── */
 async function openTeamSupervisorModal(teamId, teamName) {
   _teamSupervisorTarget = { teamId, teamName };
-  const user   = getCurrentUser();
-  const deptId = user.departmentId ?? null;
+  const deptId = effectiveDeptId();  // scoped department (own dept for non-filter users)
 
   const msg = document.getElementById('team-sup-msg');
   if (msg) msg.innerHTML = `Selecione o novo supervisor para a equipe <strong>${teamName}</strong>.`;
@@ -2207,8 +2289,7 @@ async function confirmTeamDeactivate() {
 
 /* ── New sector modal ─────────────────────── */
 async function openNewSectorModal() {
-  const user   = getCurrentUser();
-  const deptId = user.departmentId ?? null;
+  const deptId = effectiveDeptId();  // scoped department (own dept for non-filter users)
 
   document.getElementById('ns-name').value = '';
   document.getElementById('ns-team-name').value = '';
@@ -2303,7 +2384,7 @@ async function submitNewSector() {
         if (!sgName) { toast.error('Campo obrigatório', 'Informe o nome do novo grupo de setor.'); return; }
         const { data: newSg, error: sgErr } = await supabase
           .from('sector_groups')
-          .insert({ name: sgName, department_id: getCurrentUser().departmentId ?? null })
+          .insert({ name: sgName, department_id: effectiveDeptId() })
           .select('id').single();
         if (sgErr) throw sgErr;
         sectorGroupId = newSg.id;
@@ -2332,6 +2413,142 @@ async function submitNewSector() {
     console.error('[admin] new sector:', err);
     toast.error('Erro ao criar', err.message);
     if (btn) { btn.disabled = false; btn.textContent = 'Criar Setor'; }
+  }
+}
+
+/* ── Department scope selector + management (page level) ──────────────────── */
+async function refreshAllDepartments() {
+  const { data } = await supabase
+    .from('departments').select('id, name').eq('active', true).order('name');
+  _allDepartments = data ?? [];
+}
+
+/* Re-run the active tab against the current department scope. */
+async function reloadActiveScopedTab() {
+  _catalogSgFilter = null;  // the previous group belongs to a different department
+  if (_activeTab === 'org') {
+    _orgData = null; _pendingLevelChanges = {};
+    document.getElementById('admin-tab-content').innerHTML = renderTab('org', getCurrentUser());
+    try { await loadOrgTabData(); } catch (err) { console.error('[admin] scoped org load:', err); toast.error('Erro ao carregar departamento'); }
+    document.getElementById('admin-tab-content').innerHTML = renderTab('org', getCurrentUser());
+    bindTabEvents();
+  } else if (_activeTab === 'catalog') {
+    refreshCatalogContent();
+  }
+  /* users tab is global (unclaimed auth users) — unaffected by department scope */
+}
+
+function bindDeptScopeEvents() {
+  document.getElementById('admin-dept-scope')?.addEventListener('change', async e => {
+    _adminDeptScope = e.target.value || null;
+    await reloadActiveScopedTab();
+  });
+  document.getElementById('btn-manage-depts')?.addEventListener('click', openDeptManageModal);
+  document.getElementById('dept-mgr-close')?.addEventListener('click', closeDeptManageModal);
+  document.getElementById('dept-mgr-modal')?.addEventListener('click',
+    e => { if (e.target.id === 'dept-mgr-modal') closeDeptManageModal(); });
+  document.getElementById('dept-mgr-create')?.addEventListener('click', createDept);
+  document.getElementById('dept-mgr-list')?.addEventListener('click', e => {
+    const ren = e.target.closest('.dept-mgr-rename');
+    if (ren) { renameDept(ren.dataset.id); return; }
+    const del = e.target.closest('.dept-mgr-deact');
+    if (del) { deactivateDept(del.dataset.id, del.dataset.name); return; }
+  });
+}
+
+function renderDeptMgrList() {
+  const el = document.getElementById('dept-mgr-list');
+  if (!el) return;
+  el.innerHTML = _allDepartments.length
+    ? _allDepartments.map(d => `
+      <div class="dept-mgr-row" data-id="${d.id}"
+           style="display:flex;align-items:center;gap:var(--space-2);padding:var(--space-2) 0;border-bottom:1px solid var(--border)">
+        <input class="input dept-mgr-name" value="${escAttr(d.name)}" data-id="${d.id}" style="flex:1">
+        <button class="btn btn--ghost btn--sm dept-mgr-rename" data-id="${d.id}" type="button">Renomear</button>
+        <button class="btn btn--ghost btn--sm dept-mgr-deact" data-id="${d.id}" data-name="${escAttr(d.name)}" type="button" title="Desativar">🗑</button>
+      </div>`).join('')
+    : `<div class="catalog-empty">Nenhum departamento ativo.</div>`;
+}
+
+function openDeptManageModal() {
+  _deptMgrDirty = false;
+  renderDeptMgrList();
+  const input = document.getElementById('dept-mgr-new-name');
+  if (input) input.value = '';
+  document.getElementById('dept-mgr-modal')?.classList.remove('modal-overlay--hidden');
+}
+
+async function closeDeptManageModal() {
+  document.getElementById('dept-mgr-modal')?.classList.add('modal-overlay--hidden');
+  if (!_deptMgrDirty) return;
+  _deptMgrDirty = false;
+  /* Department list changed → refresh the page-level selector and reload the scoped tab. */
+  const sel = document.getElementById('admin-dept-scope');
+  if (sel) sel.innerHTML = deptScopeOptionsHtml();
+  await reloadActiveScopedTab();
+}
+
+async function createDept() {
+  const input = document.getElementById('dept-mgr-new-name');
+  const name  = input?.value.trim();
+  if (!name) { input?.focus(); toast.error('Campo obrigatório', 'Informe o nome do departamento.'); return; }
+  const btn = document.getElementById('dept-mgr-create');
+  if (btn) { btn.disabled = true; btn.textContent = 'Criando…'; }
+  try {
+    const { error } = await supabase.from('departments').insert({ name, active: true });
+    if (error) throw error;
+    await refreshAllDepartments();
+    _deptMgrDirty = true;
+    renderDeptMgrList();
+    if (input) input.value = '';
+    toast.success('Departamento criado', name);
+  } catch (err) {
+    console.error('[admin] create dept:', err);
+    toast.error('Erro ao criar', err.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Criar'; }
+  }
+}
+
+async function renameDept(id) {
+  const input   = document.querySelector(`.dept-mgr-name[data-id="${id}"]`);
+  const name    = input?.value.trim();
+  const current = _allDepartments.find(d => d.id === id)?.name;
+  if (!name) { input?.focus(); toast.error('Campo obrigatório', 'Informe o nome do departamento.'); return; }
+  if (name === current) return;
+  try {
+    const { error } = await supabase.from('departments').update({ name }).eq('id', id);
+    if (error) throw error;
+    await refreshAllDepartments();
+    _deptMgrDirty = true;
+    renderDeptMgrList();
+    toast.success('Departamento renomeado', name);
+  } catch (err) {
+    console.error('[admin] rename dept:', err);
+    toast.error('Erro ao renomear', err.message);
+  }
+}
+
+async function deactivateDept(id, name) {
+  const btn = document.querySelector(`.dept-mgr-deact[data-id="${id}"]`);
+  /* Two-step inline confirm so a single misclick can't deactivate a department. */
+  if (btn && btn.dataset.armed !== '1') {
+    document.querySelectorAll('.dept-mgr-deact[data-armed="1"]').forEach(b => { b.dataset.armed = '0'; b.textContent = '🗑'; });
+    btn.dataset.armed = '1';
+    btn.textContent = 'Confirmar?';
+    return;
+  }
+  try {
+    const { error } = await supabase.from('departments').update({ active: false }).eq('id', id);
+    if (error) throw error;
+    if (_adminDeptScope === id) _adminDeptScope = null;  // the viewed department is gone → reset scope
+    await refreshAllDepartments();
+    _deptMgrDirty = true;
+    renderDeptMgrList();
+    toast.success('Departamento desativado', name);
+  } catch (err) {
+    console.error('[admin] deactivate dept:', err);
+    toast.error('Erro ao desativar', err.message);
   }
 }
 
