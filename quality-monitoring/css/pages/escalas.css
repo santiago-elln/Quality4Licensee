@@ -458,6 +458,66 @@
 .esc-small-break:hover { box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 0 0 2px #15803d; }
 .esc-small-break .esc-break-label { color: #14532d; }
 
+/* ─── SB2 delete selection (right-click) ─────────────────── */
+/* Inset ring so the highlight isn't clipped by the bar/marker overflow:hidden */
+.esc-small-break[data-drag="sb2"].esc-sb2-selected {
+  box-shadow: inset 0 0 0 2px #dc2626, inset 0 1px 0 rgba(255,255,255,.3);
+  z-index: 6;
+}
+/* Trash control lives on .esc-emp-grid (overflow:visible); `left` is set inline in
+   grid coordinates, the transform centers it on the marker and lifts it above the bar. */
+.esc-sb2-del-tip {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -150%);
+  display: flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px;
+  background: #dc2626;
+  border-radius: 6px;
+  cursor: pointer;
+  z-index: 20;
+  box-shadow: 0 2px 6px rgba(0,0,0,.3);
+  transition: background .15s;
+}
+.esc-sb2-del-tip:hover { background: #b91c1c; }
+.esc-sb2-del-tip img {
+  width: 14px; height: 14px; display: block; pointer-events: none;
+  filter: brightness(0) invert(1);  /* black source icon → white on the red button */
+}
+.esc-sb2-del-tip::after {
+  content: ''; position: absolute; top: 100%; left: 50%;
+  transform: translateX(-50%);
+  border: 4px solid transparent; border-top-color: #dc2626;
+}
+
+/* ─── Add SB2 affordance (hover on a shift without a second break) ───────── */
+/* Ghost slot — reuses .esc-drag-ghost/.esc-ghost-sb geometry, made clickable */
+.esc-sb2-add-ghost {
+  display: none;
+  pointer-events: auto;
+  cursor: pointer;
+  background: rgba(74,222,128,.18);
+  z-index: 4;
+  transition: background .15s, border-color .15s;
+}
+.esc-emp-grid:hover .esc-sb2-add-ghost { display: block; }
+.esc-sb2-add-ghost:hover { background: rgba(74,222,128,.4); border-color: rgb(34,197,94); }
+.esc-add-sb2-tip {
+  display: none;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -160%);
+  background: #166534; color: #fff;
+  font-size: 10px; font-weight: 600;
+  white-space: nowrap;
+  padding: 3px 8px;
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 20;
+  box-shadow: 0 2px 6px rgba(0,0,0,.25);
+}
+.esc-emp-grid:hover .esc-add-sb2-tip { display: block; }
+
 /* ─── Pre-break shadow ────────────────────────────────────── */
 .esc-pre-break-shadow {
   position: absolute;

@@ -207,6 +207,9 @@ const _dirty      = new Set()
 let _drag              = null
 let _abortCtrl         = null
 let _pendingSingleSave  = null  // eid awaiting confirmation via the row ✓ button
+let _selSb2             = null  // eid whose SB2 is right-click-selected for deletion (only one at a time)
+let _pendingSb2Delete   = null  // eid whose SB2 removal awaits modal confirmation (applied only on confirm)
+let _pendingSb2Add      = null  // {eid,pos} whose SB2 addition awaits modal confirmation (applied only on confirm)
 let _defaultShiftCache = {}    // kept for legacy save paths; no longer used for fetching
 
 // ─── render ───────────────────────────────────────────────────────────────────
@@ -294,7 +297,7 @@ export async function init() {
   _sectorGroups = []
   _deptSectors  = []
   _employees = []; _shifts = {}; _origShifts = {}; _sbNatural = {}; _breakNatural = {}
-  _dirty.clear(); _drag = null
+  _dirty.clear(); _drag = null; _selSb2 = null
 
   const today = todayISO()
   _selectedDate = today
@@ -325,6 +328,8 @@ export async function init() {
   $e('esc-save-btn')?.addEventListener('click', openConfirmModal, { signal: sig })
   $e('esc-modal-cancel')?.addEventListener('click', () => {
     _pendingSingleSave = null
+    _pendingSb2Delete  = null   // cancelling leaves the SB2 (and the shift) untouched
+    _pendingSb2Add     = null
     closeConfirmModal()
   }, { signal: sig })
   $e('esc-modal-confirm')?.addEventListener('click', confirmSave, { signal: sig })
@@ -341,9 +346,36 @@ export async function init() {
   document.addEventListener('touchmove',  onMove, { passive: false, signal: sig })
   document.addEventListener('touchend',   onUp,   { signal: sig })
   document.addEventListener('click', e => {
+    /* Trash icon inside a selected SB2's tooltip → delete + confirm save */
+    const delTip = e.target.closest('.esc-sb2-del-tip')
+    if (delTip) { deleteSb2(delTip.dataset.eid); return }
+    /* Ghost slot on a shift without SB2 → confirm adding it there */
+    const addGhost = e.target.closest('.esc-sb2-add-ghost')
+    if (addGhost) { requestSb2Add(addGhost.dataset.eid, +addGhost.dataset.pos); return }
+    /* A click anywhere outside the selected SB2 clears the selection */
+    if (_selSb2 !== null && !e.target.closest('.esc-sb2-selected')) clearSb2Selection()
     const eid = e.target.closest('[data-eid]')?.dataset.eid; if (!eid) return
     if (e.target.closest('.esc-row-save'))    { _pendingSingleSave = eid; openConfirmModal() }
     if (e.target.closest('.esc-row-discard')) discardOneEmployee(eid)
+  }, { signal: sig })
+
+  /* Right-click an SB2 marker to select it for deletion (SB1 / break excluded) */
+  document.addEventListener('contextmenu', e => {
+    if (_viewMode !== 'edit') return
+    /* Right-click the ghost slot to add a second break (matches the tooltip wording) */
+    const addGhost = e.target.closest('.esc-sb2-add-ghost')
+    if (addGhost) { e.preventDefault(); requestSb2Add(addGhost.dataset.eid, +addGhost.dataset.pos); return }
+    const el = e.target.closest('[data-drag="sb2"]'); if (!el) { clearSb2Selection(); return }
+    const eid = el.dataset.eid ?? el.closest('[data-eid]')?.dataset.eid; if (!eid) return
+    e.preventDefault()
+    selectSb2(el, eid)
+  }, { signal: sig })
+
+  /* Delete key removes the selected SB2; Escape cancels the selection */
+  document.addEventListener('keydown', e => {
+    if (_selSb2 === null) return
+    if (e.key === 'Delete') { e.preventDefault(); deleteSb2(_selSb2) }
+    else if (e.key === 'Escape') clearSb2Selection()
   }, { signal: sig })
 
   $e('esc-sector-tabs') && ($e('esc-sector-tabs').innerHTML = '')
@@ -632,6 +664,7 @@ function buildGridLines() {
 }
 
 function renderGrid() {
+  _selSb2 = null  // any prior SB2 selection is invalidated by a full re-render
   const hourSlots=Array.from({length:NUM_SLOTS+1},(_,i)=>i).filter(i=>i%4===0)
   const timeLabels=hourSlots
     .filter((_,idx)=>idx!==0&&idx!==hourSlots.length-1)
@@ -967,32 +1000,45 @@ function buildEmpRow(emp) {
     /* Pre-break shadow: 30 min before break_start */
     const shadowL = rp(shift.break_start_min - 30), shadowW = rd(30)
 
-    /* Segment + small-break markup (only when SBs are available) */
-    const sbMarkup = (sb1 !== null && sb2 !== null) ? `
+    /* Segment + small-break markup. SB1 (before break) and SB2 (after break) are
+       decided independently so SB1 still renders when SB2 is optative (null), and vice versa. */
+    const breakInd = `
+        <div class="esc-pre-break-shadow" style="left:${shadowL}%;width:${shadowW}%"></div>
+        <div class="esc-break-ind" ${canEdit?'data-drag="break"':''} data-eid="${emp.id}"
+             style="left:${brkL}%;width:${brkW}%">
+          <span class="esc-break-label">${minToTime(shift.break_start_min)}</span>
+        </div>`
+
+    const preMarkup = sb1 !== null ? `
         <span class="esc-seg-label" style="left:0;width:${rp(sb1)}%">${durLabel(sb1 - shift.start_min)}</span>
         <div class="esc-break-ind esc-small-break" ${canEdit?'data-drag="sb1"':''} data-eid="${emp.id}"
              style="left:${rp(sb1)}%;width:${rd(15)}%">
           <span class="esc-break-label sm-break">${minToTime(sb1)}</span>
         </div>
-        <span class="esc-seg-label" style="left:${rp(sb1+15)}%;width:${rp(shift.break_start_min) - rp(sb1+15)}%">${durLabel(shift.break_start_min-(sb1+15))}</span>
-        <div class="esc-pre-break-shadow" style="left:${shadowL}%;width:${shadowW}%"></div>
-        <div class="esc-break-ind" ${canEdit?'data-drag="break"':''} data-eid="${emp.id}"
-             style="left:${brkL}%;width:${brkW}%">
-          <span class="esc-break-label">${minToTime(shift.break_start_min)}</span>
-        </div>
+        <span class="esc-seg-label" style="left:${rp(sb1+15)}%;width:${rp(shift.break_start_min) - rp(sb1+15)}%">${durLabel(shift.break_start_min-(sb1+15))}</span>` : `
+        <span class="esc-seg-label" style="left:0;width:${brkL}%">${durLabel(shift.break_start_min-shift.start_min)}</span>`
+
+    const postMarkup = sb2 !== null ? `
         <span class="esc-seg-label" style="left:${rp(breakEnd)}%;width:${rp(sb2) - rp(breakEnd)}%">${durLabel(sb2-breakEnd)}</span>
         <div class="esc-break-ind esc-small-break" ${canEdit?'data-drag="sb2"':''} data-eid="${emp.id}"
              style="left:${rp(sb2)}%;width:${rd(15)}%">
           <span class="esc-break-label sm-break">${minToTime(sb2)}</span>
         </div>
         <span class="esc-seg-label" style="left:${rp(sb2+15)}%;right:0">${durLabel(shift.end_min-(sb2+15))}</span>` : `
-        <span class="esc-seg-label" style="left:0;width:${brkL}%">${durLabel(shift.break_start_min-shift.start_min)}</span>
-        <div class="esc-pre-break-shadow" style="left:${shadowL}%;width:${shadowW}%"></div>
-        <div class="esc-break-ind" ${canEdit?'data-drag="break"':''} data-eid="${emp.id}"
-             style="left:${brkL}%;width:${brkW}%">
-          <span class="esc-break-label">${minToTime(shift.break_start_min)}</span>
-        </div>
-        <span class="esc-seg-label" style="left:${parseFloat(brkL)+parseFloat(brkW)}%;right:0">${durLabel(shift.end_min-breakEnd)}</span>`
+        <span class="esc-seg-label" style="left:${rp(breakEnd)}%;right:0">${durLabel(shift.end_min-breakEnd)}</span>`
+
+    const sbMarkup = preMarkup + breakInd + postMarkup
+
+    /* "Add SB2" hover affordance: shown only when the shift has no second break and
+       there's room for a 15-min slot after the break. A ghost slot sits at the midpoint
+       of [breakEnd, end_time]; clicking (or right-clicking) it confirms adding SB2 there. */
+    const sb2AddPos = (canEdit && sb2 === null && (shift.end_min - breakEnd) >= 15)
+      ? clamp(snapMin((breakEnd + shift.end_min) / 2 - 7.5), breakEnd, shift.end_min - 15)
+      : null
+    const sb2AddMarkup = sb2AddPos !== null ? `
+      <div class="esc-add-sb2-tip" style="left:${(parseFloat(minToPct(sb2AddPos)) + parseFloat(durToPct(15)) / 2)}%">Clique p/ adicionar café 2</div>
+      <div class="esc-drag-ghost esc-ghost-sb esc-sb2-add-ghost" data-eid="${emp.id}" data-pos="${sb2AddPos}"
+           style="left:${minToPct(sb2AddPos)}%;width:${durToPct(15)}%"></div>` : ''
 
     gridContent=`
       ${unvalidated ? `<div class="esc-unvalidated-tooltip">Este horário pode estar incorreto</div>` : ''}
@@ -1003,7 +1049,8 @@ function buildEmpRow(emp) {
         ${sbMarkup}
         <span class="esc-sh-time esc-end-time">${minToTime(shift.end_min)}</span>
         ${canEdit?`<div class="esc-resize-handle" data-drag="resize" data-eid="${emp.id}"></div>`:''}
-      </div>`
+      </div>
+      ${sb2AddMarkup}`
   } else {
     gridContent=`<div class="esc-no-shift">Sem escala para esta data</div>`
   }
@@ -1035,6 +1082,8 @@ const clientX = e => e.touches ? e.touches[0].clientX : e.clientX
 
 function onDown(e) {
   if(_viewMode!=='edit') return
+  if(typeof e.button==='number' && e.button!==0) return  // ignore right/middle click (right-click selects SB2)
+  if(e.target.closest('.esc-sb2-del-tip')) return        // clicking the trash tooltip must not start a drag
   const el=e.target.closest('[data-drag]'); if(!el||!el.dataset.drag) return
   e.preventDefault()
   const type=el.dataset.drag, eid=el.dataset.eid??el.closest('[data-eid]')?.dataset.eid
@@ -1085,7 +1134,7 @@ function applyDrag(cx) {
   } else if(_drag.type==='break'){
     // Hard bounds: break cannot move so far that SBs would exceed their absolute limits
     const brkLo = s.small_break_1_min!==null ? s.start_min+45                              : s.start_min
-    const brkHi = s.small_break_2_min!==null ? s.end_min-s.break_duration_minutes-105      : s.end_min-s.break_duration_minutes
+    const brkHi = s.small_break_2_min!==null ? s.end_min-s.break_duration_minutes-105      : s.end_min-s.break_duration_minutes-30
     s.break_start_min=snapMin(clamp(_drag.origBreak+dMin,brkLo,brkHi))
     // Spring back to natural positions (survive across multiple drop-and-redrag cycles)
     const nat=_sbNatural[_drag.eid]??{sb1:_drag.origSb1,sb2:_drag.origSb2}
@@ -1102,10 +1151,11 @@ function applyDrag(cx) {
     s.end_min=clamp(Math.round(_drag.origEnd+dMin), s.start_min+MIN_DUR, Math.min(s.start_min+MAX_DUR,GRID_END))
     const nat=_sbNatural[_drag.eid]??{sb1:_drag.origSb1,sb2:_drag.origSb2}
     const brkNat=_breakNatural[_drag.eid]??_drag.origBreak
-    // Clamp break FIRST: ceiling ensures SB2 always has room (break_end+30+15+60 ≤ end_min)
+    // Clamp break FIRST: with SB2, ceiling reserves its room (break_end+30+15+60 ≤ end_min);
+    // without SB2 (optative on short shifts), break_end must stay ≥30 min before end_time
     const brkCeil=s.small_break_2_min!==null
       ? s.end_min-s.break_duration_minutes-105
-      : s.end_min-s.break_duration_minutes
+      : s.end_min-s.break_duration_minutes-30
     s.break_start_min=clamp(brkNat, s.start_min, brkCeil)
     // Now clamp SB2 against the already-updated breakEnd
     if(s.small_break_2_min!==null)
@@ -1214,25 +1264,39 @@ function patchShiftBar(eid) {
   const shadow=bar.querySelector('.esc-pre-break-shadow')
   if(shadow){ shadow.style.left=rp(s.break_start_min-30)+'%'; shadow.style.width=rd(30)+'%' }
 
-  if(sb1!==null&&sb2!==null){
-    /* Small break 1 */
-    const sb1El=bar.querySelector('.esc-small-break:first-of-type,.esc-small-break[data-drag="sb1"],[data-drag="sb1"]')
+  /* Small breaks + segment labels — mirror buildEmpRow's independent pre/post layout
+     (SB1 before break, SB2 after, each optional). patchShiftBar only runs during edits,
+     where SB presence is stable, so the existing labels are indexed positionally.
+     The final segment of each layout uses inline right:0 (no width) — left it alone. */
+  const segs=[...bar.querySelectorAll('.esc-seg-label')]
+  let i=0
+
+  if(sb1!==null){
+    const sb1El=bar.querySelector('[data-drag="sb1"]')??bar.querySelector('.esc-break-ind.esc-small-break')
     if(sb1El){ sb1El.style.left=rp(sb1)+'%'; sb1El.style.width=rd(15)+'%'; const l=sb1El.querySelector('.esc-break-label'); if(l) l.textContent=minToTime(sb1) }
-    /* Small break 2 */
+    if(segs[i]){ segs[i].style.left='0%'; segs[i].style.width=rp(sb1)+'%'; segs[i].textContent=durLabel(sb1-s.start_min); i++ }
+    if(segs[i]){ segs[i].style.left=rp(sb1+15)+'%'; segs[i].style.width=(rp(s.break_start_min)-rp(sb1+15))+'%'; segs[i].textContent=durLabel(s.break_start_min-(sb1+15)); i++ }
+  } else {
+    if(segs[i]){ segs[i].style.left='0%'; segs[i].style.width=rp(s.break_start_min)+'%'; segs[i].textContent=durLabel(s.break_start_min-s.start_min); i++ }
+  }
+
+  if(sb2!==null){
     const sb2El=bar.querySelector('[data-drag="sb2"]')
     if(sb2El){ sb2El.style.left=rp(sb2)+'%'; sb2El.style.width=rd(15)+'%'; const l=sb2El.querySelector('.esc-break-label'); if(l) l.textContent=minToTime(sb2) }
-    /* 4 segment labels */
-    const segs=[...bar.querySelectorAll('.esc-seg-label')]
-    if(segs[0]){ segs[0].style.width=rp(sb1)+'%'; segs[0].textContent=durLabel(sb1-s.start_min) }
-    if(segs[1]){ segs[1].style.left=rp(sb1+15)+'%'; segs[1].style.width=(rp(s.break_start_min)-rp(sb1+15))+'%'; segs[1].textContent=durLabel(s.break_start_min-(sb1+15)) }
-    if(segs[2]){ segs[2].style.left=rp(breakEnd)+'%'; segs[2].style.width=(rp(sb2)-rp(breakEnd))+'%'; segs[2].textContent=durLabel(sb2-breakEnd) }
-    if(segs[3]){ segs[3].style.left=rp(sb2+15)+'%'; segs[3].textContent=durLabel(s.end_min-(sb2+15)) }
+    if(segs[i]){ segs[i].style.left=rp(breakEnd)+'%'; segs[i].style.width=(rp(sb2)-rp(breakEnd))+'%'; segs[i].textContent=durLabel(sb2-breakEnd); i++ }
+    if(segs[i]){ segs[i].style.left=rp(sb2+15)+'%'; segs[i].textContent=durLabel(s.end_min-(sb2+15)); i++ }
   } else {
-    /* Fallback 2-segment layout */
-    const segs=[...bar.querySelectorAll('.esc-seg-label')]
-    const blf=(s.break_start_min-s.start_min)/dur*100, bwf=s.break_duration_minutes/dur*100
-    if(segs[0]){ segs[0].style.width=blf.toFixed(4)+'%'; segs[0].textContent=durLabel(s.break_start_min-s.start_min) }
-    if(segs[1]){ segs[1].style.left=(blf+bwf).toFixed(4)+'%'; segs[1].textContent=durLabel(s.end_min-breakEnd) }
+    if(segs[i]){ segs[i].style.left=rp(breakEnd)+'%'; segs[i].textContent=durLabel(s.end_min-breakEnd); i++ }
+  }
+
+  /* Keep the "add SB2" ghost (when present) anchored to the live post-break midpoint */
+  const addGhost=bar.closest('.esc-emp-grid')?.querySelector('.esc-sb2-add-ghost')
+  if(addGhost && sb2===null && (s.end_min-breakEnd)>=15){
+    const pos=clamp(snapMin((breakEnd+s.end_min)/2-7.5), breakEnd, s.end_min-15)
+    addGhost.dataset.pos=pos
+    addGhost.style.left=minToPct(pos)+'%'; addGhost.style.width=durToPct(15)+'%'
+    const tip=addGhost.parentElement.querySelector('.esc-add-sb2-tip')
+    if(tip) tip.style.left=(parseFloat(minToPct(pos))+parseFloat(durToPct(15))/2)+'%'
   }
 
   // Fade start-time when SB1 (or main break if no SBs) gets close to the left edge
@@ -1274,6 +1338,7 @@ function refreshAvailRow() {
 // ─── View mode ────────────────────────────────────────────────────────────────
 function setViewMode(m) {
   _viewMode=m
+  clearSb2Selection()
   document.querySelectorAll('.esc-mode-btn').forEach(b=>b.classList.toggle('active',b.dataset.mode===m))
   $e('escalas-root')?.classList.toggle('esc-analysis-mode',m==='analysis')
   EscCalendar.setSingleDay(m==='edit'); renderMetricOverlay()
@@ -1282,6 +1347,20 @@ function setViewMode(m) {
 
 // ─── Save flow ────────────────────────────────────────────────────────────────
 function confirmSave() {
+  if (_pendingSb2Add) {
+    const { eid, pos } = _pendingSb2Add
+    _pendingSb2Add = null
+    applySb2Addition(eid, pos)   // add the SB2 only now, on confirm
+    saveOneEmployee(eid)
+    return
+  }
+  if (_pendingSb2Delete) {
+    const eid = _pendingSb2Delete
+    _pendingSb2Delete = null
+    applySb2Deletion(eid)   // remove the SB2 only now, on confirm
+    saveOneEmployee(eid)
+    return
+  }
   if (_pendingSingleSave) {
     const eid = _pendingSingleSave
     _pendingSingleSave = null
@@ -1300,6 +1379,83 @@ function markRowClean(eid){
   document.querySelector(`.esc-emp-row[data-eid="${eid}"]`)?.classList.remove('esc-has-changes')
   document.querySelectorAll(`.esc-drag-ghost[data-ghost-eid="${eid}"]`).forEach(g=>g.remove())
   document.querySelector(`.esc-shift-bar[data-eid="${eid}"]`)?.classList.remove('esc-dirty-bar')
+}
+
+// ─── SB2 delete (right-click select → trash/Delete → confirm save) ──────────────
+function selectSb2(el, eid){
+  clearSb2Selection()
+  const s = _shifts[eid]; if (!s || s.small_break_2_min === null) return
+  const grid = el.closest('.esc-emp-grid'); if (!grid) return
+  _selSb2 = eid
+  el.classList.add('esc-sb2-selected')
+  /* The marker and shift bar both clip overflow, so the trash control lives on the
+     grid cell (overflow:visible), positioned over the SB2 marker in grid coordinates. */
+  const tip = document.createElement('div')
+  tip.className = 'esc-sb2-del-tip'
+  tip.dataset.eid = eid
+  tip.title = 'Remover café 2'
+  tip.style.left = (parseFloat(minToPct(s.small_break_2_min)) + parseFloat(durToPct(15)) / 2) + '%'
+  tip.innerHTML = `<img src="assets/images/delete_ico.png" alt="Excluir café 2" draggable="false">`
+  grid.appendChild(tip)
+}
+
+function clearSb2Selection(){
+  if (_selSb2 === null) return
+  document.querySelectorAll('.esc-sb2-selected').forEach(e => e.classList.remove('esc-sb2-selected'))
+  document.querySelectorAll('.esc-sb2-del-tip').forEach(e => e.remove())
+  _selSb2 = null
+}
+
+function deleteSb2(eid){
+  const s = _shifts[eid]; if (!s || s.small_break_2_min === null) { clearSb2Selection(); return }
+  clearSb2Selection()
+  /* Defer the actual removal until the user confirms. Until then nothing changes —
+     no re-render, no dirty state — so cancelling leaves the shift exactly as it was. */
+  _pendingSb2Delete = eid
+  openConfirmModal()
+}
+
+/* Commit the deferred SB2 removal (called from confirmSave once the user confirms). */
+function applySb2Deletion(eid){
+  const s = _shifts[eid]; if (!s || s.small_break_2_min === null) return
+  s.small_break_2_min = null
+  _sbNatural[eid] = { sb1: s.small_break_1_min, sb2: null }
+  _dirty.add(eid); markRowDirty(eid); showSaveBar()
+  rerenderEmpRow(eid)
+  refreshAvailRow()
+}
+
+/* Clicking the ghost slot defers the SB2 addition until the user confirms. */
+function requestSb2Add(eid, pos){
+  const s = _shifts[eid]; if (!s || s.small_break_2_min !== null || !Number.isFinite(pos)) return
+  clearSb2Selection()
+  _pendingSb2Add = { eid, pos }
+  openConfirmModal()
+}
+
+/* Commit the deferred SB2 addition (called from confirmSave once the user confirms). */
+function applySb2Addition(eid, pos){
+  const s = _shifts[eid]; if (!s || s.small_break_2_min !== null) return
+  s.small_break_2_min = pos
+  _sbNatural[eid] = { sb1: s.small_break_1_min, sb2: pos }
+  _dirty.add(eid); markRowDirty(eid); showSaveBar()
+  rerenderEmpRow(eid)
+  refreshAvailRow()
+}
+
+/* Rebuild a single employee row from current shift data (patchShiftBar can only
+   move existing nodes; removing the SB2 marker needs fresh markup). */
+function rerenderEmpRow(eid){
+  const emp = _employees.find(e => e.id === eid); if (!emp) return
+  const rowEl = document.querySelector(`.esc-emp-row[data-eid="${eid}"]`); if (!rowEl) return
+  const tpl = document.createElement('template')
+  tpl.innerHTML = buildEmpRow(emp).trim()
+  const newRow = tpl.content.firstElementChild; if (!newRow) return
+  rowEl.replaceWith(newRow)
+  if (_dirty.has(eid)) {
+    newRow.classList.add('esc-has-changes')
+    newRow.querySelector('.esc-shift-bar')?.classList.add('esc-dirty-bar')
+  }
 }
 
 /* An RLS-filtered UPDATE returns 0 rows with NO error (the row is invisible to
@@ -1419,6 +1575,10 @@ async function saveChanges() {
     toast.success('Escalas salvas com sucesso!')
   } catch (err) {
     toast.error('Erro ao salvar', err.message)
+  } finally {
+    /* Restore the button on every path. renderGrid() rebuilds #esc-main but NOT
+       the save bar, so a successful save would otherwise leave it stuck disabled
+       on "Salvando…" — only visible again the next time showSaveBar() fires. */
     if (btn) { btn.disabled = false; btn.textContent = 'Salvar Alterações' }
   }
 }
