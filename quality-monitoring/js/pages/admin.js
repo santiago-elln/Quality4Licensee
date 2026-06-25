@@ -2,11 +2,11 @@
    ADMIN — Gestão de departamentos, equipes e usuários
    ============================================================ */
 import { getCurrentUser, getRealUser } from '../auth.js';
-import { ACCESS_LEVELS, roleClass } from '../utils/access.js';
+import { ACCESS_LEVELS, roleClass, roleName } from '../utils/access.js';
 import { toast } from '../components/toast.js';
 import { getInitials } from '../utils/formatters.js';
 import { supabase } from '../supabase.js';
-import { can, P } from '../utils/permissions.js';
+import { can, P, DEFAULT_PERMISSIONS_BY_LEVEL } from '../utils/permissions.js';
 
 /* ── Module state ─────────────────────────── */
 let _activeTab        = 'org';
@@ -34,6 +34,7 @@ let _transferResolveId = null;   // transfer id being reviewed in resolve modal
 let _unclaimedProfiles = [];  // profiles with no employee record
 let _adminSectors      = [];  // all sectors for the absorption modal
 let _absorbTarget      = null; // profile id being absorbed
+let _absorbStaffDepts  = null; // cached departments the current user can SELECT (staff absorb)
 let _inviteTarget      = null; // { name, email } being submitted
 let _newSectorData     = null; // { sectorGroups, teams, supervisors } fetched when modal opens
 
@@ -1717,6 +1718,22 @@ function renderUsersTab(user) {
     `<option value="${s.id}">${s.name}</option>`
   ).join('');
 
+  /* Absorb-as-staff (level 7+): create a profile instead of an employee. Gated on the
+     REAL user — RLS runs under their JWT, not the view-as user. */
+  const realUser    = getRealUser();
+  const canStaff    = can(realUser, P.ADMIN_MANAGE_STAFF);
+  const creatorLvl  = realUser?.accessLevel ?? 2;
+  /* Derive the assignable staff levels from the defined permission tiers (single source of
+     truth): every level that maps to a permission set, from 3 (supervisor — level 2 is the
+     collaborator/employee path) up to the creator's own level (anti-escalation, mirrors the RLS policy). */
+  const staffLevels = Object.keys(DEFAULT_PERMISSIONS_BY_LEVEL)
+    .map(Number)
+    .filter(lvl => lvl >= 3 && lvl <= creatorLvl)
+    .sort((a, b) => a - b);
+  const staffLevelOpts = staffLevels
+    .map((lvl, i) => `<option value="${lvl}" ${i === 0 ? 'selected' : ''}>${lvl} — ${roleName(lvl)}</option>`)
+    .join('');
+
   const inviteBtn = can(user, P.ADMIN_INVITE_USER)
     ? `<button class="btn btn--ghost btn--sm" id="btn-invite-user">+ Convidar usuário</button>`
     : '';
@@ -1749,17 +1766,45 @@ function renderUsersTab(user) {
         </div>
         <div class="modal__body">
           <p style="font-size:var(--text-sm);color:var(--text-secondary);margin-bottom:var(--space-4)">
-            <strong id="absorb-name" style="color:var(--text-primary)"></strong>
-            será registrado como colaborador. O setor define automaticamente o grupo e o departamento.
-            O vínculo com equipe pode ser configurado posteriormente.
+            <strong id="absorb-name" style="color:var(--text-primary)"></strong> será vinculado ao sistema.
           </p>
-          <div class="form-group" style="margin-bottom:0">
-            <label class="form-label">Setor <span class="required">*</span></label>
-            <select class="form-select" id="absorb-sector">
-              <option value="">— selecione —</option>
-              ${sectorOpts}
-            </select>
+
+          ${canStaff ? `
+          <div class="form-group">
+            <label class="form-label">Tipo de vínculo</label>
+            <div style="display:flex;gap:var(--space-5)">
+              <label style="display:flex;align-items:center;gap:6px;font-size:var(--text-sm)"><input type="radio" name="absorb-mode" value="collab" checked> Colaborador</label>
+              <label style="display:flex;align-items:center;gap:6px;font-size:var(--text-sm)"><input type="radio" name="absorb-mode" value="staff"> Equipe / Staff</label>
+            </div>
+          </div>` : ''}
+
+          <div id="absorb-collab-fields">
+            <p style="font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:var(--space-3)">
+              Registrado como colaborador. O setor define automaticamente o grupo e o departamento. O vínculo com equipe pode ser configurado posteriormente.
+            </p>
+            <div class="form-group" style="margin-bottom:0">
+              <label class="form-label">Setor <span class="required">*</span></label>
+              <select class="form-select" id="absorb-sector">
+                <option value="">— selecione —</option>
+                ${sectorOpts}
+              </select>
+            </div>
           </div>
+
+          ${canStaff ? `
+          <div id="absorb-staff-fields" style="display:none">
+            <p style="font-size:var(--text-xs);color:var(--text-secondary);margin-bottom:var(--space-3)">
+              Registrado como membro de equipe (perfil), permitindo criar setores, grupos e equipes no departamento.
+            </p>
+            <div class="form-group">
+              <label class="form-label">Nível de acesso <span class="required">*</span></label>
+              <select class="form-select" id="absorb-staff-level">${staffLevelOpts}</select>
+            </div>
+            <div class="form-group" style="margin-bottom:0">
+              <label class="form-label">Departamento <span class="required">*</span></label>
+              <select class="form-select" id="absorb-staff-dept"><option value="">— carregando —</option></select>
+            </div>
+          </div>` : ''}
         </div>
         <div class="modal__footer">
           <button class="btn btn--ghost" id="absorb-cancel">Cancelar</button>
@@ -1810,8 +1855,35 @@ function openAbsorbModal(profileId, profileName) {
   _absorbTarget = profileId;
   const nameEl = document.getElementById('absorb-name');
   if (nameEl) nameEl.textContent = profileName;
-  document.getElementById('absorb-sector').value = '';
+  const sectorSel = document.getElementById('absorb-sector');
+  if (sectorSel) sectorSel.value = '';
+  /* reset to collaborator mode each open */
+  const collabRadio = document.querySelector('input[name="absorb-mode"][value="collab"]');
+  if (collabRadio) collabRadio.checked = true;
+  setAbsorbMode('collab');
+  if (document.getElementById('absorb-staff-dept')) populateAbsorbStaffDepts();
   document.getElementById('absorb-modal')?.classList.remove('modal-overlay--hidden');
+}
+
+function setAbsorbMode(mode) {
+  const collab = document.getElementById('absorb-collab-fields');
+  const staff  = document.getElementById('absorb-staff-fields');
+  if (collab) collab.style.display = mode === 'staff' ? 'none' : '';
+  if (staff)  staff.style.display  = mode === 'staff' ? '' : 'none';
+}
+
+/* Departments the current user can SELECT (RLS: own dept, or all for level 9), cached. */
+async function populateAbsorbStaffDepts() {
+  const sel = document.getElementById('absorb-staff-dept');
+  if (!sel) return;
+  if (!_absorbStaffDepts) {
+    const { data } = await supabase.from('departments').select('id, name').eq('active', true).order('name');
+    _absorbStaffDepts = data ?? [];
+  }
+  sel.innerHTML = _absorbStaffDepts.length
+    ? `<option value="">— selecione —</option>` +
+      _absorbStaffDepts.map(d => `<option value="${d.id}">${escAttr(d.name)}</option>`).join('')
+    : `<option value="">— nenhum departamento disponível —</option>`;
 }
 
 function closeAbsorbModal() {
@@ -1820,13 +1892,46 @@ function closeAbsorbModal() {
 }
 
 async function absorbUser() {
+  const authUser = _unclaimedProfiles.find(p => p.id === _absorbTarget);
+  if (!authUser) return;
+  const mode = document.querySelector('input[name="absorb-mode"]:checked')?.value ?? 'collab';
+  const btn  = document.getElementById('absorb-confirm');
+
+  /* ── Staff path: create a profile (RLS authorizes level + department) ── */
+  if (mode === 'staff') {
+    const lvl    = Number(document.getElementById('absorb-staff-level')?.value);
+    const deptId = document.getElementById('absorb-staff-dept')?.value || null;
+    if (!lvl)    { toast.warning('Atenção', 'Selecione o nível de acesso.'); return; }
+    if (!deptId) { toast.warning('Atenção', 'Selecione o departamento.'); return; }
+    if (btn) { btn.disabled = true; btn.textContent = 'Absorvendo…'; }
+
+    const { error, count } = await supabase.from('profiles').insert({
+      id:               authUser.id,
+      name:             authUser.name,
+      role:             'supervisor',
+      access_level:     lvl,
+      department_id:    deptId,
+      filter_by:        lvl === 3 ? 'supervisor' : 'department',
+      shifts_filter_by: lvl === 3 ? 'group' : 'department',
+    }, { count: 'exact' });
+
+    if (error || count === 0) {
+      toast.error('Erro ao absorver', error?.message ?? 'Sem permissão para criar este perfil.');
+      if (btn) { btn.disabled = false; btn.textContent = 'Absorver'; }
+      return;
+    }
+    closeAbsorbModal();
+    toast.success(`${authUser.name} adicionado como staff`);
+    await loadUsersTabData();
+    document.getElementById('admin-tab-content').innerHTML = renderTab('users', getCurrentUser());
+    bindTabEvents();
+    return;
+  }
+
+  /* ── Collaborator path: create an employee + default shift ── */
   const sectorId = document.getElementById('absorb-sector')?.value;
   if (!sectorId) { toast.warning('Atenção', 'Selecione um setor.'); return; }
 
-  const authUser = _unclaimedProfiles.find(p => p.id === _absorbTarget);
-  if (!authUser) return;
-
-  const btn = document.getElementById('absorb-confirm');
   if (btn) { btn.disabled = true; btn.textContent = 'Absorvendo…'; }
 
   /* Resolve sector → team → sector_group → department */
@@ -2421,6 +2526,7 @@ async function refreshAllDepartments() {
   const { data } = await supabase
     .from('departments').select('id, name').eq('active', true).order('name');
   _allDepartments = data ?? [];
+  _absorbStaffDepts = null;  // dept list changed → absorb-staff selector refetches on next open
 }
 
 /* Re-run the active tab against the current department scope. */
@@ -2562,6 +2668,8 @@ function bindTabEvents() {
   document.getElementById('absorb-modal')?.addEventListener('click',
     e => { if (e.target.id === 'absorb-modal') closeAbsorbModal(); });
   document.getElementById('absorb-confirm')?.addEventListener('click', absorbUser);
+  document.querySelectorAll('input[name="absorb-mode"]').forEach(r =>
+    r.addEventListener('change', e => setAbsorbMode(e.target.value)));
 
   document.getElementById('btn-invite-user')?.addEventListener('click', openInviteModal);
   document.getElementById('invite-close')?.addEventListener('click', closeInviteModal);

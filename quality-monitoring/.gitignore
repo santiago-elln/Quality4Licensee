@@ -4,6 +4,8 @@ docs/
 /supabase
 js/data/
 js/config.local.js
+.mcp.json
 .claude
 .DS_Store
 Thumbs.db
+.mcp.json

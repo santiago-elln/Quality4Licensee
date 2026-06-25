@@ -9,6 +9,7 @@ export const ACCESS_LEVELS = {
   GESTOR:       5,
   COORDENADOR:  5,
   ADMIN:        6,
+  DEPT_ADMIN:   7,
   SYSOWNER:     9,
 };
 
@@ -134,6 +135,7 @@ export function filterVisibleSubjects(viewer, allUsers) {
 
 export function roleName(accessLevel) {
   if (accessLevel >= 9) return 'SysOwner';
+  if (accessLevel >= 7) return 'Admin de Departamento';
   if (accessLevel >= 6) return 'Admin';
   if (accessLevel >= 5) return 'Gestor / Coordenador';
   if (accessLevel >= 4) return 'Analista';

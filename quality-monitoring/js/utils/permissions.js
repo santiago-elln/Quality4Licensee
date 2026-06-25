@@ -37,6 +37,7 @@ export const P = Object.freeze({
   ADMIN_SET_ACCESS_LEVEL:  'Admin.canSetAccessLevel',
   ADMIN_INVITE_USER:       'Admin.canInviteUser',
   ADMIN_FILTER_DEPTS:      'Admin.canFilterDepts',
+  ADMIN_MANAGE_STAFF:      'Admin.canManageStaff',
 
   /* Global */
   GLOBAL_VIEW_DEPT:      'Global.canViewDept',
@@ -76,6 +77,7 @@ export const PERMISSION_LABELS = Object.freeze({
   [P.ADMIN_SET_ACCESS_LEVEL]:  'Admin — Alterar Nível de Acesso',
   [P.ADMIN_INVITE_USER]:       'Admin — Convidar Usuário',
   [P.ADMIN_FILTER_DEPTS]:      'Admin — Filtrar por departamento (ver toda a organização)',
+  [P.ADMIN_MANAGE_STAFF]:      'Admin — Absorver usuário como staff (criar perfil)',
   [P.GLOBAL_VIEW_DEPT]:       'Global — Ver todo o departamento',
   [P.CROSS_DEPT_VIEW]:        'Global — Ver outros departamentos',
   [P.GLOBAL_VIEW_AS]:         'Global — Visualizar como outro usuário',
@@ -195,6 +197,31 @@ export const DEFAULT_PERMISSIONS_BY_LEVEL = Object.freeze({
     P.SIDEBAR_ADMIN,
   ],
 
+  // Nível 7 — Admin de Departamento (admin com escopo no próprio departamento)
+  // TODO: conjunto provisório — confirmar poderes finais do dept-admin.
+  // Habilita o fluxo de "absorver como staff" e a estruturação do departamento.
+  7: [
+    P.NEW_MONITORING_ACCESS,
+    P.CONSULT_ACCESS,
+    P.GLOBAL_VIEW_DEPT,
+    P.PROFILE_VIEW_OBS,
+    P.RECORD_ACCESS,
+    P.RECORD_DETAIL,
+    P.SHIFTS_ACCESS,
+    P.ADMIN_CREATE_GROUPS,
+    P.ADMIN_VIEW_STRUCT,
+    P.ADMIN_UPDATE_CRITERIA,
+    P.ADMIN_SET_ACCESS_LEVEL,
+    P.ADMIN_INVITE_USER,
+    P.ADMIN_MANAGE_STAFF,
+    P.SIDEBAR_NEW_MONITORING,
+    P.SIDEBAR_CONSULT,
+    P.SIDEBAR_RECORDS,
+    P.SIDEBAR_PROFILE,
+    // P.SIDEBAR_GOALS,
+    P.SIDEBAR_ADMIN,
+  ],
+
   // Nível 9 — SYSOWNER (acesso total)
   9: [
     P.NEW_MONITORING_ACCESS,
@@ -217,6 +244,7 @@ export const DEFAULT_PERMISSIONS_BY_LEVEL = Object.freeze({
     P.ADMIN_SET_ACCESS_LEVEL,
     P.ADMIN_INVITE_USER,
     P.ADMIN_FILTER_DEPTS,
+    P.ADMIN_MANAGE_STAFF,
     P.GLOBAL_VIEW_AS,
     P.SIDEBAR_NEW_MONITORING,
     P.SIDEBAR_CONSULT,
