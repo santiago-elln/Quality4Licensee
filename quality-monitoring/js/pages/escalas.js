@@ -870,21 +870,27 @@ async function loadAllSectorMetrics() {
     if(Object.keys(result).length) return result
   }
 
-  /* Fallback: latest available date, no weekday filter */
-  const {data:latest}=await supabase.from('sector_metrics')
+  /* Fallback: the most recent available date that falls on the SAME weekday as the
+     selected date (Postgres has no weekday filter in the JS client, so scan dates desc). */
+  const {data:dateRows}=await supabase.from('sector_metrics')
     .select('date').in('sector_group_id',groupIds)
-    .order('date',{ascending:false}).limit(1).single()
-  if(!latest?.date) return {}
+    .order('date',{ascending:false})
+  let fbDate=null
+  for(const {date} of (dateRows??[])){
+    const [ry,rm,rd]=date.split('-').map(Number)
+    if(new Date(ry,rm-1,rd).getDay()===targetWeekday){ fbDate=date; break }
+  }
+  if(!fbDate) return {}
 
   const {data:fbData,error:fbError}=await supabase.from('sector_metrics')
     .select(SELECT)
     .in('sector_group_id',groupIds)
-    .eq('date',latest.date)
+    .eq('date',fbDate)
     .gte('hour',8).lte('hour',19)
   if(fbError||!fbData?.length) return {}
 
-  showMetricsWarn(latest.date)
-  return aggregate(fbData, null)  // no weekday filter on fallback
+  showMetricsWarn(fbDate)
+  return aggregate(fbData, null)  // already a single weekday-matched date
 }
 
 /* Fold several metric series (looked up by key) into one: tme/tma/csat averaged across the
