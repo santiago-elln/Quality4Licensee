@@ -434,8 +434,15 @@ function renderCatalogRow(cfg, row) {
   const junc = SG_JUNCTION[_catalogTab];
   let scopeBadges = '';
   if (junc) {
-    const sgIds  = _sgLinksOf(_catalogTab, row.id);
-    const sgs    = _catalogData?.sector_groups ?? [];
+    const scopeDept = catalogScopeDeptId();
+    const sgs       = _catalogData?.sector_groups ?? [];
+    let   sgIds     = _sgLinksOf(_catalogTab, row.id);
+    /* When a department is in scope, badge only its own sector_groups — an item can be
+       linked to groups in other departments, and those must not leak into this view. */
+    if (scopeDept) {
+      const inDept = new Set(sgs.filter(s => s.department_id === scopeDept).map(s => s.id));
+      sgIds = sgIds.filter(id => inDept.has(id));
+    }
     scopeBadges  = sgIds.length
       ? sgIds.map(id => {
           const sg = sgs.find(s => s.id === id);

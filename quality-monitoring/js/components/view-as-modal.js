@@ -21,7 +21,10 @@ function normalizeProfile(e) {
 }
 
 function levelLabel(n) {
-  const map = { 2: 'Colaborador', 3: 'Supervisor', 4: 'Analista', 5: 'Gestor', 6: 'Aux. Analista', 9: 'SysOwner' };
+  const map = { 
+    2: 'Colaborador', 3: 'Supervisor', 4: 'Analista', 
+    5: 'Gestor', 6: 'Aux. Analista', 7: 'Admin',
+    9: 'SysOwner' };
   return map[n] ?? `Nível ${n}`;
 }
 
