@@ -1955,6 +1955,7 @@ async function absorbUser() {
     name:           authUser.name,
     sector_id:      sectorId,
     sector_group_id: sectorGroupId,
+    department_id:  departmentId,
     active:         true,
   });
 
