@@ -778,6 +778,28 @@ function aggregateHourlyMetrics(rows) {
 }
 
 
+/* Fold metric series together: tme/tma/csat are averaged ONLY over the entries that have
+   data for each hour (null = no data — never counted as 0, which would drag the average
+   down), while volume is summed. Returns null for an empty list. */
+function combineSeries(list) {
+  if (!list.length) return null
+  const out = {tme:Array(12).fill(null), tma:Array(12).fill(null), csat:Array(12).fill(null), vol:Array(12).fill(0)}
+  const acc = {tme:Array(12).fill(0), tma:Array(12).fill(0), csat:Array(12).fill(0)}
+  const cnt = {tme:Array(12).fill(0), tma:Array(12).fill(0), csat:Array(12).fill(0)}
+  for (const s of list) for (let i=0;i<12;i++) {
+    if (s.tme[i]  != null) { acc.tme[i]  += s.tme[i];  cnt.tme[i]++  }
+    if (s.tma[i]  != null) { acc.tma[i]  += s.tma[i];  cnt.tma[i]++  }
+    if (s.csat[i] != null) { acc.csat[i] += s.csat[i]; cnt.csat[i]++ }
+    out.vol[i] += s.vol[i] || 0
+  }
+  for (let i=0;i<12;i++) {
+    if (cnt.tme[i])  out.tme[i]  = Math.round(acc.tme[i]/cnt.tme[i])
+    if (cnt.tma[i])  out.tma[i]  = Math.round(acc.tma[i]/cnt.tma[i])
+    if (cnt.csat[i]) out.csat[i] = +(acc.csat[i]/cnt.csat[i]).toFixed(2)
+  }
+  return out
+}
+
 async function loadAllSectorMetrics() {
   if(!_sectorGroups.length||!_selectedDateRange.from) return {}
   const groupIds=_sectorGroups.map(g=>g.id)
@@ -813,26 +835,23 @@ async function loadAllSectorMetrics() {
     const avg=arr=>arr.length?arr.reduce((a,b)=>a+b,0)/arr.length:0
     const result={}
     for(const [gid,sectors] of Object.entries(buckets)){
-      /* (1) per-(group,sector) series, averaged across days */
+      /* (1) per-(group,sector) series, averaged across days. null (not 0) marks an hour
+         with no data for a metric, so it's excluded from the averages downstream. */
       const subs=Object.values(sectors).map(hours=>{
-        const s={tme:Array(12).fill(0),tma:Array(12).fill(0),csat:Array(12).fill(0),vol:Array(12).fill(0)}
+        const s={tme:Array(12).fill(null),tma:Array(12).fill(null),csat:Array(12).fill(null),vol:Array(12).fill(0)}
         for(let h=8;h<=19;h++){
           const g=hours[h]; if(!g) continue
           const i=h-8
-          s.tme[i]=Math.round(avg(g.tme)); s.tma[i]=Math.round(avg(g.tma))
-          s.csat[i]=+avg(g.csat).toFixed(2); s.vol[i]=Math.round(avg(g.vol))
+          if(g.tme.length)  s.tme[i]  = Math.round(avg(g.tme))
+          if(g.tma.length)  s.tma[i]  = Math.round(avg(g.tma))
+          if(g.csat.length) s.csat[i] = +avg(g.csat).toFixed(2)
+          s.vol[i] = Math.round(avg(g.vol))
         }
         return s
       })
-      /* (2) combine sub-series: rates averaged, volume summed */
-      const merged={tme:Array(12).fill(0),tma:Array(12).fill(0),csat:Array(12).fill(0),vol:Array(12).fill(0)}
-      for(const s of subs) for(let i=0;i<12;i++){merged.tme[i]+=s.tme[i];merged.tma[i]+=s.tma[i];merged.csat[i]+=s.csat[i];merged.vol[i]+=s.vol[i]}
-      if(subs.length>1) for(let i=0;i<12;i++){
-        merged.tme[i]=Math.round(merged.tme[i]/subs.length)
-        merged.tma[i]=Math.round(merged.tma[i]/subs.length)
-        merged.csat[i]=+(merged.csat[i]/subs.length).toFixed(2)
-      }
-      result[gid]=merged
+      /* (2) combine the group's sub-series: rates averaged over the sectors that have
+         data each hour (missing never counted as 0); volume summed. */
+      result[gid]=combineSeries(subs)
     }
     return result
   }
@@ -868,25 +887,10 @@ async function loadAllSectorMetrics() {
   return aggregate(fbData, null)  // no weekday filter on fallback
 }
 
-/* Combine several metric series (looked up by key) into one: rates averaged,
-   volume summed. Used to fold multiple sector_groups into a single overlay. */
+/* Fold several metric series (looked up by key) into one: tme/tma/csat averaged across the
+   groups that have data each hour (null never counted as 0), volume summed. */
 function mergeMetrics(allMetrics, sectorIds) {
-  const merged={tme:Array(12).fill(0),tma:Array(12).fill(0),csat:Array(12).fill(0),vol:Array(12).fill(0)}
-  let count=0
-  for(const sid of sectorIds){
-    const m=allMetrics[sid]; if(!m) continue
-    count++
-    /* tme/tma/csat are rates → averaged across sectors below; vol is a customer
-       count → summed across the group's sectors (not divided). */
-    for(let i=0;i<12;i++){merged.tme[i]+=m.tme[i];merged.tma[i]+=m.tma[i];merged.csat[i]+=m.csat[i];merged.vol[i]+=m.vol[i]}
-  }
-  if(!count) return null
-  if(count>1) for(let i=0;i<12;i++){
-    merged.tme[i]=Math.round(merged.tme[i]/count)
-    merged.tma[i]=Math.round(merged.tma[i]/count)
-    merged.csat[i]=+(merged.csat[i]/count).toFixed(2)
-  }
-  return merged
+  return combineSeries(sectorIds.map(sid => allMetrics[sid]).filter(Boolean))
 }
 
 function attachMetricOverlay(containerEl, metrics, totalH, overlayId) {
@@ -894,8 +898,8 @@ function attachMetricOverlay(containerEl, metrics, totalH, overlayId) {
   const maxH=totalH-rowH*0.02
   const tmeMax=Math.max(...metrics.tme,1), tmaMax=Math.max(...metrics.tma,1), volMax=Math.max(...metrics.vol,1)
   const cfg={
-    tme: {data:metrics.tme, pxPerUnit:maxH/tmeMax,   rgb:'59,130,246',  label:'TME',  fmt:v=>fmtSec(v)},
-    tma: {data:metrics.tma, pxPerUnit:maxH/tmaMax,   rgb:'139,92,246',  label:'TMA',  fmt:v=>fmtSec(v)},
+    tme: {data:metrics.tme, pxPerUnit:maxH/tmeMax,   rgb:'59,130,246',  label:'TME',  fmt:v=>durLabel(v)},
+    tma: {data:metrics.tma, pxPerUnit:maxH/tmaMax,   rgb:'139,92,246',  label:'TMA',  fmt:v=>durLabel(v)},
     csat:{data:metrics.csat,pxPerUnit:totalH,          rgb:'245,158,11', label:'CSAT', fmt:v=>Math.round(v*100)+'pp'},
     vol: {data:metrics.vol, pxPerUnit:maxH/volMax,   rgb:'16,185,129',  label:'VOL',  fmt:v=>`${v} cli/h`},
   }
@@ -961,7 +965,6 @@ async function renderMetricOverlay() {
   attachMetricOverlay(empRowsEl, metricsData, _employees.length*rowH, 'esc-metric-overlay')
 }
 
-const fmtSec=s=>{const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=Math.round(s%60);return`${h}h ${String(m).padStart(2,'0')}m ${String(sec).padStart(2,'0')}s`}
 
 function showMetricTooltip(cx,cy,time,rows){
   let tip=$e('esc-metric-tip')
